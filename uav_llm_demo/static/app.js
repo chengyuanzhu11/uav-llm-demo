@@ -20,10 +20,49 @@ const windDown = document.getElementById("windDown");
 const applyWindBtn = document.getElementById("applyWindBtn");
 const scenarioSelect = document.getElementById("scenarioSelect");
 
+const simulator = document.getElementById("simulator")
+  || document.querySelector(".simulator");
+const settingsBtn = document.getElementById("settingsBtn");
+const settingsDialog = document.getElementById("settingsDialog");
+const closeSettingsBtn = document.getElementById("closeSettingsBtn");
+const inspectorToggleBtn = document.getElementById("inspectorToggleBtn");
+const trajectoryBtn = document.getElementById("trajectoryBtn");
+const traceView = document.getElementById("traceView");
+const historyView = document.getElementById("historyView");
+const historyBackBtn = document.getElementById("historyBackBtn");
+const historyTableBody = document.getElementById("historyTableBody");
+const historyEmpty = document.getElementById("historyEmpty");
+const historyViewBtn = document.getElementById("historyViewBtn");
+const operationBanner = document.getElementById("operationBanner");
+const operationStatus = document.getElementById("operationStatus");
+const sceneExecutionStatus = document.getElementById("sceneExecutionStatus");
+const currentStepValue = document.getElementById("currentStepValue");
+const goalDirectionValue = document.getElementById("goalDirectionValue");
+const goalDistanceValue = document.getElementById("goalDistanceValue");
+const staticRiskValue = document.getElementById("staticRiskValue");
+const dynamicRiskValue = document.getElementById("dynamicRiskValue");
+const agentActionValue = document.getElementById("agentActionValue");
+const agentWaypointValue = document.getElementById("agentWaypointValue");
+const agentRiskValue = document.getElementById("agentRiskValue");
+const agentSkillValue = document.getElementById("agentSkillValue");
+const agentReasonValue = document.getElementById("agentReasonValue");
+const proposedActionValue = document.getElementById("proposedActionValue");
+const executedActionValue = document.getElementById("executedActionValue");
+const guardStatus = document.getElementById("guardStatus");
+const guardReasonValue = document.getElementById("guardReasonValue");
+const executionPositionValue = document.getElementById("executionPositionValue");
+const executionRuntimeValue = document.getElementById("executionRuntimeValue");
+const executionDurationValue = document.getElementById("executionDurationValue");
+const executionBatteryValue = document.getElementById("executionBatteryValue");
+const settingsAgentValue = document.querySelector('[data-settings-value="agent"]');
+const settingsScenarioValue = document.querySelector('[data-settings-value="scenario"]');
+const settingsRuntimeValue = document.querySelector('[data-settings-value="runtime"]');
+
 const missionBadge = document.getElementById("missionBadge");
 const positionValue = document.getElementById("positionValue");
 const altitudeValue = document.getElementById("altitudeValue");
 const batteryValue = document.getElementById("batteryValue");
+const telemetryPhaseValue = document.getElementById("telemetryPhaseValue");
 const phaseValue = document.getElementById("phaseValue");
 const threatValue = document.getElementById("threatValue");
 const backendValue = document.getElementById("backendValue");
@@ -57,6 +96,23 @@ let activeTrajectory = null;
 let trajectoryStartedAt = 0;
 let trajectoryDurationMs = 0;
 let scenariosLoaded = false;
+let operationState = "ready";
+let operationMessage = "Ready";
+let historyMode = false;
+let selectedHistoryStep = null;
+let trajectoryVisible = true;
+let autoLoopActive = false;
+let runtimeStopPending = false;
+let currentStepSettled = Promise.resolve(null);
+let settleCurrentStep = null;
+
+let inspectorExpanded = false;
+try {
+  inspectorExpanded = sessionStorage.getItem("uav-inspector-expanded") === "true";
+} catch (error) {
+  inspectorExpanded = false;
+}
+simulator?.classList.toggle("inspector-expanded", inspectorExpanded);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9ec4d5);
@@ -114,6 +170,7 @@ async function loadState() {
   state = await requestJson("/api/state");
   syncScene(true);
   renderUi();
+  setOperationState("ready", "Ready");
 }
 
 
@@ -135,32 +192,95 @@ async function loadScenarios() {
 
 async function stepSimulation() {
   if (stepInFlight) {
-    return;
+    return currentStepSettled;
+  }
+  if (!state || state.status !== "active") {
+    renderToolbarState();
+    return null;
   }
 
   stepInFlight = true;
-  stepBtn.disabled = true;
+  const stepBackend = state.runtime_backend;
+  const stepBefore = Number(state.step_count || 0);
+  let outcome = {
+    status: "pending",
+    backend: stepBackend,
+    stepBefore,
+  };
+  currentStepSettled = new Promise((resolve) => {
+    settleCurrentStep = resolve;
+  });
+  setOperationState(
+    "executing",
+    `${String(stepBackend || "runtime").toUpperCase()} executing step #${stepBefore + 1}`,
+  );
   try {
     state = await requestJson("/api/step", { method: "POST" });
+    outcome = {
+      status: "committed",
+      backend: stepBackend,
+      stepBefore,
+      stepAfter: Number(state.step_count || stepBefore),
+    };
     syncScene(false);
     renderUi();
     stopAutoWhenDone();
+    if (state.status !== "active") {
+      setOperationState(
+        "ready",
+        `Mission ${state.status} after step #${state.step_count}`,
+      );
+    } else if (autoRunning) {
+      setOperationState(
+        "executing",
+        `Auto running after step #${state.step_count}`,
+      );
+    } else if (!runtimeStopPending) {
+      setOperationState("ready", `Ready after step #${state.step_count}`);
+    }
   } catch (error) {
-    feedbackText.textContent = error.message;
-    stopAuto();
+    const message = error instanceof Error ? error.message : String(error);
+    outcome = {
+      status: "failed",
+      backend: stepBackend,
+      stepBefore,
+      message,
+    };
+    autoRunning = false;
+    setText(feedbackText, message);
+    const expectedAirSimCancellation = runtimeStopPending
+      && stepBackend === "airsim"
+      && isCancellationError(message);
+    if (!expectedAirSimCancellation) {
+      setOperationState("error", message);
+    }
   } finally {
     stepInFlight = false;
-    stepBtn.disabled = false;
+    const resolveStep = settleCurrentStep;
+    settleCurrentStep = null;
+    resolveStep?.(outcome);
+    renderToolbarState();
   }
+  return outcome;
 }
 
 
 async function resetSimulation() {
-  stopAuto();
-  state = await requestJson("/api/reset", { method: "POST" });
-  clearEnvironment();
-  syncScene(true);
-  renderUi();
+  await stopAuto();
+  setOperationState("executing", "Resetting mission");
+  try {
+    state = await requestJson("/api/reset", { method: "POST" });
+    selectedHistoryStep = null;
+    showHistoryView(false);
+    clearEnvironment();
+    syncScene(true);
+    renderUi();
+    setOperationState("ready", "Mission reset");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setText(feedbackText, message);
+    setOperationState("error", message);
+  }
 }
 
 
@@ -170,17 +290,23 @@ async function switchScenario(scenarioId) {
   }
   await stopAuto(true);
   setRuntimePending(true);
+  setOperationState("executing", `Switching scenario to ${scenarioId}`);
   try {
     state = await requestJson("/api/scenario", {
       method: "POST",
       body: JSON.stringify({ scenario_id: scenarioId }),
     });
+    selectedHistoryStep = null;
+    showHistoryView(false);
     clearEnvironment();
     syncScene(true);
     renderUi();
+    setOperationState("ready", `Scenario ${scenarioId} ready`);
   } catch (error) {
-    feedbackText.textContent = error.message;
+    const message = error instanceof Error ? error.message : String(error);
+    setText(feedbackText, message);
     scenarioSelect.value = state.scenario_id;
+    setOperationState("error", message);
   } finally {
     setRuntimePending(false);
   }
@@ -192,36 +318,86 @@ function toggleAuto() {
     void stopAuto(true);
     return;
   }
+  if (
+    runtimeStopPending
+    || runtimePending
+    || stepInFlight
+    || !state
+    || state.status !== "active"
+  ) {
+    return;
+  }
   autoRunning = true;
-  autoBtn.textContent = "暂停";
-  runAutoLoop();
+  setOperationState("executing", "Auto running");
+  startAutoLoop();
 }
 
 
 async function stopAuto(commandStop = false) {
   autoRunning = false;
-  autoBtn.textContent = "自动运行";
-  if (commandStop && state) {
-    try {
-      state = await requestJson("/api/runtime/stop", { method: "POST" });
-      renderUi();
-    } catch (error) {
-      feedbackText.textContent = error.message;
+  renderToolbarState();
+  if (!commandStop || !state) {
+    return;
+  }
+
+  const backend = state.runtime_backend;
+  const stepBeforeStop = Number(state.step_count || 0);
+  const pendingStep = stepInFlight ? currentStepSettled : null;
+  runtimeStopPending = true;
+  setOperationState(
+    "executing",
+    `Pausing ${String(backend || "runtime").toUpperCase()}`,
+  );
+  try {
+    const stoppedState = await requestJson("/api/runtime/stop", { method: "POST" });
+    const stepOutcome = pendingStep ? await pendingStep : null;
+    if (stepOutcome?.status !== "committed") {
+      state = stoppedState;
     }
+    renderUi();
+
+    const stoppedAtStep = Number(state.step_count || 0);
+    if (stepOutcome?.status === "failed") {
+      const cancelledBeforeCommit = backend === "airsim"
+        && stoppedAtStep === stepBeforeStop
+        && isCancellationError(stepOutcome.message);
+      if (cancelledBeforeCommit) {
+        setOperationState(
+          "paused",
+          `Paused; current action cancelled before commit at step #${stoppedAtStep} (AirSim)`,
+        );
+      } else {
+        setText(feedbackText, stepOutcome.message);
+        setOperationState("error", stepOutcome.message);
+      }
+    } else {
+      setOperationState("paused", `Paused after step #${stoppedAtStep}`);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setText(feedbackText, message);
+    setOperationState("error", message);
+  } finally {
+    runtimeStopPending = false;
+    renderToolbarState();
   }
 }
 
 
 function stopAutoWhenDone() {
   if (state && state.status !== "active") {
-    stopAuto();
+    autoRunning = false;
+    renderToolbarState();
   }
 }
 
 
 async function runAutoLoop() {
   while (autoRunning && state && state.status === "active") {
-    await stepSimulation();
+    const outcome = await stepSimulation();
+    if (outcome?.status === "failed") {
+      break;
+    }
     if (!autoRunning || !state || state.status !== "active") {
       break;
     }
@@ -232,6 +408,20 @@ async function runAutoLoop() {
     await sleep(motionDelay);
   }
   stopAutoWhenDone();
+}
+
+
+function startAutoLoop() {
+  if (autoLoopActive) {
+    return;
+  }
+  autoLoopActive = true;
+  void runAutoLoop().finally(() => {
+    autoLoopActive = false;
+    if (autoRunning && state?.status === "active") {
+      startAutoLoop();
+    }
+  });
 }
 
 
@@ -257,6 +447,7 @@ async function switchRuntime(backend, force = false) {
 
   await stopAuto(true);
   setRuntimePending(true);
+  setOperationState("executing", `Switching runtime to ${backend}`);
   try {
     state = await requestJson("/api/runtime", {
       method: "POST",
@@ -265,12 +456,17 @@ async function switchRuntime(backend, force = false) {
         config: backend === "airsim" ? airsimConfig() : {},
       }),
     });
+    selectedHistoryStep = null;
+    showHistoryView(false);
     clearEnvironment();
     syncScene(true);
     renderUi();
+    setOperationState("ready", `${backend.toUpperCase()} runtime ready`);
   } catch (error) {
-    feedbackText.textContent = error.message;
+    const message = error instanceof Error ? error.message : String(error);
+    setText(feedbackText, message);
     renderRuntimeControls();
+    setOperationState("error", message);
   } finally {
     setRuntimePending(false);
   }
@@ -279,6 +475,7 @@ async function switchRuntime(backend, force = false) {
 
 async function applyWind() {
   applyWindBtn.disabled = true;
+  setOperationState("executing", "Applying AirSim wind");
   try {
     state = await requestJson("/api/runtime/wind", {
       method: "POST",
@@ -289,8 +486,11 @@ async function applyWind() {
       }),
     });
     renderUi();
+    setOperationState("ready", "AirSim wind updated");
   } catch (error) {
-    feedbackText.textContent = error.message;
+    const message = error instanceof Error ? error.message : String(error);
+    setText(feedbackText, message);
+    setOperationState("error", message);
   } finally {
     applyWindBtn.disabled = !state?.runtime?.connected;
   }
@@ -314,19 +514,8 @@ function airsimConfig() {
 function setRuntimePending(pending) {
   runtimePending = pending;
   document.body.classList.toggle("runtime-pending", pending);
-  stepBtn.disabled = pending;
-  autoBtn.disabled = pending || state?.status !== "active";
-  resetBtn.disabled = pending;
-  reconnectAirSimBtn.disabled = pending;
-  applyWindBtn.disabled = pending || !state?.runtime?.connected;
-  scenarioSelect.disabled = pending;
-  runtimeButtons.forEach((button) => {
-    button.disabled = pending;
-  });
-  runtimeStatus.setAttribute("aria-busy", String(pending));
-  if (state) {
-    renderRuntimeControls();
-  }
+  renderToolbarState();
+  renderRuntimeSettings();
 }
 
 
@@ -738,6 +927,7 @@ function updatePath() {
     opacity: 0.92,
   });
   pathLine = new THREE.Line(geometry, material);
+  pathLine.visible = trajectoryVisible;
   scene.add(pathLine);
 }
 
@@ -770,146 +960,779 @@ function birdMeshesHas(object) {
 
 
 function renderUi() {
-  missionBadge.textContent = state.status;
-  missionBadge.style.color = state.status === "completed" ? "#62d57b" : state.status === "failed" ? "#ff6b57" : "#45d5d2";
-  positionValue.textContent = [
-    `(${formatNumber(state.uav.x)}`,
-    formatNumber(state.uav.y),
-    `${formatNumber(state.uav.z)})`,
-  ].join(", ");
+  renderToolbarState();
+  if (!state) {
+    return;
+  }
+  renderTelemetry();
+  renderRuntimeSettings();
+  renderHistory();
+
+  const entries = getHistoryEntries();
+  let selectedEntry = null;
+  if (selectedHistoryStep !== null) {
+    selectedEntry = entries.find(
+      (entry) => String(entry?.step) === String(selectedHistoryStep),
+    ) || null;
+    if (!selectedEntry) {
+      selectedHistoryStep = null;
+    }
+  }
+  renderDecisionTrace(selectedEntry || entries[0] || null);
+}
+
+
+function renderToolbarState() {
+  simulator?.setAttribute("data-operation", operationState);
+  operationBanner?.setAttribute("data-operation", operationState);
+  operationBanner?.setAttribute("aria-live", "polite");
+  setText(operationStatus, operationMessage);
+  setText(sceneExecutionStatus, operationMessage);
+
+  const status = state?.status || "loading";
+  setText(missionBadge, status);
+  if (missionBadge) {
+    missionBadge.style.color = status === "completed"
+      ? "#62d57b"
+      : status === "failed"
+        ? "#ff6b57"
+        : "#45d5d2";
+  }
+  setText(phaseValue, state?.phase);
+  setText(
+    backendValue,
+    state?.agent_model
+      ? `${state.agent_backend}:${state.agent_model}`
+      : state?.agent_backend,
+  );
+  setText(stepCount, `${Number(state?.step_count || 0)} steps`);
+
+  const metrics = isRecord(state?.metrics) ? state.metrics : {};
+  setText(metricsValue, [
+    `success ${metrics.success ? "yes" : "no"}`,
+    `interventions ${metrics.safety_interventions ?? 0}`,
+    `path ${formatNumber(metrics.path_length ?? 0)}`,
+    `battery -${metrics.battery_used ?? 0}%`,
+  ].join(" | "));
+
+  const missionActive = state?.status === "active";
+  stepBtn.disabled = runtimePending
+    || runtimeStopPending
+    || stepInFlight
+    || autoRunning
+    || !missionActive;
+  autoBtn.disabled = runtimePending
+    || runtimeStopPending
+    || !missionActive
+    || (stepInFlight && !autoRunning);
+  resetBtn.disabled = runtimePending || stepInFlight;
+  scenarioSelect.disabled = runtimePending || stepInFlight;
+  autoBtn.setAttribute("aria-pressed", String(autoRunning));
+
+  const iconChanged = updateCommandButton(
+    autoBtn,
+    autoRunning ? "Pause" : "Auto",
+    autoRunning ? "pause" : "play",
+  );
+  if (iconChanged) {
+    createLucideIcons();
+  }
+}
+
+
+function renderTelemetry() {
+  if (!state) {
+    return;
+  }
+  const uav = isRecord(state.uav) ? state.uav : {};
+  setText(positionValue, formatPoint(uav));
+
   const altitudeScale = Number(
     state.runtime?.meters_per_altitude_level
       || state.meters_per_altitude_level
       || 5,
   );
-  altitudeValue.textContent = `${(state.uav.z * altitudeScale).toFixed(1)} m`;
-  batteryValue.textContent = `${state.battery}%`;
-  phaseValue.textContent = state.phase;
-  backendValue.textContent = state.agent_model
-    ? `${state.agent_backend}:${state.agent_model}`
-    : state.agent_backend;
-  stepCount.textContent = `${state.step_count} steps`;
-  scenarioSelect.value = state.scenario_id;
-  const metrics = state.metrics || {};
-  metricsValue.textContent = [
-    `success ${metrics.success ? "yes" : "no"}`,
-    `interventions ${metrics.safety_interventions ?? 0}`,
-    `path ${Number(metrics.path_length || 0).toFixed(1)}`,
-    `battery -${metrics.battery_used ?? 0}%`,
-  ].join(" | ");
-  const runtime = state.runtime || {};
-  const connected = Boolean(runtime.connected);
-  renderRuntimeControls();
-  applyWindBtn.disabled = runtimePending || !connected;
+  const altitude = uav.z === null || uav.z === undefined
+    ? Number.NaN
+    : Number(uav.z);
+  setText(
+    altitudeValue,
+    Number.isFinite(altitude) && Number.isFinite(altitudeScale)
+      ? `${(altitude * altitudeScale).toFixed(1)} m`
+      : "--",
+  );
+  setText(
+    batteryValue,
+    state.battery === null || state.battery === undefined
+      ? "--"
+      : `${state.battery}%`,
+  );
+  setText(telemetryPhaseValue, state.phase);
 
-  if (runtime.host) {
-    setInputUnlessFocused(airsimHost, runtime.host);
+  const observation = isRecord(state.observation) ? state.observation : {};
+  const threat = isRecord(observation.nearest_dynamic_obstacle)
+    ? observation.nearest_dynamic_obstacle
+    : null;
+  setText(
+    threatValue,
+    threat
+      ? `${valueOrDash(threat.threat_level)} / ${formatNumber(threat.predicted_distance)}`
+      : hasOwn(observation, "nearest_dynamic_obstacle") ? "none" : "--",
+  );
+  if (threatValue) {
+    threatValue.style.color = threatColor(threat?.threat_level || "low");
   }
-  if (runtime.port) {
-    setInputUnlessFocused(airsimPort, runtime.port);
+}
+
+
+function renderDecisionTrace(entry = state?.history?.[0] || null) {
+  if (!state) {
+    return;
   }
-  if (runtime.vehicle_name) {
-    setInputUnlessFocused(vehicleName, runtime.vehicle_name);
+  const entries = getHistoryEntries();
+  const latestEntry = entries[0] || null;
+  const isLatestEntry = Boolean(
+    entry
+      && latestEntry
+      && String(entry.step) === String(latestEntry.step),
+  );
+  const structuredEntryObservation = isRecord(entry?.observation)
+    ? entry.observation
+    : null;
+  const observation = structuredEntryObservation
+    || ((!entry || isLatestEntry) && isRecord(state.observation)
+      ? state.observation
+      : {});
+  const observationSummary = typeof entry?.observation === "string"
+    ? entry.observation
+    : observation.text;
+  const hasObservation = Boolean(
+    observationSummary || Object.keys(observation).length,
+  );
+  setTraceStageStatus(
+    "observation",
+    hasObservation ? "active" : "waiting",
+    hasObservation ? "OBSERVED" : "WAITING",
+  );
+
+  setText(
+    currentStepValue,
+    `#${entry?.step ?? state.step_count ?? 0}`,
+  );
+  setText(observationText, observationSummary);
+  setText(goalDirectionValue, observation.goal_direction);
+  setText(goalDistanceValue, observation.goal_distance);
+  setText(
+    staticRiskValue,
+    formatStaticRisk(
+      observation.nearest_static_obstacle,
+      hasOwn(observation, "nearest_static_obstacle"),
+    ),
+  );
+  setText(
+    dynamicRiskValue,
+    formatDynamicRisk(
+      observation.nearest_dynamic_obstacle,
+      hasOwn(observation, "nearest_dynamic_obstacle"),
+    ),
+  );
+
+  const decision = isRecord(entry?.decision) ? entry.decision : {};
+  setText(agentActionValue, decision.action);
+  setText(agentWaypointValue, formatPoint(decision.waypoint));
+  setText(agentRiskValue, decision.risk);
+  setText(agentSkillValue, decision.skill);
+  setText(agentReasonValue, decision.reason);
+  setText(
+    decisionJson,
+    Object.keys(decision).length ? safeJson(decision) : "--",
+  );
+
+  const proposedAction = decision.proposed_action || decision.action;
+  const executedAction = entry?.action ?? decision.action;
+  const safetyIntervention = decision.safety_intervention;
+  const hasDecision = Object.keys(decision).length > 0;
+  setTraceStageStatus(
+    "agent",
+    hasDecision ? "pass" : "waiting",
+    hasDecision ? "PROPOSED" : "WAITING",
+  );
+  const guardOverrode = Boolean(
+    decision.safety_intervened
+      || safetyIntervention
+      || (
+        proposedAction
+        && executedAction
+        && proposedAction !== executedAction
+      ),
+  );
+  setText(proposedActionValue, proposedAction);
+  setText(executedActionValue, executedAction);
+  const guardLabel = hasDecision ? (guardOverrode ? "OVERRIDE" : "PASS") : "WAITING";
+  setText(guardStatus, guardLabel);
+  setText(guardReasonValue, safetyIntervention || decision.reason);
+  setTraceStageStatus(
+    "guard",
+    hasDecision ? (guardOverrode ? "override" : "pass") : "waiting",
+    guardLabel,
+  );
+
+  const execution = isRecord(entry?.execution) ? entry.execution : {};
+  const useCurrentExecution = !entry || isLatestEntry;
+  const kinematics = isRecord(entry?.kinematics)
+    ? entry.kinematics
+    : isRecord(execution.kinematics)
+      ? execution.kinematics
+      : useCurrentExecution && isRecord(state.kinematics)
+        ? state.kinematics
+        : {};
+  const executionPosition = execution.position
+    ?? entry?.position
+    ?? (useCurrentExecution ? kinematics.position ?? state.uav : null);
+  const executionRuntime = execution.runtime
+    ?? entry?.runtime
+    ?? (useCurrentExecution ? state.runtime_backend : null);
+  const executionDuration = execution.duration
+    ?? entry?.trajectory_duration
+    ?? entry?.duration
+    ?? (useCurrentExecution ? state.trajectory_duration : null);
+  const executionBattery = execution.battery
+    ?? entry?.battery
+    ?? (useCurrentExecution ? state.battery : null);
+  const executionFeedback = entry?.feedback
+    ?? execution.feedback
+    ?? (!entry ? state.feedback : null);
+  const hasExecution = Boolean(
+    entry && (
+      executionFeedback
+      || Object.keys(execution).length
+      || Object.keys(kinematics).length
+    ),
+  );
+  setTraceStageStatus(
+    "execution",
+    hasExecution ? "pass" : "waiting",
+    hasExecution ? "EXECUTED" : "WAITING",
+  );
+
+  setText(executionPositionValue, formatPoint(executionPosition));
+  setText(executionRuntimeValue, formatRuntimeValue(executionRuntime));
+  setText(executionDurationValue, formatDuration(executionDuration));
+  setText(
+    executionBatteryValue,
+    executionBattery === null || executionBattery === undefined
+      ? "--"
+      : `${executionBattery}%`,
+  );
+  setText(feedbackText, executionFeedback);
+  setText(kinematicsValue, formatKinematics(kinematics));
+}
+
+
+function renderHistory() {
+  const entries = getHistoryEntries();
+  historyList?.replaceChildren();
+  historyTableBody?.replaceChildren();
+  renderHistoryNavigation();
+
+  if (historyEmpty) {
+    historyEmpty.hidden = entries.length > 0;
+    historyEmpty.classList.toggle("is-hidden", entries.length > 0);
   }
-  const wind = runtime.wind_ned || {};
-  setInputUnlessFocused(windNorth, wind.x ?? 0);
-  setInputUnlessFocused(windEast, wind.y ?? 0);
-  setInputUnlessFocused(windDown, wind.z ?? 0);
 
-  const kinematics = state.kinematics || {};
-  const orientation = kinematics.orientation || {};
-  const velocity = kinematics.linear_velocity || {};
-  kinematicsValue.textContent = [
-    `6-DOF: ${kinematics.source || "unknown"}`,
-    `roll ${formatNumber(orientation.roll)} rad`,
-    `pitch ${formatNumber(orientation.pitch)} rad`,
-    `yaw ${formatNumber(orientation.yaw)} rad`,
-    `v ${formatVector(velocity)}`,
-  ].join(" | ");
-
-  const threat = state.observation.nearest_dynamic_obstacle;
-  threatValue.textContent = threat
-    ? `${threat.threat_level} / ${threat.predicted_distance.toFixed(1)}`
-    : "none";
-  threatValue.style.color = threatColor(threat ? threat.threat_level : "low");
-
-  const latest = state.history[0];
-  observationText.textContent = latest ? latest.observation : state.observation.text;
-  decisionJson.textContent = latest ? JSON.stringify(latest.decision, null, 2) : "{}";
-  feedbackText.textContent = latest ? latest.feedback : state.feedback;
-  stepBtn.disabled = runtimePending;
-  autoBtn.disabled = runtimePending || state.status !== "active";
-  resetBtn.disabled = runtimePending;
-
-  historyList.innerHTML = "";
-  if (!state.history.length) {
-    const empty = document.createElement("p");
-    empty.className = "empty-log";
-    empty.textContent = "等待第一次 Agent 决策。";
-    historyList.appendChild(empty);
+  if (!entries.length) {
+    if (historyList) {
+      const empty = document.createElement("p");
+      empty.className = "empty-log";
+      empty.textContent = "Waiting for the first Agent decision.";
+      historyList.appendChild(empty);
+    }
     return;
   }
 
-  state.history.forEach((entry) => {
+  entries.slice(0, 3).forEach((entry) => {
+    if (!historyList) {
+      return;
+    }
+    const decision = isRecord(entry?.decision) ? entry.decision : {};
+    const actions = historyActions(entry);
     const item = document.createElement("article");
     item.className = "history-item";
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
+    item.classList.toggle(
+      "selected",
+      selectedHistoryStep !== null
+        && String(entry?.step) === String(selectedHistoryStep),
+    );
+    item.setAttribute("aria-label", `Inspect step ${valueOrDash(entry.step)}`);
+
     const header = document.createElement("header");
     const title = document.createElement("strong");
-    title.textContent = `STEP ${entry.step}`;
+    title.textContent = `STEP ${valueOrDash(entry.step)}`;
     const action = document.createElement("code");
-    const proposed = entry.decision.proposed_action;
-    action.textContent = proposed && proposed !== entry.decision.action
-      ? `${proposed} -> ${entry.decision.action}`
-      : entry.decision.action;
-    if (entry.decision.safety_intervened) {
-      action.classList.add("intervened");
-    }
+    action.textContent = actions.label;
+    action.classList.toggle("intervened", actions.overrode);
     header.append(title, action);
 
     const reason = document.createElement("p");
-    reason.textContent = entry.decision.reason;
+    reason.textContent = valueOrDash(
+      decision.safety_intervention || decision.reason,
+    );
     const feedback = document.createElement("p");
-    feedback.textContent = entry.feedback;
+    feedback.textContent = valueOrDash(entry?.feedback);
     item.append(header, reason, feedback);
+    item.addEventListener("click", () => activateHistoryEntry(entry));
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activateHistoryEntry(entry);
+      }
+    });
     historyList.appendChild(item);
+  });
+
+  entries.forEach((entry) => {
+    if (!historyTableBody) {
+      return;
+    }
+    const actions = historyActions(entry);
+    const row = document.createElement("tr");
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-label", `Inspect step ${valueOrDash(entry.step)}`);
+    row.classList.toggle(
+      "selected",
+      selectedHistoryStep !== null
+        && String(entry?.step) === String(selectedHistoryStep),
+    );
+    appendTableCell(row, `#${valueOrDash(entry.step)}`);
+    appendTableCell(row, actions.proposed);
+    appendTableCell(row, actions.executed);
+    appendTableCell(
+      row,
+      actions.hasDecision ? (actions.overrode ? "OVERRIDE" : "PASS") : "--",
+    );
+    appendTableCell(row, entry?.feedback);
+    row.addEventListener("click", () => activateHistoryEntry(entry));
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        activateHistoryEntry(entry);
+      }
+    });
+    historyTableBody.appendChild(row);
   });
 }
 
 
-function renderRuntimeControls() {
+function renderRuntimeSettings() {
   if (!state) {
     return;
   }
   const runtime = state.runtime || {};
   const connected = Boolean(runtime.connected);
-  runtimeStatus.textContent = runtimePending
+  setText(runtimeStatus, runtimePending
     ? `${state.runtime_backend} / switching`
-    : `${state.runtime_backend} / ${connected ? "connected" : "offline"}`;
+    : `${state.runtime_backend} / ${connected ? "connected" : "offline"}`);
+  setText(
+    settingsAgentValue,
+    state.agent_model
+      ? `${state.agent_backend}:${state.agent_model}`
+      : state.agent_backend,
+  );
+  setText(
+    settingsScenarioValue,
+    state.scenario?.name || state.scenario_id,
+  );
+  setText(
+    settingsRuntimeValue,
+    `${String(state.runtime_backend || "--").toUpperCase()} / ${connected ? "connected" : "offline"}`,
+  );
+  runtimeStatus.setAttribute("aria-busy", String(runtimePending));
+  runtimeStatus.setAttribute("data-connected", String(connected));
   runtimeStatus.style.color = connected ? "#62d57b" : "#ff6b57";
   airsimPanel.classList.toggle("is-hidden", state.runtime_backend !== "airsim");
+  airsimPanel.hidden = state.runtime_backend !== "airsim";
   runtimeButtons.forEach((button) => {
     const selected = button.dataset.runtime === state.runtime_backend;
     button.setAttribute("aria-checked", String(selected));
     button.classList.toggle("active", selected);
+    button.disabled = runtimePending;
   });
+
+  scenarioSelect.value = state.scenario_id || "";
+  if (runtime.host !== null && runtime.host !== undefined) {
+    setInputUnlessFocused(airsimHost, runtime.host);
+  }
+  if (runtime.port !== null && runtime.port !== undefined) {
+    setInputUnlessFocused(airsimPort, runtime.port);
+  }
+  if (runtime.vehicle_name !== null && runtime.vehicle_name !== undefined) {
+    setInputUnlessFocused(vehicleName, runtime.vehicle_name);
+  }
+  const wind = isRecord(runtime.wind_ned) ? runtime.wind_ned : {};
+  setInputUnlessFocused(windNorth, wind.x ?? 0);
+  setInputUnlessFocused(windEast, wind.y ?? 0);
+  setInputUnlessFocused(windDown, wind.z ?? 0);
+
+  reconnectAirSimBtn.disabled = runtimePending;
+  applyWindBtn.disabled = runtimePending || !connected;
+}
+
+
+function renderRuntimeControls() {
+  renderRuntimeSettings();
+}
+
+
+function setOperationState(nextState, message) {
+  operationState = nextState || "ready";
+  operationMessage = valueOrDash(message);
+  renderToolbarState();
+}
+
+
+function toggleInspectorWidth() {
+  if (!simulator) {
+    return;
+  }
+  inspectorExpanded = !simulator.classList.contains("inspector-expanded");
+  simulator.classList.toggle("inspector-expanded", inspectorExpanded);
+  renderInspectorToggle();
+  try {
+    sessionStorage.setItem(
+      "uav-inspector-expanded",
+      String(inspectorExpanded),
+    );
+  } catch (error) {
+    // Storage can be denied in hardened or private browser contexts.
+  }
+  window.requestAnimationFrame(onResize);
+}
+
+
+function showHistoryView(show) {
+  historyMode = Boolean(show);
+  traceView?.classList.toggle("is-hidden", historyMode);
+  historyView?.classList.toggle("is-hidden", !historyMode);
+  traceView?.setAttribute("aria-hidden", String(historyMode));
+  historyView?.setAttribute("aria-hidden", String(!historyMode));
+
+  if (!state) {
+    return;
+  }
+  if (historyMode) {
+    renderHistory();
+    return;
+  }
+  const entries = getHistoryEntries();
+  const selectedEntry = selectedHistoryStep === null
+    ? null
+    : entries.find(
+      (entry) => String(entry?.step) === String(selectedHistoryStep),
+    ) || null;
+  renderDecisionTrace(selectedEntry || entries[0] || null);
 }
 
 
 function setInputUnlessFocused(input, value) {
-  if (document.activeElement !== input) {
+  if (input && document.activeElement !== input) {
     input.value = String(value);
   }
 }
 
 
+function setText(element, value) {
+  if (element) {
+    element.textContent = valueOrDash(value);
+  }
+}
+
+
+function setTraceStageStatus(stageName, status, label) {
+  const stage = document.querySelector(`[data-stage="${stageName}"]`);
+  if (!stage) {
+    return;
+  }
+  stage.setAttribute("data-status", status);
+  setText(stage.querySelector(".stage-status"), label);
+}
+
+
+function valueOrDash(value) {
+  if (value === null || value === undefined || value === "") {
+    return "--";
+  }
+  return String(value);
+}
+
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+
+function hasOwn(object, key) {
+  return isRecord(object) && Object.prototype.hasOwnProperty.call(object, key);
+}
+
+
+function formatPoint(point) {
+  if (Array.isArray(point)) {
+    if (point.length < 3) {
+      return "--";
+    }
+    return `(${formatNumber(point[0])}, ${formatNumber(point[1])}, ${formatNumber(point[2])})`;
+  }
+  if (!isRecord(point)) {
+    return "--";
+  }
+  if (!["x", "y", "z"].some((axis) => hasOwn(point, axis))) {
+    return "--";
+  }
+  return `(${formatNumber(point.x)}, ${formatNumber(point.y)}, ${formatNumber(point.z)})`;
+}
+
+
+function formatStaticRisk(obstacle, fieldPresent) {
+  if (!fieldPresent) {
+    return "--";
+  }
+  if (!obstacle) {
+    return "clear";
+  }
+  if (!isRecord(obstacle)) {
+    return valueOrDash(obstacle);
+  }
+  const parts = [];
+  if (obstacle.direction) {
+    parts.push(String(obstacle.direction));
+  }
+  if (obstacle.distance !== null && obstacle.distance !== undefined) {
+    parts.push(`distance ${formatNumber(obstacle.distance)}`);
+  }
+  if (obstacle.height !== null && obstacle.height !== undefined) {
+    parts.push(`height ${formatNumber(obstacle.height)}`);
+  }
+  return parts.length ? parts.join(" | ") : "nearby";
+}
+
+
+function formatDynamicRisk(obstacle, fieldPresent) {
+  if (!fieldPresent) {
+    return "--";
+  }
+  if (!obstacle) {
+    return "clear";
+  }
+  if (!isRecord(obstacle)) {
+    return valueOrDash(obstacle);
+  }
+  const parts = [];
+  if (obstacle.threat_level) {
+    parts.push(String(obstacle.threat_level));
+  }
+  if (obstacle.predicted_distance !== null && obstacle.predicted_distance !== undefined) {
+    parts.push(`predicted ${formatNumber(obstacle.predicted_distance)}`);
+  }
+  if (obstacle.id) {
+    parts.push(String(obstacle.id));
+  }
+  return parts.length ? parts.join(" | ") : "nearby";
+}
+
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return "--";
+  }
+}
+
+
+function formatDuration(value) {
+  if (value === null || value === undefined || value === "") {
+    return "--";
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number.toFixed(2)} s` : "--";
+}
+
+
+function formatRuntimeValue(runtime) {
+  if (isRecord(runtime)) {
+    const name = runtime.backend || runtime.source || runtime.name;
+    if (!name) {
+      return "--";
+    }
+    if (runtime.connected === null || runtime.connected === undefined) {
+      return String(name);
+    }
+    return `${name} / ${runtime.connected ? "connected" : "offline"}`;
+  }
+  return valueOrDash(runtime);
+}
+
+
+function formatKinematics(kinematics) {
+  if (!isRecord(kinematics) || !Object.keys(kinematics).length) {
+    return "--";
+  }
+  const orientation = isRecord(kinematics.orientation)
+    ? kinematics.orientation
+    : {};
+  const velocity = isRecord(kinematics.linear_velocity)
+    ? kinematics.linear_velocity
+    : {};
+  return [
+    `6-DOF: ${valueOrDash(kinematics.source)}`,
+    `roll ${formatNumber(orientation.roll)} rad`,
+    `pitch ${formatNumber(orientation.pitch)} rad`,
+    `yaw ${formatNumber(orientation.yaw)} rad`,
+    `v ${formatVector(velocity)}`,
+  ].join(" | ");
+}
+
+
+function historyActions(entry) {
+  const decision = isRecord(entry?.decision) ? entry.decision : {};
+  const hasDecision = Object.keys(decision).length > 0;
+  const proposed = decision.proposed_action || decision.action;
+  const executed = entry?.action ?? decision.action;
+  const overrode = Boolean(
+    decision.safety_intervened
+      || decision.safety_intervention
+      || (proposed && executed && proposed !== executed),
+  );
+  return {
+    hasDecision,
+    proposed: valueOrDash(proposed),
+    executed: valueOrDash(executed),
+    overrode,
+    label: proposed && executed && proposed !== executed
+      ? `${proposed} -> ${executed}`
+      : valueOrDash(executed || proposed),
+  };
+}
+
+
+function getHistoryEntries() {
+  return Array.isArray(state?.history) ? state.history : [];
+}
+
+
+function activateHistoryEntry(entry) {
+  if (!entry || entry.step === null || entry.step === undefined) {
+    return;
+  }
+  selectedHistoryStep = entry.step;
+  showHistoryView(false);
+  renderHistory();
+}
+
+
+function appendTableCell(row, value) {
+  const cell = document.createElement("td");
+  cell.textContent = valueOrDash(value);
+  row.appendChild(cell);
+}
+
+
+function updateCommandButton(button, label, iconName) {
+  if (!button) {
+    return false;
+  }
+  const labelElement = button.querySelector("span");
+  if (labelElement) {
+    labelElement.textContent = label;
+  } else {
+    const textNode = [...button.childNodes].find(
+      (node) => node.nodeType === 3 && node.nodeValue.trim(),
+    );
+    if (textNode) {
+      textNode.nodeValue = label;
+    } else {
+      const span = document.createElement("span");
+      span.textContent = label;
+      button.appendChild(span);
+    }
+  }
+  button.setAttribute("aria-label", label);
+
+  const icon = button.querySelector("[data-lucide]");
+  if (!icon || icon.getAttribute("data-lucide") === iconName) {
+    return false;
+  }
+  icon.setAttribute("data-lucide", iconName);
+  return true;
+}
+
+
+function createLucideIcons() {
+  if (window.lucide?.createIcons) {
+    window.lucide.createIcons();
+  }
+}
+
+
+function renderInspectorToggle() {
+  if (!inspectorToggleBtn) {
+    return;
+  }
+  const label = inspectorExpanded
+    ? "Collapse decision inspector"
+    : "Expand decision inspector";
+  inspectorToggleBtn.setAttribute("aria-label", label);
+  inspectorToggleBtn.setAttribute("title", label);
+  const icon = inspectorToggleBtn.querySelector("[data-lucide]");
+  const iconName = inspectorExpanded
+    ? "panel-right-close"
+    : "panel-right-open";
+  const iconChanged = Boolean(
+    icon && icon.getAttribute("data-lucide") !== iconName,
+  );
+  icon?.setAttribute("data-lucide", iconName);
+  if (iconChanged) {
+    createLucideIcons();
+  }
+}
+
+
+function renderHistoryNavigation() {
+  if (!historyViewBtn) {
+    return;
+  }
+  const showingSelectedTrace = selectedHistoryStep !== null && !historyMode;
+  const iconChanged = updateCommandButton(
+    historyViewBtn,
+    showingSelectedTrace ? "Current" : "History",
+    showingSelectedTrace ? "arrow-left" : "history",
+  );
+  if (iconChanged) {
+    createLucideIcons();
+  }
+}
+
+
+function isCancellationError(message) {
+  return /\b(cancelled|canceled|aborted)\b/i.test(String(message || ""));
+}
+
+
 function formatNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return "--";
+  }
   const number = Number(value);
   return Number.isFinite(number) ? number.toFixed(2) : "--";
 }
 
 
 function formatVector(vector) {
-  return `(${formatNumber(vector.x)}, ${formatNumber(vector.y)}, ${formatNumber(vector.z)})`;
+  const value = isRecord(vector) ? vector : {};
+  return `(${formatNumber(value.x)}, ${formatNumber(value.y)}, ${formatNumber(value.z)})`;
 }
 
 
@@ -1024,9 +1847,65 @@ runtimeButtons.forEach((button) => {
 });
 reconnectAirSimBtn.addEventListener("click", () => switchRuntime("airsim", true));
 applyWindBtn.addEventListener("click", applyWind);
+settingsBtn?.addEventListener("click", () => {
+  renderRuntimeSettings();
+  if (typeof settingsDialog?.showModal === "function") {
+    if (!settingsDialog.open) {
+      settingsDialog.showModal();
+    }
+  } else {
+    settingsDialog?.setAttribute("open", "");
+  }
+});
+closeSettingsBtn?.addEventListener("click", () => {
+  if (typeof settingsDialog?.close === "function") {
+    settingsDialog.close();
+  } else {
+    settingsDialog?.removeAttribute("open");
+  }
+});
+inspectorToggleBtn?.addEventListener("click", toggleInspectorWidth);
+historyViewBtn?.addEventListener("click", () => {
+  if (selectedHistoryStep !== null && !historyMode) {
+    selectedHistoryStep = null;
+    showHistoryView(false);
+    renderHistory();
+    return;
+  }
+  showHistoryView(true);
+});
+historyBackBtn?.addEventListener("click", () => {
+  selectedHistoryStep = null;
+  showHistoryView(false);
+  renderHistory();
+});
+trajectoryBtn?.addEventListener("click", () => {
+  trajectoryVisible = !trajectoryVisible;
+  if (pathLine) {
+    pathLine.visible = trajectoryVisible;
+  }
+  trajectoryBtn.classList.toggle("active", trajectoryVisible);
+  trajectoryBtn.setAttribute("aria-pressed", String(trajectoryVisible));
+  trajectoryBtn.setAttribute(
+    "aria-label",
+    trajectoryVisible ? "Hide trajectory" : "Show trajectory",
+  );
+  trajectoryBtn.setAttribute(
+    "title",
+    trajectoryVisible ? "Hide trajectory" : "Show trajectory",
+  );
+});
 window.addEventListener("resize", onResize);
 
+renderInspectorToggle();
+trajectoryBtn?.classList.toggle("active", trajectoryVisible);
+trajectoryBtn?.setAttribute("aria-pressed", String(trajectoryVisible));
+showHistoryView(false);
+createLucideIcons();
+renderToolbarState();
 renderer.setAnimationLoop(animate);
 loadState().catch((error) => {
-  feedbackText.textContent = error.message;
+  const message = error instanceof Error ? error.message : String(error);
+  setText(feedbackText, message);
+  setOperationState("error", message);
 });

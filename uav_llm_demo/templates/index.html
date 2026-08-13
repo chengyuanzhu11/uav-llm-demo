@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>UAV LLM 3D 决策仿真</title>
+  <title>UAV Decision Workbench</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   <script type="importmap">
@@ -16,146 +16,362 @@
   </script>
 </head>
 <body>
-  <main class="simulator">
-    <div id="sceneContainer" class="scene-container" aria-label="3D UAV simulation"></div>
-
-    <header class="command-bar">
-      <div class="brand-block">
+  <main id="simulator" class="simulator" data-operation="ready">
+    <header class="app-toolbar">
+      <div class="brand-block" aria-label="UAV decision workbench">
         <span class="live-dot" aria-hidden="true"></span>
         <div>
           <p>UAV / LLM AGENT</p>
-          <h1>三维自主飞行仿真</h1>
+          <h1>Decision Workbench</h1>
         </div>
       </div>
 
-      <div class="controls" aria-label="Simulation controls">
-        <button id="stepBtn" type="button">单步</button>
-        <button id="autoBtn" type="button">自动运行</button>
-        <button id="resetBtn" type="button" class="secondary">重置</button>
-      </div>
-    </header>
-
-    <section class="flight-hud" aria-label="Flight telemetry">
-      <div class="hud-item">
-        <span>坐标</span>
-        <strong id="positionValue">--</strong>
-      </div>
-      <div class="hud-item">
-        <span>高度</span>
-        <strong id="altitudeValue">--</strong>
-      </div>
-      <div class="hud-item">
-        <span>电量</span>
-        <strong id="batteryValue">--</strong>
-      </div>
-      <div class="hud-item">
-        <span>阶段</span>
-        <strong id="phaseValue">--</strong>
-      </div>
-      <div class="hud-item threat">
-        <span>动态威胁</span>
-        <strong id="threatValue">--</strong>
-      </div>
-    </section>
-
-    <section class="camera-controls" aria-label="Camera controls">
-      <button id="overviewBtn" type="button" class="view-button active">全局</button>
-      <button id="followBtn" type="button" class="view-button">跟随</button>
-    </section>
-
-    <aside class="agent-console" aria-label="Agent decision console">
-      <div class="console-header">
-        <div>
-          <span id="missionBadge" class="mission-badge">Loading</span>
-          <h2>Agent 决策链</h2>
-        </div>
-        <span id="backendValue" class="backend-value">--</span>
-      </div>
-
-      <section class="runtime-control" aria-label="Simulation runtime">
-        <div class="runtime-heading">
-          <h3>Runtime</h3>
-          <span id="runtimeStatus">html / connected</span>
-        </div>
-        <div class="runtime-selector" role="radiogroup" aria-label="Simulation runtime">
-          <button type="button" class="runtime-option" data-runtime="html" role="radio" aria-checked="true">
-            HTML Simulation
-          </button>
-          <button type="button" class="runtime-option" data-runtime="airsim" role="radio" aria-checked="false">
-            AirSim Validation
-          </button>
-        </div>
-      </section>
-
-      <section class="scenario-control" aria-label="Scenario selection">
-        <label for="scenarioSelect">Scenario</label>
+      <label class="toolbar-field" for="scenarioSelect">
+        <span>Scenario</span>
         <select id="scenarioSelect">
           <option value="urban_crossing">Urban Crossing</option>
         </select>
-        <p id="metricsValue" class="metrics-value">Evaluation: --</p>
+      </label>
+
+      <div class="runtime-selector" role="radiogroup" aria-label="Simulation runtime">
+        <button type="button" class="runtime-option" data-runtime="html" role="radio" aria-checked="true">
+          <i data-lucide="monitor" aria-hidden="true"></i>
+          <span>HTML</span>
+        </button>
+        <button type="button" class="runtime-option" data-runtime="airsim" role="radio" aria-checked="false">
+          <i data-lucide="radio" aria-hidden="true"></i>
+          <span>AirSim</span>
+        </button>
+      </div>
+
+      <span id="runtimeStatus" class="runtime-status" aria-live="polite">html / connected</span>
+      <div class="toolbar-spacer" aria-hidden="true"></div>
+
+      <button id="settingsBtn" type="button" class="icon-button" aria-label="Settings" title="Settings">
+        <i data-lucide="settings" aria-hidden="true"></i>
+      </button>
+      <button id="resetBtn" type="button" class="command-button secondary">
+        <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+        <span>Reset</span>
+      </button>
+      <button id="autoBtn" type="button" class="command-button secondary">
+        <i data-lucide="play" aria-hidden="true"></i>
+        <span>Auto</span>
+      </button>
+      <button id="stepBtn" type="button" class="command-button primary">
+        <i data-lucide="step-forward" aria-hidden="true"></i>
+        <span>Step</span>
+      </button>
+    </header>
+
+    <section class="scene-workspace" aria-label="UAV mission scene">
+      <div id="sceneContainer" class="scene-container" aria-label="3D UAV simulation"></div>
+
+      <section class="scene-telemetry" aria-label="Flight telemetry">
+        <div class="telemetry-item position">
+          <span>Position</span>
+          <strong id="positionValue">--</strong>
+        </div>
+        <div class="telemetry-item">
+          <span>Altitude</span>
+          <strong id="altitudeValue">--</strong>
+        </div>
+        <div class="telemetry-item">
+          <span>Battery</span>
+          <strong id="batteryValue">--</strong>
+        </div>
+        <div class="telemetry-item">
+          <span>Phase</span>
+          <strong id="telemetryPhaseValue">--</strong>
+        </div>
+        <div class="telemetry-item threat">
+          <span>Threat</span>
+          <strong id="threatValue">--</strong>
+        </div>
       </section>
 
-      <section id="airsimPanel" class="simulator-panel is-hidden" aria-label="AirSim connection and wind">
+      <div class="scene-tools" role="group" aria-label="Scene controls">
+        <button id="overviewBtn" type="button" class="icon-button active" aria-label="Overview camera" title="Overview camera">
+          <i data-lucide="scan" aria-hidden="true"></i>
+        </button>
+        <button id="followBtn" type="button" class="icon-button" aria-label="Follow UAV" title="Follow UAV">
+          <i data-lucide="crosshair" aria-hidden="true"></i>
+        </button>
+        <button id="trajectoryBtn" type="button" class="icon-button active" aria-label="Toggle trajectory" title="Toggle trajectory" aria-pressed="true">
+          <i data-lucide="route" aria-hidden="true"></i>
+        </button>
+      </div>
+
+      <div id="sceneExecutionStatus" class="scene-execution-status" role="status" aria-live="polite">
+        Ready
+      </div>
+
+      <div class="scene-legend" aria-label="Scene legend">
+        <span><i class="legend-uav" aria-hidden="true"></i>UAV</span>
+        <span><i class="legend-bird" aria-hidden="true"></i>Dynamic object</span>
+        <span><i class="legend-target" aria-hidden="true"></i>Target</span>
+        <span><i class="legend-base" aria-hidden="true"></i>Base</span>
+      </div>
+    </section>
+
+    <aside id="decisionInspector" class="decision-inspector" aria-label="Decision inspector">
+      <header class="inspector-header">
+        <span id="currentStepValue" class="step-index">#0</span>
+        <div class="inspector-title">
+          <h1>Decision Trace</h1>
+          <p>
+            <span id="backendValue" class="backend-value">--</span>
+            <span aria-hidden="true">/</span>
+            <span id="phaseValue">--</span>
+          </p>
+        </div>
+        <button id="inspectorToggleBtn" type="button" class="icon-button" aria-label="Expand decision inspector" title="Expand decision inspector">
+          <i data-lucide="panel-right-open" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <div id="operationBanner" class="operation-banner" role="status" aria-live="polite">
+        <span id="operationStatus">Ready</span>
+      </div>
+
+      <div id="traceView" class="inspector-view">
+        <section class="trace-stage" data-stage="observation" data-status="waiting">
+          <header class="stage-header">
+            <span class="stage-index">01</span>
+            <h2>Observation</h2>
+            <span class="stage-status">Waiting</span>
+          </header>
+          <dl class="trace-grid">
+            <div>
+              <dt>Goal direction</dt>
+              <dd id="goalDirectionValue">--</dd>
+            </div>
+            <div>
+              <dt>Goal distance</dt>
+              <dd id="goalDistanceValue">--</dd>
+            </div>
+            <div>
+              <dt>Static risk</dt>
+              <dd id="staticRiskValue">--</dd>
+            </div>
+            <div>
+              <dt>Dynamic risk</dt>
+              <dd id="dynamicRiskValue">--</dd>
+            </div>
+          </dl>
+          <details class="trace-disclosure">
+            <summary>Full observation</summary>
+            <p id="observationText">Waiting for state...</p>
+          </details>
+        </section>
+
+        <section class="trace-stage" data-stage="agent" data-status="waiting">
+          <header class="stage-header">
+            <span class="stage-index">02</span>
+            <h2>Agent Proposal</h2>
+            <span class="stage-status">Waiting</span>
+          </header>
+          <dl class="trace-grid">
+            <div>
+              <dt>Action</dt>
+              <dd id="agentActionValue">--</dd>
+            </div>
+            <div>
+              <dt>Waypoint</dt>
+              <dd id="agentWaypointValue">--</dd>
+            </div>
+            <div>
+              <dt>Risk</dt>
+              <dd id="agentRiskValue">--</dd>
+            </div>
+            <div>
+              <dt>Skill</dt>
+              <dd id="agentSkillValue">--</dd>
+            </div>
+          </dl>
+          <div class="trace-detail">
+            <span>Decision note</span>
+            <p id="agentReasonValue">--</p>
+          </div>
+          <details class="trace-disclosure trace-json">
+            <summary>Decision JSON</summary>
+            <pre id="decisionJson">{}</pre>
+          </details>
+        </section>
+
+        <section class="trace-stage" data-stage="guard" data-status="waiting">
+          <header class="stage-header">
+            <span class="stage-index">03</span>
+            <h2>Safety Guard</h2>
+            <span id="guardStatus" class="stage-status">Waiting</span>
+          </header>
+          <dl class="trace-grid">
+            <div>
+              <dt>Proposed</dt>
+              <dd id="proposedActionValue">--</dd>
+            </div>
+            <div>
+              <dt>Executed</dt>
+              <dd id="executedActionValue">--</dd>
+            </div>
+          </dl>
+          <div class="trace-detail">
+            <span>Guard result</span>
+            <p id="guardReasonValue">--</p>
+          </div>
+        </section>
+
+        <section class="trace-stage" data-stage="execution" data-status="waiting">
+          <header class="stage-header">
+            <span class="stage-index">04</span>
+            <h2>Execution</h2>
+            <span class="stage-status">Waiting</span>
+          </header>
+          <dl class="trace-grid">
+            <div>
+              <dt>Position</dt>
+              <dd id="executionPositionValue">--</dd>
+            </div>
+            <div>
+              <dt>Runtime</dt>
+              <dd id="executionRuntimeValue">--</dd>
+            </div>
+            <div>
+              <dt>Duration</dt>
+              <dd id="executionDurationValue">--</dd>
+            </div>
+            <div>
+              <dt>Battery</dt>
+              <dd id="executionBatteryValue">--</dd>
+            </div>
+          </dl>
+          <div class="trace-detail">
+            <span>Result</span>
+            <p id="feedbackText">--</p>
+          </div>
+          <p id="kinematicsValue" class="kinematics-value">6-DOF telemetry: --</p>
+        </section>
+      </div>
+
+      <div id="historyView" class="inspector-view is-hidden">
+        <header class="view-header">
+          <button id="historyBackBtn" type="button" class="icon-button" aria-label="Back to current trace" title="Back to current trace">
+            <i data-lucide="arrow-left" aria-hidden="true"></i>
+          </button>
+          <h2>Decision History</h2>
+        </header>
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th scope="col">Step</th>
+              <th scope="col">Proposed</th>
+              <th scope="col">Executed</th>
+              <th scope="col">Guard</th>
+              <th scope="col">Result</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody"></tbody>
+        </table>
+        <p id="historyEmpty" class="history-empty">No completed steps.</p>
+      </div>
+
+      <footer class="recent-history">
+        <header class="history-heading">
+          <div>
+            <span id="missionBadge" class="mission-badge">Loading</span>
+            <h2>Recent Decisions</h2>
+          </div>
+          <span id="stepCount">0 steps</span>
+        </header>
+        <div id="historyList" class="history-list"></div>
+        <div class="history-summary">
+          <span id="metricsValue" class="metrics-value">Evaluation: --</span>
+          <button id="historyViewBtn" type="button" class="command-button secondary">
+            <i data-lucide="history" aria-hidden="true"></i>
+            <span>History</span>
+          </button>
+        </div>
+      </footer>
+    </aside>
+
+    <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
+      <header class="settings-header">
+        <div>
+          <span>Simulation</span>
+          <h2 id="settingsTitle">Settings</h2>
+        </div>
+        <button id="closeSettingsBtn" type="button" class="icon-button" aria-label="Close settings" title="Close settings">
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+      </header>
+
+      <section class="settings-section" aria-labelledby="missionSettingsTitle">
+        <h3 id="missionSettingsTitle">Mission Context</h3>
+        <dl class="settings-summary">
+          <div>
+            <dt>Agent</dt>
+            <dd><output data-settings-value="agent">--</output></dd>
+          </div>
+          <div>
+            <dt>Scenario</dt>
+            <dd><output data-settings-value="scenario">Urban Crossing</output></dd>
+          </div>
+          <div>
+            <dt>Runtime</dt>
+            <dd><output data-settings-value="runtime">HTML / connected</output></dd>
+          </div>
+        </dl>
+      </section>
+
+      <section id="airsimPanel" class="settings-section simulator-panel is-hidden" aria-label="AirSim connection and wind">
         <div class="simulator-heading">
-          <h3>AirSim Settings</h3>
+          <h3>AirSim</h3>
           <span>Cosys-AirSim 3.3</span>
         </div>
         <div class="simulator-grid">
           <label>
-            Vehicle
+            <span>Vehicle</span>
             <input id="vehicleName" value="Drone1">
           </label>
           <label>
-            Host
+            <span>Host</span>
             <input id="airsimHost" value="127.0.0.1">
           </label>
           <label>
-            Port
+            <span>Port</span>
             <input id="airsimPort" type="number" min="1" max="65535" value="41451">
           </label>
         </div>
-        <button id="reconnectAirSimBtn" type="button" class="secondary simulator-command">
-          Reconnect and Reset
+        <button id="reconnectAirSimBtn" type="button" class="command-button secondary simulator-command">
+          <i data-lucide="refresh-cw" aria-hidden="true"></i>
+          <span>Reconnect and Reset</span>
         </button>
-        <div class="wind-row">
-          <label>N <input id="windNorth" type="number" step="0.5" value="0"></label>
-          <label>E <input id="windEast" type="number" step="0.5" value="0"></label>
-          <label>D <input id="windDown" type="number" step="0.5" value="0"></label>
-          <button id="applyWindBtn" type="button" title="Apply NED wind vector">Wind</button>
-        </div>
-        <p id="kinematicsValue" class="kinematics-value">6-DOF telemetry: --</p>
+        <fieldset class="wind-settings">
+          <legend>Wind NED</legend>
+          <div class="wind-row">
+            <label>
+              <span>N</span>
+              <input id="windNorth" type="number" step="0.5" value="0">
+            </label>
+            <label>
+              <span>E</span>
+              <input id="windEast" type="number" step="0.5" value="0">
+            </label>
+            <label>
+              <span>D</span>
+              <input id="windDown" type="number" step="0.5" value="0">
+            </label>
+            <button id="applyWindBtn" type="button" class="command-button secondary" title="Apply NED wind vector">
+              <i data-lucide="wind" aria-hidden="true"></i>
+              <span>Apply</span>
+            </button>
+          </div>
+        </fieldset>
       </section>
-
-      <div class="trace-block">
-        <h3>Observation</h3>
-        <p id="observationText">Waiting for state...</p>
-      </div>
-
-      <div class="trace-block">
-        <h3>Decision JSON</h3>
-        <pre id="decisionJson">{}</pre>
-      </div>
-
-      <div class="trace-block feedback">
-        <h3>Executor Feedback</h3>
-        <p id="feedbackText">--</p>
-      </div>
-
-      <div class="history-heading">
-        <h3>Recent Decisions</h3>
-        <span id="stepCount">0 steps</span>
-      </div>
-      <div id="historyList" class="history-list"></div>
-    </aside>
-
-    <div class="scene-legend" aria-label="Scene legend">
-      <span><i class="legend-uav"></i>UAV</span>
-      <span><i class="legend-bird"></i>动态飞行物</span>
-      <span><i class="legend-target"></i>目标</span>
-      <span><i class="legend-base"></i>基地</span>
-    </div>
+    </dialog>
   </main>
 
+  <script src="{{ url_for('static', filename='vendor/lucide.min.js') }}"></script>
   <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
