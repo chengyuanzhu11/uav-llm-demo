@@ -49,7 +49,6 @@ class FrontendContractTest(unittest.TestCase):
         )
 
         self.assertIn('id="scenarioSelect"', html)
-        self.assertIn('id="metricsValue"', html)
         self.assertIn("/api/scenarios", javascript)
         self.assertIn("/api/scenario", javascript)
 
@@ -61,20 +60,22 @@ class FrontendContractTest(unittest.TestCase):
         required = (
             'class="app-toolbar"',
             'id="decisionInspector"',
-            'id="inspectorToggleBtn"',
             'id="settingsBtn"',
             'id="settingsDialog"',
-            'id="trajectoryBtn"',
             'id="operationStatus"',
             'data-stage="observation"',
             'data-stage="agent"',
-            'data-stage="guard"',
             'data-stage="execution"',
-            'id="historyTableBody"',
+            'Reasoning &amp; Decision',
+            '>Result<',
         )
         for fragment in required:
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, html)
+        self.assertEqual(html.count('class="trace-stage"'), 3)
+        self.assertNotIn('id="inspectorToggleBtn"', html)
+        self.assertNotIn('id="historyView"', html)
+        self.assertNotIn('class="recent-history"', html)
 
     def test_icons_are_local_and_accessible(self):
         html = (ROOT / "uav_llm_demo/templates/index.html").read_text(
@@ -87,7 +88,7 @@ class FrontendContractTest(unittest.TestCase):
         self.assertNotIn("unpkg.com", html)
         self.assertNotIn("cdn.jsdelivr.net", html)
         self.assertIn('aria-label="Settings"', html)
-        self.assertIn('aria-label="Expand decision inspector"', html)
+        self.assertNotIn("Expand decision inspector", html)
 
     def test_javascript_exposes_focused_workbench_renderers(self):
         javascript = (ROOT / "uav_llm_demo/static/app.js").read_text(
@@ -98,16 +99,13 @@ class FrontendContractTest(unittest.TestCase):
             "renderToolbarState",
             "renderTelemetry",
             "renderDecisionTrace",
-            "renderHistory",
             "renderRuntimeSettings",
             "setOperationState",
-            "toggleInspectorWidth",
-            "showHistoryView",
         ):
             self.assertIn(f"function {function_name}", javascript)
-        self.assertIn(
-            'sessionStorage.getItem("uav-inspector-expanded")', javascript
-        )
+        self.assertNotIn("inspectorExpanded", javascript)
+        self.assertNotIn("showHistoryView", javascript)
+        self.assertNotIn("renderHistory", javascript)
         self.assertIn('requestJson("/api/runtime/stop"', javascript)
         self.assertNotIn("setInterval(", javascript)
 
@@ -117,17 +115,16 @@ class FrontendContractTest(unittest.TestCase):
         )
 
         for selector in (
-            ".simulator.inspector-expanded",
             ".decision-inspector",
+            ".decision-guard",
             '.simulator[data-operation="executing"]',
             '.simulator[data-operation="paused"]',
             '.simulator[data-operation="error"]',
             ".settings-dialog",
-            ".history-table",
         ):
             self.assertIn(selector, styles)
-        self.assertIn("minmax(340px, 28%)", styles)
-        self.assertIn("minmax(400px, 34%)", styles)
+        self.assertIn("minmax(240px, 19%)", styles)
+        self.assertNotIn("inspector-expanded", styles)
 
     def test_scene_telemetry_includes_current_phase(self):
         html = (ROOT / "uav_llm_demo/templates/index.html").read_text(
@@ -168,6 +165,19 @@ class FrontendContractTest(unittest.TestCase):
 
         self.assertIn('class="telemetry-item position"', html)
         self.assertIn("minmax(150px, 1.35fr)", styles)
+
+    def test_trajectory_is_a_persistent_thick_three_dimensional_path(self):
+        html = (ROOT / "uav_llm_demo/templates/index.html").read_text(
+            encoding="utf-8"
+        )
+        javascript = (ROOT / "uav_llm_demo/static/app.js").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertNotIn('id="trajectoryBtn"', html)
+        self.assertIn("new THREE.TubeGeometry", javascript)
+        self.assertIn("depthTest: false", javascript)
+        self.assertIn("pathLine.renderOrder = 5", javascript)
 
 
 if __name__ == "__main__":

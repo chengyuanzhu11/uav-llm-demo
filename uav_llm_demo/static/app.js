@@ -25,14 +25,6 @@ const simulator = document.getElementById("simulator")
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsDialog = document.getElementById("settingsDialog");
 const closeSettingsBtn = document.getElementById("closeSettingsBtn");
-const inspectorToggleBtn = document.getElementById("inspectorToggleBtn");
-const trajectoryBtn = document.getElementById("trajectoryBtn");
-const traceView = document.getElementById("traceView");
-const historyView = document.getElementById("historyView");
-const historyBackBtn = document.getElementById("historyBackBtn");
-const historyTableBody = document.getElementById("historyTableBody");
-const historyEmpty = document.getElementById("historyEmpty");
-const historyViewBtn = document.getElementById("historyViewBtn");
 const operationBanner = document.getElementById("operationBanner");
 const operationStatus = document.getElementById("operationStatus");
 const sceneExecutionStatus = document.getElementById("sceneExecutionStatus");
@@ -42,23 +34,17 @@ const goalDistanceValue = document.getElementById("goalDistanceValue");
 const staticRiskValue = document.getElementById("staticRiskValue");
 const dynamicRiskValue = document.getElementById("dynamicRiskValue");
 const agentActionValue = document.getElementById("agentActionValue");
-const agentWaypointValue = document.getElementById("agentWaypointValue");
 const agentRiskValue = document.getElementById("agentRiskValue");
-const agentSkillValue = document.getElementById("agentSkillValue");
 const agentReasonValue = document.getElementById("agentReasonValue");
 const proposedActionValue = document.getElementById("proposedActionValue");
 const executedActionValue = document.getElementById("executedActionValue");
 const guardStatus = document.getElementById("guardStatus");
-const guardReasonValue = document.getElementById("guardReasonValue");
 const executionPositionValue = document.getElementById("executionPositionValue");
-const executionRuntimeValue = document.getElementById("executionRuntimeValue");
-const executionDurationValue = document.getElementById("executionDurationValue");
-const executionBatteryValue = document.getElementById("executionBatteryValue");
+const resultActionValue = document.getElementById("resultActionValue");
 const settingsAgentValue = document.querySelector('[data-settings-value="agent"]');
 const settingsScenarioValue = document.querySelector('[data-settings-value="scenario"]');
 const settingsRuntimeValue = document.querySelector('[data-settings-value="runtime"]');
 
-const missionBadge = document.getElementById("missionBadge");
 const positionValue = document.getElementById("positionValue");
 const altitudeValue = document.getElementById("altitudeValue");
 const batteryValue = document.getElementById("batteryValue");
@@ -66,14 +52,8 @@ const telemetryPhaseValue = document.getElementById("telemetryPhaseValue");
 const phaseValue = document.getElementById("phaseValue");
 const threatValue = document.getElementById("threatValue");
 const backendValue = document.getElementById("backendValue");
-const observationText = document.getElementById("observationText");
-const decisionJson = document.getElementById("decisionJson");
 const feedbackText = document.getElementById("feedbackText");
-const historyList = document.getElementById("historyList");
-const stepCount = document.getElementById("stepCount");
 const runtimeStatus = document.getElementById("runtimeStatus");
-const kinematicsValue = document.getElementById("kinematicsValue");
-const metricsValue = document.getElementById("metricsValue");
 
 const WORLD_SCALE = 3;
 const ALTITUDE_SCALE = 2.15;
@@ -98,21 +78,10 @@ let trajectoryDurationMs = 0;
 let scenariosLoaded = false;
 let operationState = "ready";
 let operationMessage = "Ready";
-let historyMode = false;
-let selectedHistoryStep = null;
-let trajectoryVisible = true;
 let autoLoopActive = false;
 let runtimeStopPending = false;
 let currentStepSettled = Promise.resolve(null);
 let settleCurrentStep = null;
-
-let inspectorExpanded = false;
-try {
-  inspectorExpanded = sessionStorage.getItem("uav-inspector-expanded") === "true";
-} catch (error) {
-  inspectorExpanded = false;
-}
-simulator?.classList.toggle("inspector-expanded", inspectorExpanded);
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x9ec4d5);
@@ -270,8 +239,6 @@ async function resetSimulation() {
   setOperationState("executing", "Resetting mission");
   try {
     state = await requestJson("/api/reset", { method: "POST" });
-    selectedHistoryStep = null;
-    showHistoryView(false);
     clearEnvironment();
     syncScene(true);
     renderUi();
@@ -296,8 +263,6 @@ async function switchScenario(scenarioId) {
       method: "POST",
       body: JSON.stringify({ scenario_id: scenarioId }),
     });
-    selectedHistoryStep = null;
-    showHistoryView(false);
     clearEnvironment();
     syncScene(true);
     renderUi();
@@ -456,8 +421,6 @@ async function switchRuntime(backend, force = false) {
         config: backend === "airsim" ? airsimConfig() : {},
       }),
     });
-    selectedHistoryStep = null;
-    showHistoryView(false);
     clearEnvironment();
     syncScene(true);
     renderUi();
@@ -920,14 +883,24 @@ function updatePath() {
   if (points.length < 2) {
     return;
   }
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
-  const material = new THREE.LineBasicMaterial({
-    color: 0x45d5d2,
+  const curve = points.length > 2
+    ? new THREE.CatmullRomCurve3(points, false, "centripetal", 0.25)
+    : new THREE.LineCurve3(points[0], points[1]);
+  const geometry = new THREE.TubeGeometry(
+    curve,
+    Math.max(12, points.length * 8),
+    0.14,
+    8,
+    false,
+  );
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x19f3eb,
     transparent: true,
-    opacity: 0.92,
+    opacity: 0.98,
+    depthTest: false,
   });
-  pathLine = new THREE.Line(geometry, material);
-  pathLine.visible = trajectoryVisible;
+  pathLine = new THREE.Mesh(geometry, material);
+  pathLine.renderOrder = 5;
   scene.add(pathLine);
 }
 
@@ -966,19 +939,7 @@ function renderUi() {
   }
   renderTelemetry();
   renderRuntimeSettings();
-  renderHistory();
-
-  const entries = getHistoryEntries();
-  let selectedEntry = null;
-  if (selectedHistoryStep !== null) {
-    selectedEntry = entries.find(
-      (entry) => String(entry?.step) === String(selectedHistoryStep),
-    ) || null;
-    if (!selectedEntry) {
-      selectedHistoryStep = null;
-    }
-  }
-  renderDecisionTrace(selectedEntry || entries[0] || null);
+  renderDecisionTrace(getHistoryEntries()[0] || null);
 }
 
 
@@ -989,15 +950,6 @@ function renderToolbarState() {
   setText(operationStatus, operationMessage);
   setText(sceneExecutionStatus, operationMessage);
 
-  const status = state?.status || "loading";
-  setText(missionBadge, status);
-  if (missionBadge) {
-    missionBadge.style.color = status === "completed"
-      ? "#62d57b"
-      : status === "failed"
-        ? "#ff6b57"
-        : "#45d5d2";
-  }
   setText(phaseValue, state?.phase);
   setText(
     backendValue,
@@ -1005,16 +957,6 @@ function renderToolbarState() {
       ? `${state.agent_backend}:${state.agent_model}`
       : state?.agent_backend,
   );
-  setText(stepCount, `${Number(state?.step_count || 0)} steps`);
-
-  const metrics = isRecord(state?.metrics) ? state.metrics : {};
-  setText(metricsValue, [
-    `success ${metrics.success ? "yes" : "no"}`,
-    `interventions ${metrics.safety_interventions ?? 0}`,
-    `path ${formatNumber(metrics.path_length ?? 0)}`,
-    `battery -${metrics.battery_used ?? 0}%`,
-  ].join(" | "));
-
   const missionActive = state?.status === "active";
   stepBtn.disabled = runtimePending
     || runtimeStopPending
@@ -1103,11 +1045,8 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
     || ((!entry || isLatestEntry) && isRecord(state.observation)
       ? state.observation
       : {});
-  const observationSummary = typeof entry?.observation === "string"
-    ? entry.observation
-    : observation.text;
   const hasObservation = Boolean(
-    observationSummary || Object.keys(observation).length,
+    entry?.observation || Object.keys(observation).length,
   );
   setTraceStageStatus(
     "observation",
@@ -1117,9 +1056,8 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
 
   setText(
     currentStepValue,
-    `#${entry?.step ?? state.step_count ?? 0}`,
+    `#${state.step_count ?? 0}`,
   );
-  setText(observationText, observationSummary);
   setText(goalDirectionValue, observation.goal_direction);
   setText(goalDistanceValue, observation.goal_distance);
   setText(
@@ -1139,14 +1077,8 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
 
   const decision = isRecord(entry?.decision) ? entry.decision : {};
   setText(agentActionValue, decision.action);
-  setText(agentWaypointValue, formatPoint(decision.waypoint));
   setText(agentRiskValue, decision.risk);
-  setText(agentSkillValue, decision.skill);
   setText(agentReasonValue, decision.reason);
-  setText(
-    decisionJson,
-    Object.keys(decision).length ? safeJson(decision) : "--",
-  );
 
   const proposedAction = decision.proposed_action || decision.action;
   const executedAction = entry?.action ?? decision.action;
@@ -1170,35 +1102,21 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
   setText(executedActionValue, executedAction);
   const guardLabel = hasDecision ? (guardOverrode ? "OVERRIDE" : "PASS") : "WAITING";
   setText(guardStatus, guardLabel);
-  setText(guardReasonValue, safetyIntervention || decision.reason);
-  setTraceStageStatus(
-    "guard",
+  const guardContainer = guardStatus?.closest(".decision-guard");
+  guardContainer?.setAttribute(
+    "data-status",
     hasDecision ? (guardOverrode ? "override" : "pass") : "waiting",
-    guardLabel,
+  );
+  guardStatus?.setAttribute(
+    "data-status",
+    hasDecision ? (guardOverrode ? "override" : "pass") : "waiting",
   );
 
   const execution = isRecord(entry?.execution) ? entry.execution : {};
   const useCurrentExecution = !entry || isLatestEntry;
-  const kinematics = isRecord(entry?.kinematics)
-    ? entry.kinematics
-    : isRecord(execution.kinematics)
-      ? execution.kinematics
-      : useCurrentExecution && isRecord(state.kinematics)
-        ? state.kinematics
-        : {};
   const executionPosition = execution.position
     ?? entry?.position
-    ?? (useCurrentExecution ? kinematics.position ?? state.uav : null);
-  const executionRuntime = execution.runtime
-    ?? entry?.runtime
-    ?? (useCurrentExecution ? state.runtime_backend : null);
-  const executionDuration = execution.duration
-    ?? entry?.trajectory_duration
-    ?? entry?.duration
-    ?? (useCurrentExecution ? state.trajectory_duration : null);
-  const executionBattery = execution.battery
-    ?? entry?.battery
-    ?? (useCurrentExecution ? state.battery : null);
+    ?? (useCurrentExecution ? state.uav : null);
   const executionFeedback = entry?.feedback
     ?? execution.feedback
     ?? (!entry ? state.feedback : null);
@@ -1206,7 +1124,6 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
     entry && (
       executionFeedback
       || Object.keys(execution).length
-      || Object.keys(kinematics).length
     ),
   );
   setTraceStageStatus(
@@ -1215,114 +1132,9 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
     hasExecution ? "EXECUTED" : "WAITING",
   );
 
+  setText(resultActionValue, executedAction);
   setText(executionPositionValue, formatPoint(executionPosition));
-  setText(executionRuntimeValue, formatRuntimeValue(executionRuntime));
-  setText(executionDurationValue, formatDuration(executionDuration));
-  setText(
-    executionBatteryValue,
-    executionBattery === null || executionBattery === undefined
-      ? "--"
-      : `${executionBattery}%`,
-  );
   setText(feedbackText, executionFeedback);
-  setText(kinematicsValue, formatKinematics(kinematics));
-}
-
-
-function renderHistory() {
-  const entries = getHistoryEntries();
-  historyList?.replaceChildren();
-  historyTableBody?.replaceChildren();
-  renderHistoryNavigation();
-
-  if (historyEmpty) {
-    historyEmpty.hidden = entries.length > 0;
-    historyEmpty.classList.toggle("is-hidden", entries.length > 0);
-  }
-
-  if (!entries.length) {
-    if (historyList) {
-      const empty = document.createElement("p");
-      empty.className = "empty-log";
-      empty.textContent = "Waiting for the first Agent decision.";
-      historyList.appendChild(empty);
-    }
-    return;
-  }
-
-  entries.slice(0, 3).forEach((entry) => {
-    if (!historyList) {
-      return;
-    }
-    const decision = isRecord(entry?.decision) ? entry.decision : {};
-    const actions = historyActions(entry);
-    const item = document.createElement("article");
-    item.className = "history-item";
-    item.tabIndex = 0;
-    item.setAttribute("role", "button");
-    item.classList.toggle(
-      "selected",
-      selectedHistoryStep !== null
-        && String(entry?.step) === String(selectedHistoryStep),
-    );
-    item.setAttribute("aria-label", `Inspect step ${valueOrDash(entry.step)}`);
-
-    const header = document.createElement("header");
-    const title = document.createElement("strong");
-    title.textContent = `STEP ${valueOrDash(entry.step)}`;
-    const action = document.createElement("code");
-    action.textContent = actions.label;
-    action.classList.toggle("intervened", actions.overrode);
-    header.append(title, action);
-
-    const reason = document.createElement("p");
-    reason.textContent = valueOrDash(
-      decision.safety_intervention || decision.reason,
-    );
-    const feedback = document.createElement("p");
-    feedback.textContent = valueOrDash(entry?.feedback);
-    item.append(header, reason, feedback);
-    item.addEventListener("click", () => activateHistoryEntry(entry));
-    item.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        activateHistoryEntry(entry);
-      }
-    });
-    historyList.appendChild(item);
-  });
-
-  entries.forEach((entry) => {
-    if (!historyTableBody) {
-      return;
-    }
-    const actions = historyActions(entry);
-    const row = document.createElement("tr");
-    row.tabIndex = 0;
-    row.setAttribute("role", "button");
-    row.setAttribute("aria-label", `Inspect step ${valueOrDash(entry.step)}`);
-    row.classList.toggle(
-      "selected",
-      selectedHistoryStep !== null
-        && String(entry?.step) === String(selectedHistoryStep),
-    );
-    appendTableCell(row, `#${valueOrDash(entry.step)}`);
-    appendTableCell(row, actions.proposed);
-    appendTableCell(row, actions.executed);
-    appendTableCell(
-      row,
-      actions.hasDecision ? (actions.overrode ? "OVERRIDE" : "PASS") : "--",
-    );
-    appendTableCell(row, entry?.feedback);
-    row.addEventListener("click", () => activateHistoryEntry(entry));
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        activateHistoryEntry(entry);
-      }
-    });
-    historyTableBody.appendChild(row);
-  });
 }
 
 
@@ -1390,49 +1202,6 @@ function setOperationState(nextState, message) {
   operationState = nextState || "ready";
   operationMessage = valueOrDash(message);
   renderToolbarState();
-}
-
-
-function toggleInspectorWidth() {
-  if (!simulator) {
-    return;
-  }
-  inspectorExpanded = !simulator.classList.contains("inspector-expanded");
-  simulator.classList.toggle("inspector-expanded", inspectorExpanded);
-  renderInspectorToggle();
-  try {
-    sessionStorage.setItem(
-      "uav-inspector-expanded",
-      String(inspectorExpanded),
-    );
-  } catch (error) {
-    // Storage can be denied in hardened or private browser contexts.
-  }
-  window.requestAnimationFrame(onResize);
-}
-
-
-function showHistoryView(show) {
-  historyMode = Boolean(show);
-  traceView?.classList.toggle("is-hidden", historyMode);
-  historyView?.classList.toggle("is-hidden", !historyMode);
-  traceView?.setAttribute("aria-hidden", String(historyMode));
-  historyView?.setAttribute("aria-hidden", String(!historyMode));
-
-  if (!state) {
-    return;
-  }
-  if (historyMode) {
-    renderHistory();
-    return;
-  }
-  const entries = getHistoryEntries();
-  const selectedEntry = selectedHistoryStep === null
-    ? null
-    : entries.find(
-      (entry) => String(entry?.step) === String(selectedHistoryStep),
-    ) || null;
-  renderDecisionTrace(selectedEntry || entries[0] || null);
 }
 
 
@@ -1543,100 +1312,8 @@ function formatDynamicRisk(obstacle, fieldPresent) {
 }
 
 
-function safeJson(value) {
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch (error) {
-    return "--";
-  }
-}
-
-
-function formatDuration(value) {
-  if (value === null || value === undefined || value === "") {
-    return "--";
-  }
-  const number = Number(value);
-  return Number.isFinite(number) ? `${number.toFixed(2)} s` : "--";
-}
-
-
-function formatRuntimeValue(runtime) {
-  if (isRecord(runtime)) {
-    const name = runtime.backend || runtime.source || runtime.name;
-    if (!name) {
-      return "--";
-    }
-    if (runtime.connected === null || runtime.connected === undefined) {
-      return String(name);
-    }
-    return `${name} / ${runtime.connected ? "connected" : "offline"}`;
-  }
-  return valueOrDash(runtime);
-}
-
-
-function formatKinematics(kinematics) {
-  if (!isRecord(kinematics) || !Object.keys(kinematics).length) {
-    return "--";
-  }
-  const orientation = isRecord(kinematics.orientation)
-    ? kinematics.orientation
-    : {};
-  const velocity = isRecord(kinematics.linear_velocity)
-    ? kinematics.linear_velocity
-    : {};
-  return [
-    `6-DOF: ${valueOrDash(kinematics.source)}`,
-    `roll ${formatNumber(orientation.roll)} rad`,
-    `pitch ${formatNumber(orientation.pitch)} rad`,
-    `yaw ${formatNumber(orientation.yaw)} rad`,
-    `v ${formatVector(velocity)}`,
-  ].join(" | ");
-}
-
-
-function historyActions(entry) {
-  const decision = isRecord(entry?.decision) ? entry.decision : {};
-  const hasDecision = Object.keys(decision).length > 0;
-  const proposed = decision.proposed_action || decision.action;
-  const executed = entry?.action ?? decision.action;
-  const overrode = Boolean(
-    decision.safety_intervened
-      || decision.safety_intervention
-      || (proposed && executed && proposed !== executed),
-  );
-  return {
-    hasDecision,
-    proposed: valueOrDash(proposed),
-    executed: valueOrDash(executed),
-    overrode,
-    label: proposed && executed && proposed !== executed
-      ? `${proposed} -> ${executed}`
-      : valueOrDash(executed || proposed),
-  };
-}
-
-
 function getHistoryEntries() {
   return Array.isArray(state?.history) ? state.history : [];
-}
-
-
-function activateHistoryEntry(entry) {
-  if (!entry || entry.step === null || entry.step === undefined) {
-    return;
-  }
-  selectedHistoryStep = entry.step;
-  showHistoryView(false);
-  renderHistory();
-}
-
-
-function appendTableCell(row, value) {
-  const cell = document.createElement("td");
-  cell.textContent = valueOrDash(value);
-  row.appendChild(cell);
 }
 
 
@@ -1673,45 +1350,6 @@ function updateCommandButton(button, label, iconName) {
 function createLucideIcons() {
   if (window.lucide?.createIcons) {
     window.lucide.createIcons();
-  }
-}
-
-
-function renderInspectorToggle() {
-  if (!inspectorToggleBtn) {
-    return;
-  }
-  const label = inspectorExpanded
-    ? "Collapse decision inspector"
-    : "Expand decision inspector";
-  inspectorToggleBtn.setAttribute("aria-label", label);
-  inspectorToggleBtn.setAttribute("title", label);
-  const icon = inspectorToggleBtn.querySelector("[data-lucide]");
-  const iconName = inspectorExpanded
-    ? "panel-right-close"
-    : "panel-right-open";
-  const iconChanged = Boolean(
-    icon && icon.getAttribute("data-lucide") !== iconName,
-  );
-  icon?.setAttribute("data-lucide", iconName);
-  if (iconChanged) {
-    createLucideIcons();
-  }
-}
-
-
-function renderHistoryNavigation() {
-  if (!historyViewBtn) {
-    return;
-  }
-  const showingSelectedTrace = selectedHistoryStep !== null && !historyMode;
-  const iconChanged = updateCommandButton(
-    historyViewBtn,
-    showingSelectedTrace ? "Current" : "History",
-    showingSelectedTrace ? "arrow-left" : "history",
-  );
-  if (iconChanged) {
-    createLucideIcons();
   }
 }
 
@@ -1864,43 +1502,8 @@ closeSettingsBtn?.addEventListener("click", () => {
     settingsDialog?.removeAttribute("open");
   }
 });
-inspectorToggleBtn?.addEventListener("click", toggleInspectorWidth);
-historyViewBtn?.addEventListener("click", () => {
-  if (selectedHistoryStep !== null && !historyMode) {
-    selectedHistoryStep = null;
-    showHistoryView(false);
-    renderHistory();
-    return;
-  }
-  showHistoryView(true);
-});
-historyBackBtn?.addEventListener("click", () => {
-  selectedHistoryStep = null;
-  showHistoryView(false);
-  renderHistory();
-});
-trajectoryBtn?.addEventListener("click", () => {
-  trajectoryVisible = !trajectoryVisible;
-  if (pathLine) {
-    pathLine.visible = trajectoryVisible;
-  }
-  trajectoryBtn.classList.toggle("active", trajectoryVisible);
-  trajectoryBtn.setAttribute("aria-pressed", String(trajectoryVisible));
-  trajectoryBtn.setAttribute(
-    "aria-label",
-    trajectoryVisible ? "Hide trajectory" : "Show trajectory",
-  );
-  trajectoryBtn.setAttribute(
-    "title",
-    trajectoryVisible ? "Hide trajectory" : "Show trajectory",
-  );
-});
 window.addEventListener("resize", onResize);
 
-renderInspectorToggle();
-trajectoryBtn?.classList.toggle("active", trajectoryVisible);
-trajectoryBtn?.setAttribute("aria-pressed", String(trajectoryVisible));
-showHistoryView(false);
 createLucideIcons();
 renderToolbarState();
 renderer.setAnimationLoop(animate);

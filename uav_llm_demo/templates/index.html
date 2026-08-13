@@ -97,9 +97,6 @@
         <button id="followBtn" type="button" class="icon-button" aria-label="Follow UAV" title="Follow UAV">
           <i data-lucide="crosshair" aria-hidden="true"></i>
         </button>
-        <button id="trajectoryBtn" type="button" class="icon-button active" aria-label="Toggle trajectory" title="Toggle trajectory" aria-pressed="true">
-          <i data-lucide="route" aria-hidden="true"></i>
-        </button>
       </div>
 
       <div id="sceneExecutionStatus" class="scene-execution-status" role="status" aria-live="polite">
@@ -118,16 +115,13 @@
       <header class="inspector-header">
         <span id="currentStepValue" class="step-index">#0</span>
         <div class="inspector-title">
-          <h1>Decision Trace</h1>
+          <h1>Agent Trace</h1>
           <p>
             <span id="backendValue" class="backend-value">--</span>
             <span aria-hidden="true">/</span>
             <span id="phaseValue">--</span>
           </p>
         </div>
-        <button id="inspectorToggleBtn" type="button" class="icon-button" aria-label="Expand decision inspector" title="Expand decision inspector">
-          <i data-lucide="panel-right-open" aria-hidden="true"></i>
-        </button>
       </header>
 
       <div id="operationBanner" class="operation-banner" role="status" aria-live="polite">
@@ -143,32 +137,28 @@
           </header>
           <dl class="trace-grid">
             <div>
-              <dt>Goal direction</dt>
+              <dt>Goal</dt>
               <dd id="goalDirectionValue">--</dd>
             </div>
             <div>
-              <dt>Goal distance</dt>
+              <dt>Distance</dt>
               <dd id="goalDistanceValue">--</dd>
             </div>
             <div>
-              <dt>Static risk</dt>
+              <dt>Static obstacle</dt>
               <dd id="staticRiskValue">--</dd>
             </div>
             <div>
-              <dt>Dynamic risk</dt>
+              <dt>Dynamic traffic</dt>
               <dd id="dynamicRiskValue">--</dd>
             </div>
           </dl>
-          <details class="trace-disclosure">
-            <summary>Full observation</summary>
-            <p id="observationText">Waiting for state...</p>
-          </details>
         </section>
 
         <section class="trace-stage" data-stage="agent" data-status="waiting">
           <header class="stage-header">
             <span class="stage-index">02</span>
-            <h2>Agent Proposal</h2>
+            <h2>Reasoning &amp; Decision</h2>
             <span class="stage-status">Waiting</span>
           </header>
           <dl class="trace-grid">
@@ -177,121 +167,54 @@
               <dd id="agentActionValue">--</dd>
             </div>
             <div>
-              <dt>Waypoint</dt>
-              <dd id="agentWaypointValue">--</dd>
-            </div>
-            <div>
               <dt>Risk</dt>
               <dd id="agentRiskValue">--</dd>
             </div>
-            <div>
-              <dt>Skill</dt>
-              <dd id="agentSkillValue">--</dd>
-            </div>
           </dl>
           <div class="trace-detail">
-            <span>Decision note</span>
+            <span>Reasoning</span>
             <p id="agentReasonValue">--</p>
           </div>
-          <details class="trace-disclosure trace-json">
-            <summary>Decision JSON</summary>
-            <pre id="decisionJson">{}</pre>
-          </details>
-        </section>
-
-        <section class="trace-stage" data-stage="guard" data-status="waiting">
-          <header class="stage-header">
-            <span class="stage-index">03</span>
-            <h2>Safety Guard</h2>
-            <span id="guardStatus" class="stage-status">Waiting</span>
-          </header>
-          <dl class="trace-grid">
-            <div>
-              <dt>Proposed</dt>
-              <dd id="proposedActionValue">--</dd>
+          <div class="decision-guard" data-status="waiting">
+            <div class="guard-heading">
+              <span>Safety guard</span>
+              <strong id="guardStatus" class="guard-status">Waiting</strong>
             </div>
-            <div>
-              <dt>Executed</dt>
-              <dd id="executedActionValue">--</dd>
-            </div>
-          </dl>
-          <div class="trace-detail">
-            <span>Guard result</span>
-            <p id="guardReasonValue">--</p>
+            <dl class="trace-grid">
+              <div>
+                <dt>Proposed</dt>
+                <dd id="proposedActionValue">--</dd>
+              </div>
+              <div>
+                <dt>Executed</dt>
+                <dd id="executedActionValue">--</dd>
+              </div>
+            </dl>
           </div>
         </section>
 
         <section class="trace-stage" data-stage="execution" data-status="waiting">
           <header class="stage-header">
-            <span class="stage-index">04</span>
-            <h2>Execution</h2>
+            <span class="stage-index">03</span>
+            <h2>Result</h2>
             <span class="stage-status">Waiting</span>
           </header>
           <dl class="trace-grid">
             <div>
+              <dt>Action</dt>
+              <dd id="resultActionValue">--</dd>
+            </div>
+            <div>
               <dt>Position</dt>
               <dd id="executionPositionValue">--</dd>
             </div>
-            <div>
-              <dt>Runtime</dt>
-              <dd id="executionRuntimeValue">--</dd>
-            </div>
-            <div>
-              <dt>Duration</dt>
-              <dd id="executionDurationValue">--</dd>
-            </div>
-            <div>
-              <dt>Battery</dt>
-              <dd id="executionBatteryValue">--</dd>
-            </div>
           </dl>
           <div class="trace-detail">
-            <span>Result</span>
+            <span>Feedback</span>
             <p id="feedbackText">--</p>
           </div>
-          <p id="kinematicsValue" class="kinematics-value">6-DOF telemetry: --</p>
         </section>
       </div>
-
-      <div id="historyView" class="inspector-view is-hidden">
-        <header class="view-header">
-          <button id="historyBackBtn" type="button" class="icon-button" aria-label="Back to current trace" title="Back to current trace">
-            <i data-lucide="arrow-left" aria-hidden="true"></i>
-          </button>
-          <h2>Decision History</h2>
-        </header>
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th scope="col">Step</th>
-              <th scope="col">Proposed</th>
-              <th scope="col">Executed</th>
-              <th scope="col">Guard</th>
-              <th scope="col">Result</th>
-            </tr>
-          </thead>
-          <tbody id="historyTableBody"></tbody>
-        </table>
-        <p id="historyEmpty" class="history-empty">No completed steps.</p>
-      </div>
-
-      <footer class="recent-history">
-        <header class="history-heading">
-          <div>
-            <span id="missionBadge" class="mission-badge">Loading</span>
-            <h2>Recent Decisions</h2>
-          </div>
-          <span id="stepCount">0 steps</span>
-        </header>
-        <div id="historyList" class="history-list"></div>
-        <div class="history-summary">
-          <span id="metricsValue" class="metrics-value">Evaluation: --</span>
-          <button id="historyViewBtn" type="button" class="command-button secondary">
-            <i data-lucide="history" aria-hidden="true"></i>
-            <span>History</span>
-          </button>
-        </div>
-      </footer>
     </aside>
 
     <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
