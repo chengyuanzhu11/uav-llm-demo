@@ -1,0 +1,644 @@
+:root {
+  color-scheme: dark;
+  --panel: rgba(13, 21, 24, 0.88);
+  --panel-soft: rgba(18, 29, 32, 0.78);
+  --line: rgba(193, 224, 219, 0.18);
+  --ink: #f5f7f4;
+  --muted: #9fb0ad;
+  --cyan: #45d5d2;
+  --cyan-dark: #159b9b;
+  --amber: #f2b84b;
+  --red: #ff6b57;
+  --green: #62d57b;
+  font-family: Inter, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: #9ec2d3;
+  color: var(--ink);
+}
+
+button {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: var(--cyan-dark);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 0 15px;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+
+button:hover {
+  background: #1ab4b1;
+  border-color: rgba(255, 255, 255, 0.32);
+}
+
+button:disabled {
+  background: #546360;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+input,
+select {
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.72rem;
+  min-height: 32px;
+  padding: 0 8px;
+  width: 100%;
+}
+
+select option {
+  background: #152124;
+}
+
+.simulator,
+.scene-container {
+  height: 100%;
+  position: relative;
+  width: 100%;
+}
+
+.scene-container {
+  inset: 0;
+  position: absolute;
+}
+
+.scene-container canvas {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+
+.command-bar {
+  align-items: center;
+  background: linear-gradient(180deg, rgba(7, 14, 17, 0.84), rgba(7, 14, 17, 0));
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+  left: 0;
+  padding: 18px 22px 44px;
+  pointer-events: none;
+  position: absolute;
+  right: min(390px, 34vw);
+  top: 0;
+  z-index: 4;
+}
+
+.brand-block,
+.controls {
+  pointer-events: auto;
+}
+
+.brand-block {
+  align-items: center;
+  display: flex;
+  gap: 11px;
+}
+
+.live-dot {
+  background: var(--green);
+  border: 4px solid rgba(98, 213, 123, 0.18);
+  border-radius: 50%;
+  box-shadow: 0 0 18px rgba(98, 213, 123, 0.72);
+  height: 14px;
+  width: 14px;
+}
+
+.brand-block p,
+.brand-block h1 {
+  margin: 0;
+}
+
+.brand-block p {
+  color: var(--cyan);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.brand-block h1 {
+  font-size: 1.3rem;
+  line-height: 1.25;
+}
+
+.controls {
+  display: flex;
+  gap: 8px;
+}
+
+.flight-hud {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: repeat(5, minmax(92px, auto));
+  left: 22px;
+  position: absolute;
+  top: 92px;
+  z-index: 4;
+}
+
+.hud-item {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  min-height: 59px;
+  padding: 10px 12px;
+}
+
+.hud-item:first-child {
+  border-radius: 7px 0 0 7px;
+}
+
+.hud-item:last-child {
+  border-radius: 0 7px 7px 0;
+}
+
+.hud-item span {
+  color: var(--muted);
+  display: block;
+  font-size: 0.66rem;
+  margin-bottom: 5px;
+}
+
+.hud-item strong {
+  display: block;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  max-width: 145px;
+  overflow-wrap: anywhere;
+}
+
+.hud-item.threat strong {
+  color: var(--green);
+}
+
+.camera-controls {
+  bottom: 54px;
+  display: flex;
+  gap: 1px;
+  left: 22px;
+  position: absolute;
+  z-index: 4;
+}
+
+.view-button {
+  background: var(--panel);
+  border-radius: 0;
+  color: var(--muted);
+}
+
+.view-button:first-child {
+  border-radius: 7px 0 0 7px;
+}
+
+.view-button:last-child {
+  border-radius: 0 7px 7px 0;
+}
+
+.view-button.active {
+  background: var(--cyan-dark);
+  color: #fff;
+}
+
+.agent-console {
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+  bottom: 0;
+  overflow-y: auto;
+  padding: 20px;
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: min(390px, 34vw);
+  z-index: 5;
+}
+
+.console-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.console-header h2 {
+  font-size: 1rem;
+  margin: 7px 0 0;
+}
+
+.mission-badge {
+  color: var(--green);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.backend-value {
+  color: var(--cyan);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  max-width: 155px;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.runtime-control {
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  padding: 13px 0;
+}
+
+.runtime-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+
+.runtime-heading h3,
+.runtime-heading span {
+  font-size: 0.67rem;
+  margin: 0;
+}
+
+.runtime-heading h3 {
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.runtime-selector {
+  display: grid;
+  gap: 1px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.runtime-option {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 0;
+  color: var(--muted);
+  min-height: 38px;
+  padding: 0 8px;
+  white-space: normal;
+}
+
+.runtime-option:first-child {
+  border-radius: 6px 0 0 6px;
+}
+
+.runtime-option:last-child {
+  border-radius: 0 6px 6px 0;
+}
+
+.runtime-option[aria-checked="true"] {
+  background: var(--cyan-dark);
+  color: #fff;
+}
+
+.runtime-pending .runtime-option[aria-checked="true"] {
+  background: #546360;
+}
+
+.is-hidden {
+  display: none !important;
+}
+
+.simulator-panel {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2px;
+  padding: 13px 0;
+}
+
+.scenario-control {
+  border-bottom: 1px solid var(--line);
+  padding: 13px 0;
+}
+
+.scenario-control label {
+  color: var(--muted);
+  display: block;
+  font-size: 0.67rem;
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.metrics-value {
+  color: #b9e8df;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.66rem;
+  line-height: 1.4;
+  margin: 9px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.simulator-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.simulator-heading h3 {
+  color: var(--muted);
+  font-size: 0.67rem;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.simulator-heading span {
+  font-size: 0.67rem;
+}
+
+.simulator-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.simulator-grid label,
+.wind-row label {
+  color: var(--muted);
+  font-size: 0.64rem;
+}
+
+.simulator-grid label {
+  display: grid;
+  gap: 4px;
+}
+
+.simulator-command {
+  margin-top: 9px;
+  width: 100%;
+}
+
+.wind-row {
+  align-items: end;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  margin-top: 9px;
+}
+
+.wind-row label {
+  display: grid;
+  gap: 4px;
+}
+
+.wind-row button {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+.kinematics-value {
+  color: #b9e8df;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.66rem;
+  line-height: 1.4;
+  margin: 10px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.trace-block {
+  border-top: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.trace-block h3,
+.history-heading h3 {
+  color: var(--muted);
+  font-size: 0.67rem;
+  margin: 0 0 9px;
+  text-transform: uppercase;
+}
+
+.trace-block p,
+.trace-block pre {
+  color: #d8e1de;
+  font-family: inherit;
+  font-size: 0.78rem;
+  line-height: 1.48;
+  margin: 0;
+  max-height: 152px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.history-item code.intervened {
+  color: var(--amber);
+}
+
+.trace-block pre {
+  color: #b9e8df;
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+
+.trace-block.feedback p {
+  color: #ffd58a;
+}
+
+.history-heading {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  padding-top: 15px;
+}
+
+.history-heading span {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.history-item {
+  border-bottom: 1px solid var(--line);
+  padding: 11px 0;
+}
+
+.history-item header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.history-item strong {
+  color: var(--cyan);
+  font-size: 0.73rem;
+}
+
+.history-item code {
+  color: var(--amber);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.71rem;
+}
+
+.history-item p {
+  color: var(--muted);
+  font-size: 0.73rem;
+  line-height: 1.4;
+  margin: 0 0 5px;
+}
+
+.empty-log {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.scene-legend {
+  align-items: center;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  bottom: 14px;
+  display: flex;
+  gap: 16px;
+  left: 22px;
+  padding: 8px 10px;
+  position: absolute;
+  z-index: 4;
+}
+
+.scene-legend span {
+  align-items: center;
+  color: #d5dfdc;
+  display: flex;
+  font-size: 0.67rem;
+  gap: 6px;
+}
+
+.scene-legend i {
+  border-radius: 50%;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.legend-uav {
+  background: var(--cyan);
+}
+
+.legend-bird {
+  background: var(--red);
+}
+
+.legend-target {
+  background: var(--amber);
+}
+
+.legend-base {
+  background: var(--green);
+}
+
+@media (max-width: 980px) {
+  .command-bar {
+    right: 0;
+  }
+
+  .agent-console {
+    bottom: 0;
+    height: 39vh;
+    left: 0;
+    top: auto;
+    width: 100%;
+  }
+
+  .scene-container {
+    bottom: 34vh;
+    height: 66vh;
+  }
+
+  .flight-hud {
+    grid-template-columns: repeat(3, minmax(86px, auto));
+    top: 82px;
+  }
+
+  .hud-item:first-child,
+  .hud-item:last-child {
+    border-radius: 0;
+  }
+
+  .scene-legend,
+  .camera-controls {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .command-bar {
+    align-items: flex-start;
+    padding: 12px 12px 34px;
+  }
+
+  .brand-block h1 {
+    font-size: 1rem;
+  }
+
+  .brand-block p {
+    display: none;
+  }
+
+  .controls {
+    gap: 4px;
+  }
+
+  button {
+    min-height: 34px;
+    padding: 0 9px;
+  }
+
+  .flight-hud {
+    display: none;
+  }
+
+  .agent-console {
+    height: 44vh;
+    padding: 15px;
+  }
+
+  .scene-container {
+    bottom: 40vh;
+    height: 60vh;
+  }
+
+  .runtime-option {
+    font-size: 0.72rem;
+    min-height: 40px;
+  }
+
+  .simulator-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wind-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .wind-row button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}

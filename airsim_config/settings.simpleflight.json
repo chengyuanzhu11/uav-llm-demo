@@ -1,0 +1,26 @@
+{
+  "SettingsVersion": 2.0,
+  "SimMode": "Multirotor",
+  "PhysicsEngineName": "FastPhysicsEngine",
+  "LocalHostIp": "127.0.0.1",
+  "ApiServerPort": 41451,
+  "RpcEnabled": true,
+  "ViewMode": "FlyWithMe",
+  "LogMessagesVisible": true,
+  "InitialInstanceSegmentation": false,
+  "ClockSpeed": 1.0,
+  "Wind": {
+    "X": 0.0,
+    "Y": 0.0,
+    "Z": 0.0
+  },
+  "Vehicles": {
+    "Drone1": {
+      "VehicleType": "SimpleFlight",
+      "DefaultVehicleState": "Armed",
+      "EnableCollisionPassthrogh": false,
+      "EnableCollisions": true,
+      "AllowAPIAlways": true
+    }
+  }
+}

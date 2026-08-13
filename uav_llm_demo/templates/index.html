@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UAV LLM 3D 决策仿真</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "{{ url_for('static', filename='vendor/three.module.js') }}",
+      "three/addons/": "{{ url_for('static', filename='vendor/') }}"
+    }
+  }
+  </script>
+</head>
+<body>
+  <main class="simulator">
+    <div id="sceneContainer" class="scene-container" aria-label="3D UAV simulation"></div>
+
+    <header class="command-bar">
+      <div class="brand-block">
+        <span class="live-dot" aria-hidden="true"></span>
+        <div>
+          <p>UAV / LLM AGENT</p>
+          <h1>三维自主飞行仿真</h1>
+        </div>
+      </div>
+
+      <div class="controls" aria-label="Simulation controls">
+        <button id="stepBtn" type="button">单步</button>
+        <button id="autoBtn" type="button">自动运行</button>
+        <button id="resetBtn" type="button" class="secondary">重置</button>
+      </div>
+    </header>
+
+    <section class="flight-hud" aria-label="Flight telemetry">
+      <div class="hud-item">
+        <span>坐标</span>
+        <strong id="positionValue">--</strong>
+      </div>
+      <div class="hud-item">
+        <span>高度</span>
+        <strong id="altitudeValue">--</strong>
+      </div>
+      <div class="hud-item">
+        <span>电量</span>
+        <strong id="batteryValue">--</strong>
+      </div>
+      <div class="hud-item">
+        <span>阶段</span>
+        <strong id="phaseValue">--</strong>
+      </div>
+      <div class="hud-item threat">
+        <span>动态威胁</span>
+        <strong id="threatValue">--</strong>
+      </div>
+    </section>
+
+    <section class="camera-controls" aria-label="Camera controls">
+      <button id="overviewBtn" type="button" class="view-button active">全局</button>
+      <button id="followBtn" type="button" class="view-button">跟随</button>
+    </section>
+
+    <aside class="agent-console" aria-label="Agent decision console">
+      <div class="console-header">
+        <div>
+          <span id="missionBadge" class="mission-badge">Loading</span>
+          <h2>Agent 决策链</h2>
+        </div>
+        <span id="backendValue" class="backend-value">--</span>
+      </div>
+
+      <section class="runtime-control" aria-label="Simulation runtime">
+        <div class="runtime-heading">
+          <h3>Runtime</h3>
+          <span id="runtimeStatus">html / connected</span>
+        </div>
+        <div class="runtime-selector" role="radiogroup" aria-label="Simulation runtime">
+          <button type="button" class="runtime-option" data-runtime="html" role="radio" aria-checked="true">
+            HTML Simulation
+          </button>
+          <button type="button" class="runtime-option" data-runtime="airsim" role="radio" aria-checked="false">
+            AirSim Validation
+          </button>
+        </div>
+      </section>
+
+      <section class="scenario-control" aria-label="Scenario selection">
+        <label for="scenarioSelect">Scenario</label>
+        <select id="scenarioSelect">
+          <option value="urban_crossing">Urban Crossing</option>
+        </select>
+        <p id="metricsValue" class="metrics-value">Evaluation: --</p>
+      </section>
+
+      <section id="airsimPanel" class="simulator-panel is-hidden" aria-label="AirSim connection and wind">
+        <div class="simulator-heading">
+          <h3>AirSim Settings</h3>
+          <span>Cosys-AirSim 3.3</span>
+        </div>
+        <div class="simulator-grid">
+          <label>
+            Vehicle
+            <input id="vehicleName" value="Drone1">
+          </label>
+          <label>
+            Host
+            <input id="airsimHost" value="127.0.0.1">
+          </label>
+          <label>
+            Port
+            <input id="airsimPort" type="number" min="1" max="65535" value="41451">
+          </label>
+        </div>
+        <button id="reconnectAirSimBtn" type="button" class="secondary simulator-command">
+          Reconnect and Reset
+        </button>
+        <div class="wind-row">
+          <label>N <input id="windNorth" type="number" step="0.5" value="0"></label>
+          <label>E <input id="windEast" type="number" step="0.5" value="0"></label>
+          <label>D <input id="windDown" type="number" step="0.5" value="0"></label>
+          <button id="applyWindBtn" type="button" title="Apply NED wind vector">Wind</button>
+        </div>
+        <p id="kinematicsValue" class="kinematics-value">6-DOF telemetry: --</p>
+      </section>
+
+      <div class="trace-block">
+        <h3>Observation</h3>
+        <p id="observationText">Waiting for state...</p>
+      </div>
+
+      <div class="trace-block">
+        <h3>Decision JSON</h3>
+        <pre id="decisionJson">{}</pre>
+      </div>
+
+      <div class="trace-block feedback">
+        <h3>Executor Feedback</h3>
+        <p id="feedbackText">--</p>
+      </div>
+
+      <div class="history-heading">
+        <h3>Recent Decisions</h3>
+        <span id="stepCount">0 steps</span>
+      </div>
+      <div id="historyList" class="history-list"></div>
+    </aside>
+
+    <div class="scene-legend" aria-label="Scene legend">
+      <span><i class="legend-uav"></i>UAV</span>
+      <span><i class="legend-bird"></i>动态飞行物</span>
+      <span><i class="legend-target"></i>目标</span>
+      <span><i class="legend-base"></i>基地</span>
+    </div>
+  </main>
+
+  <script type="module" src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

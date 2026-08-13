@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv-airsim/
+.flask.pid
+venv/
+*.log
+artifacts/
+.idea/
+.superpowers/

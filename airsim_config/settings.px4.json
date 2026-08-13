@@ -1,0 +1,50 @@
+{
+  "SettingsVersion": 1.2,
+  "SimMode": "Multirotor",
+  "PhysicsEngineName": "FastPhysicsEngine",
+  "ClockType": "SteppableClock",
+  "ClockSpeed": 1.0,
+  "Wind": {
+    "X": 0.0,
+    "Y": 0.0,
+    "Z": 0.0
+  },
+  "Vehicles": {
+    "Drone1": {
+      "VehicleType": "PX4Multirotor",
+      "UseSerial": false,
+      "UseTcp": true,
+      "LockStep": true,
+      "TcpPort": 4560,
+      "ControlPortLocal": 14540,
+      "ControlPortRemote": 14580,
+      "LocalHostIp": "127.0.0.1",
+      "AllowAPIAlways": true,
+      "Sensors": {
+        "Barometer": {
+          "SensorType": 1,
+          "Enabled": true
+        },
+        "Imu": {
+          "SensorType": 2,
+          "Enabled": true
+        },
+        "Gps": {
+          "SensorType": 3,
+          "Enabled": true
+        },
+        "Magnetometer": {
+          "SensorType": 4,
+          "Enabled": true
+        }
+      },
+      "Parameters": {
+        "NAV_RCL_ACT": 0,
+        "NAV_DLL_ACT": 0,
+        "COM_OBL_ACT": 1,
+        "LPE_LAT": 47.641468,
+        "LPE_LON": -122.140165
+      }
+    }
+  }
+}
