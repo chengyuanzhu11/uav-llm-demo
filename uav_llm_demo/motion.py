@@ -70,9 +70,11 @@ class WaypointManager:
 
 
 class TrajectoryController:
-    def __init__(self, max_speed=4.0, max_acceleration=2.0):
+    def __init__(self, max_speed=4.0, max_acceleration=2.0, max_climb_speed=2.0, max_descent_speed=1.0):
         self.max_speed = max_speed
         self.max_acceleration = max_acceleration
+        self.max_climb_speed = max_climb_speed
+        self.max_descent_speed = max_descent_speed
 
     def velocity_command(self, state, target, dt):
         if not isfinite(dt) or not 0 < dt <= 0.2:
@@ -85,6 +87,9 @@ class TrajectoryController:
                 braking_acceleration = self.max_acceleration * 0.5
                 speed = min(self.max_speed, sqrt(2 * braking_acceleration * length), length * 1.4)
                 desired = tuple(v * speed / length for v in delta)
+                vertical_limit = self.max_climb_speed if desired[2] >= 0 else self.max_descent_speed
+                factor = min(1.0, vertical_limit / max(abs(desired[2]), 1e-12))
+                desired = tuple(v * factor for v in desired)
         change = tuple(desired[i] - state.velocity[i] for i in range(3))
         factor = min(1.0, self.max_acceleration * dt / max(norm(change), 1e-12))
         return tuple(state.velocity[i] + change[i] * factor for i in range(3))

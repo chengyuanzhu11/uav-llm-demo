@@ -90,6 +90,9 @@ class RouteReconnectionTest(unittest.TestCase):
         service.replanning.accepted(service._context(), 0)
 
         class DepartingTraffic:
+            def focus_route(self, start, waypoints):
+                return 0
+
             def sync(self, environment):
                 bird = environment.dynamic_objects[0]
                 bird.position = (14, 10 + max(0, service._time - 8), 2)

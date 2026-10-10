@@ -14,6 +14,38 @@ from uav_llm_demo.traffic_motion import ContinuousTraffic, sample_motion
 
 
 class TrafficMotionTests(unittest.TestCase):
+    def test_route_patrols_follow_height_and_do_not_teleport_on_replan(self):
+        from uav_llm_demo.agents import MockLLMAgent
+        from copy import deepcopy
+        scenario = DEFAULT_SCENARIO
+        now = [0.0]
+        traffic = ContinuousTraffic(scenario, seed=9, clock=lambda: now[0])
+        self.assertEqual(len(traffic.models), 8)
+        self.assertEqual(len(traffic.patrols), 4)
+        self.assertTrue(any(lane[0][2] > 2.4 for lane in traffic.patrols.values()))
+        context = scenario.to_dict()
+        context.update(position=context['base'], goal=context['target'])
+        route = MockLLMAgent().plan(context).waypoints
+        before = deepcopy(traffic.models)
+        self.assertGreater(traffic.focus_route(scenario.base, route), 0)
+        self.assertEqual(traffic.models, before)
+        environment = UAVEnvironment(scenario)
+        for elapsed in range(0, 80, 2):
+            now[0] = elapsed
+            traffic.sync(environment)
+            for object_id in traffic.patrols:
+                segments = traffic.models[object_id]['segments']
+                for left, right in zip(segments, segments[1:]):
+                    end = left['start'] + left['duration']
+                    self.assertAlmostEqual(end, right['start'])
+                    a = sample_motion({'segments':[left]}, end)
+                    b = sample_motion({'segments':[right]}, right['start'])
+                    self.assertLess(metric_distance(a[0], b[0]), 1e-8)
+                    self.assertLess(math.dist(a[1], b[1]), 1e-8)
+                for segment in segments:
+                    self.assertTrue(traffic.checkers[object_id].segment_safe(
+                        segment['controls'][0], segment['controls'][-1]))
+
     def test_idle_ticks_move_birds_but_reads_do_not_advance_world(self):
         service = MissionService(target_seed=12, traffic_seed=12)
         self.addCleanup(service.close)
@@ -55,8 +87,9 @@ class TrafficMotionTests(unittest.TestCase):
                 self.assertLessEqual(bird.position[0], DEFAULT_SCENARIO.grid_size - 2.0)
                 self.assertGreaterEqual(bird.position[1], 1.0)
                 self.assertLessEqual(bird.position[1], DEFAULT_SCENARIO.grid_size - 2.0)
-                self.assertGreaterEqual(bird.position[2], 1.6)
-                self.assertLessEqual(bird.position[2], 2.4)
+                checker = traffic.checkers[bird.object_id]
+                self.assertGreaterEqual(bird.position[2], checker.lower[2])
+                self.assertLessEqual(bird.position[2], checker.upper[2])
                 self.assertFalse(traffic.checkers[bird.object_id].validate_waypoint(bird.position))
 
     def test_seeded_long_routes_clear_buildings_and_join_continuously(self):
@@ -99,15 +132,20 @@ class TrafficMotionTests(unittest.TestCase):
         scenario = replace(DEFAULT_SCENARIO, buildings=(), urban_parcels=())
         traffic = ContinuousTraffic(scenario, seed=3)
         for bird in scenario.dynamic_objects:
+            if bird.object_id not in traffic.graphs:
+                continue
             for terminal in (scenario.base, scenario.target):
-                self.assertFalse(traffic.checkers[bird.object_id].validate_waypoint(terminal))
-                self.assertIn(terminal, traffic.graphs[bird.object_id])
+                overhead = (*terminal[:2], 2.0)
+                self.assertFalse(traffic.checkers[bird.object_id].validate_waypoint(overhead))
+                self.assertIn(overhead, traffic.graphs[bird.object_id])
 
-    def test_target_changes_do_not_modify_bird_routes(self):
+    def test_target_changes_only_modify_route_aware_birds(self):
         first = ContinuousTraffic(DEFAULT_SCENARIO, seed=8, clock=lambda: 0)
         second = ContinuousTraffic(replace(DEFAULT_SCENARIO, target=(8, 10, 2)), seed=8, clock=lambda: 0)
-        self.assertEqual(first.models, second.models)
-        self.assertEqual(first.graphs, second.graphs)
+        ambient = [bird.object_id for bird in DEFAULT_SCENARIO.dynamic_objects if bird.kind == "bird"]
+        self.assertEqual({key:first.models[key] for key in ambient}, {key:second.models[key] for key in ambient})
+        self.assertEqual({key:first.graphs[key] for key in ambient}, {key:second.graphs[key] for key in ambient})
+        self.assertNotEqual(first.patrols, second.patrols)
 
     def test_isolated_safe_bird_waits_without_crossing_restricted_region(self):
         zone = dict(min=dict(x=2, y=0, z=0), max=dict(x=4, y=4, z=5))

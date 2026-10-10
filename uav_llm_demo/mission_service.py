@@ -103,7 +103,9 @@ class MissionService:
                                       timeout_seconds=getattr(self.agent, "timeout_seconds", None),
                                       temperature=0.1 if self.agent.backend_name == "deepseek" else None),
                          control_dt=self.CONTROL_DT, max_speed_mps=self.controller.max_speed,
-                         max_acceleration_mps2=self.controller.max_acceleration)
+                         max_acceleration_mps2=self.controller.max_acceleration,
+                         max_climb_speed_mps=self.controller.max_climb_speed,
+                         max_descent_speed_mps=self.controller.max_descent_speed)
 
     def _milestones(self):
         return self.evidence.snapshot(dynamic_events=self._evaluation.dynamic_event_count,
@@ -113,7 +115,10 @@ class MissionService:
         context = scenario.to_dict()
         context["position"] = point_to_dict(scenario.base)
         checker = SafetyChecker(context)
-        height = scenario.target[2]
+        heights = ([scenario.target[2]] if scenario.preferred_altitude else
+                   list(range(math.ceil(scenario.min_altitude), math.floor(min(scenario.max_altitude, 6)) + 1)))
+        if not heights:
+            heights = [scenario.target[2]]
         minimum_distance = (self.MIN_URBAN_TARGET_HORIZONTAL_DISTANCE_M if scenario.urban_parcels
                             else self.MIN_TARGET_HORIZONTAL_DISTANCE_M)
         # Keep urban targets outside the initial district shown around the base.
@@ -122,6 +127,7 @@ class MissionService:
         candidates = [point
                       for x in range(1, scenario.grid_size - 1)
                       for y in range(1, scenario.grid_size - 1)
+                      for height in heights
                       if (point := (float(x), float(y), float(height))) != previous
                       and norm(tuple((point[i] - scenario.base[i]) * SCALE[i] for i in range(2)))
                           >= minimum_distance
@@ -136,7 +142,7 @@ class MissionService:
             except ValueError:
                 continue
             return replace(scenario, target=target)
-        raise ValueError("No safe reachable random target exists at the scenario target altitude.")
+        raise ValueError("No safe reachable random target exists within the scenario flight envelope.")
 
     def _sync_traffic(self):
         self._environment.realtime_traffic = self.runtime.backend_name == "html"
@@ -190,7 +196,10 @@ class MissionService:
                 agent_backend=self.agent.backend_name, agent_model=getattr(self.agent, "model", None),
                 deepseek_key_configured=bool(self._deepseek_config.get("api_key")),
                 runtime_backend=self.runtime.backend_name, runtime=runtime_status,
-                flight=dict(mode=mode, running=self._running, planning=self._plan_requested,
+                flight=dict(stage=("landed" if self._environment.position[2] * SCALE[2] <= 0.18 and speed <= 0.02
+                                   else "landing" if self._environment.phase == "returning_home" and self._environment.position[2] < self._environment.min_altitude
+                                   else "taking_off" if self._environment.position[2] < self._environment.min_altitude
+                                   else "cruise"), mode=mode, running=self._running, planning=self._plan_requested,
                             planner_calls=self._planner_calls, plan_id=self._plan_id,
                             waypoint_index=self.waypoints.index,
                             skipped_waypoints=self.waypoints.skipped,
@@ -202,7 +211,9 @@ class MissionService:
                             recovery=self.recovery.snapshot(),
                             retry_in_seconds=max(0.0, self._retry_at-self._time) if self._plan_requested else 0.0,
                             speed_mps=speed, max_speed_mps=self.controller.max_speed,
-                            max_acceleration_mps2=self.controller.max_acceleration),
+                            max_acceleration_mps2=self.controller.max_acceleration,
+                            max_climb_speed_mps=self.controller.max_climb_speed,
+                            max_descent_speed_mps=self.controller.max_descent_speed),
             )
             evaluation = self._evaluation.snapshot(final_status=self._environment.status,
                                                    trajectory=payload["path"], battery=self._environment.battery)
@@ -373,6 +384,10 @@ class MissionService:
         self._plan_id += 1
         self.recovery.accepted()
         self._record_plan(plan, feedback)
+        if self._environment.realtime_traffic:
+            assigned = self._traffic.focus_route(self._environment.position, plan.waypoints)
+            if assigned:
+                self.trace.event("traffic_route_focus", self._time, assigned=assigned, plan_id=self._plan_id)
         self._environment.last_feedback = (
             "Route validated; tracking waypoints." if self._running else "Route validated; paused.")
 

@@ -149,16 +149,16 @@ class BenchmarkProtocolTests(unittest.TestCase):
 
     def test_response_replay_and_seeded_runs_preserve_completion(self):
         base = load_scenario('open_field')
-        scenario = replace(base, target=(base.base[0]+1, base.base[1], base.base[2]), dynamic_objects=())
+        scenario = replace(base, target=(base.base[0]+1, base.base[1], base.min_altitude), dynamic_objects=())
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'journal.jsonl'
             writer = JournalWriter(path)
             try:
-                original = run_scenario('open_field', scenario=scenario, seed=7, max_seconds=30, journal=writer)
+                original = run_scenario('open_field', scenario=scenario, seed=7, max_seconds=90, journal=writer)
                 writer.flush()
                 header, agent = load_run(path, original['diagnostics']['run_id'])
                 replayed = run_scenario('open_field', scenario=scenario_from_record(header['scenario']),
-                                        agent=agent, seed=header['target_seed'], traffic_seed=header['traffic_seed'], max_seconds=30)
+                                        agent=agent, seed=header['target_seed'], traffic_seed=header['traffic_seed'], max_seconds=90)
                 self.assertEqual(original['status'], 'completed')
                 self.assertEqual(replayed['status'], 'completed')
                 self.assertTrue(replayed['milestones']['base_returned'])

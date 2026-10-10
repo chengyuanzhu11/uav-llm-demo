@@ -162,6 +162,9 @@ _URBAN_TRAFFIC = (
     DynamicObjectSpec("bird-1", "bird", (7.5, 15.5, 5.0), (0.7, -0.55, 0.0)),
     DynamicObjectSpec("bird-2", "bird", (16.5, 8.0, 6.5), (-0.6, 0.35, -0.08)),
     DynamicObjectSpec("bird-3", "bird", (4.0, 5.5, 4.0), (0.45, 0.65, 0.1)),
+    DynamicObjectSpec("bird-4", "bird", (29.5, 28.0, 2.0), (0.3, 0.2, 0.0)),
+    *(DynamicObjectSpec(f"route-bird-{index}", "route_bird", (29.5, 20.0, 3.0),
+                       (0.0, 0.0, 0.0), radius=0.45) for index in range(1, 5)),
 )
 
 
@@ -172,12 +175,11 @@ SCENARIOS = {
         grid_size=40,
         min_altitude=2,
         max_altitude=10,
-        base=(1, 18, 2),
-        target=(38, 2, 2),
+        base=(1, 18, 0),
+        target=(38, 2, 5),
         buildings=_parcel_buildings(_URBAN_PARCELS),
         dynamic_objects=_URBAN_TRAFFIC,
         seed=7,
-        preferred_altitude=(2.0, 2.4),
         urban_parcels=_URBAN_PARCELS,
         urban_street_centers=(9.5, 29.5),
     ),
@@ -187,7 +189,7 @@ SCENARIOS = {
         grid_size=20,
         min_altitude=2,
         max_altitude=10,
-        base=(1, 18, 2),
+        base=(1, 18, 0),
         target=(18, 2, 5),
         buildings=(),
         dynamic_objects=(
@@ -201,7 +203,7 @@ SCENARIOS = {
         grid_size=20,
         min_altitude=2,
         max_altitude=10,
-        base=(1, 18, 2),
+        base=(1, 18, 0),
         target=(18, 2, 2),
         buildings=_NARROW_BUILDINGS,
         dynamic_objects=(

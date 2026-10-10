@@ -19,7 +19,7 @@ class RandomTargetTest(unittest.TestCase):
         self.addCleanup(service.close)
         return service
 
-    def test_random_candidates_are_safe_reachable_and_keep_altitude(self):
+    def test_random_candidates_are_safe_reachable_with_valid_altitudes(self):
         service = self.service(target_seed=0)
         for item in list_scenarios():
             template = load_scenario(item["id"])
@@ -36,7 +36,10 @@ class RandomTargetTest(unittest.TestCase):
                     middle = (template.grid_size - 1) / 2
                     self.assertNotEqual(tuple(value < middle for value in target[:2]),
                                         tuple(value < middle for value in template.base[:2]))
-                self.assertEqual(target[2], template.target[2])
+                self.assertGreaterEqual(target[2], template.min_altitude)
+                self.assertLessEqual(target[2], template.max_altitude)
+                if template.preferred_altitude:
+                    self.assertEqual(target[2], template.target[2])
                 self.assertTrue(all(1 <= coordinate <= scenario.grid_size - 2 for coordinate in target[:2]))
                 context = scenario.to_dict()
                 context.update(position=point_to_dict(scenario.base), goal=point_to_dict(target))
@@ -44,6 +47,8 @@ class RandomTargetTest(unittest.TestCase):
                 route = checked_plan(MockLLMAgent(), context, "")
                 self.assertFalse(SafetyChecker(context).validate_path(scenario.base, route.waypoints))
             self.assertGreater(len(targets), 1)
+            if not template.preferred_altitude:
+                self.assertGreater(len({point[2] for point in targets}), 1)
 
     def test_same_seed_reproduces_target_sequence_without_repeating_on_reset(self):
         first = self.service(target_seed=7)

@@ -17,6 +17,9 @@ class StraightTraffic:
         self.models = {"incoming": dict(phase=0, segments=[dict(start=0, duration=30,
             controls=[tuple(start[i] + velocity[i] * t for i in range(3)) for t in (0, 10, 20, 30)])])}
 
+    def focus_route(self, start, waypoints):
+        return 0
+
     def sync(self, env):
         elapsed = self.clock() - self.started
         bird = env.dynamic_objects[0]

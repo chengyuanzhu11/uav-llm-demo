@@ -16,7 +16,7 @@ class PlanContractTest(unittest.TestCase):
         self.assertGreaterEqual(len(scenarios), 3)
         self.assertIn("urban_crossing", {item["id"] for item in scenarios})
         scenario = load_scenario("urban_crossing")
-        self.assertEqual(scenario.base, (1, 18, 2))
+        self.assertEqual(scenario.base, (1, 18, 0))
         self.assertGreater(len(scenario.buildings), 0)
         self.assertGreater(len(scenario.dynamic_objects), 0)
 

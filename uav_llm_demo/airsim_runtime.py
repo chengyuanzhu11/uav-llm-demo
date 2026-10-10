@@ -211,7 +211,8 @@ class AirSimRuntime:
                 self.api.Pose(self.api.Vector3r(*position), self.api.Quaternionr()),
                 True, vehicle_name=self.config.vehicle_name,
             )
-        self._ensure_airborne(target_grid)
+        if target_grid[2] > 0:
+            self._ensure_airborne(target_grid)
         self.last_telemetry = self._read_telemetry()
         return self.status()
 

@@ -181,6 +181,34 @@ class FrontendContractTest(unittest.TestCase):
         result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_star_reward_follows_milestone_once_and_resets(self):
+        self.run_frontend_functions(["updateGoalStar"], r"""
+          const object = () => ({position:{set(){}},rotation:{y:0},scale:{setScalar(){}},material:{opacity:1}});
+          const reward = () => ({star:object(),ring:object(),sparks:[object()],collected:false,age:null});
+          let goalStar = {userData:{reward:reward()},visible:true};
+          const goalReward = {hidden:true,textContent:''};
+          const state = {milestones:{target_reached:false}};
+          updateGoalStar(.05,0,true);
+          assert.equal(goalStar.visible,true); assert.equal(goalReward.hidden,true);
+          state.milestones.target_reached = true;
+          updateGoalStar(.05,1,true);
+          assert.equal(goalReward.hidden,false);
+          assert.match(goalReward.textContent,/\+1/);
+          updateGoalStar(2,3,true);
+          assert.equal(goalStar.visible,false); assert.equal(goalReward.hidden,true);
+          updateGoalStar(.05,4,true);
+          assert.equal(goalReward.hidden,true);
+          // A refresh after collection must not replay the reward.
+          goalStar = {userData:{reward:{...reward(),collected:true}},visible:true};
+          updateGoalStar(.05,5,true);
+          assert.equal(goalStar.visible,false); assert.equal(goalReward.hidden,true);
+          // Reset makes the goal collectible again.
+          state.milestones.target_reached = false;
+          goalStar = {userData:{reward:reward()},visible:false};
+          updateGoalStar(.05,6,true); assert.equal(goalStar.visible,true);
+          updateGoalStar(.05,7,false); assert.equal(goalStar.visible,false);
+        """)
+
     def test_planned_route_includes_fixed_origin_even_with_one_waypoint(self):
         self.run_frontend_functions(["updateWaypoints", "disposeRoute"], """
           let plannedRoute = null, plannedRouteKey = '';

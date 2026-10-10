@@ -1600,3 +1600,17 @@ dialog.control-dialog::backdrop {
   font-size: 12px;
   white-space: nowrap;
 }
+
+.goal-reward {
+  position: absolute;
+  top: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 8;
+  color: #ffd34d;
+  font-size: 26px;
+  font-weight: 800;
+  text-shadow: 0 2px 12px #182722;
+  pointer-events: none;
+}
+.goal-reward[hidden] { display: none; }

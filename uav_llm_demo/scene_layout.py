@@ -92,5 +92,7 @@ def scene_layout(scenario: ScenarioDefinition) -> list[dict]:
             height * METERS_PER_LEVEL, colors[index % len(colors)])
     for name, point, color in (("base", scenario.base, "#4fd477"),
                                ("target", scenario.target, "#f2b84b")):
-        box(name + "_pad", point[0], point[1], 0.025, 2.5, 2.5, 0.15, color)
+        # The ground launch marker must not become a raised collision block.
+        pad_height = -0.014 if name == "base" and point[2] == 0 else 0.025
+        box(name + "_pad", point[0], point[1], pad_height, 2.5, 2.5, 0.15, color)
     return objects

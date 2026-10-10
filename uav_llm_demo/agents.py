@@ -23,7 +23,13 @@ PLANNER_SYSTEM_PROMPT = (
     "waypoints is 1 to 64 {x,y,z} numeric objects in GRID coordinates, not metres. "
     "XY scale is 3 metres/cell; Z scale is 5 metres/level. x increases east, "
     "y increases south, z increases upward. Bounds: 0 <= x,y <= grid_size-1, "
-    "altitude_range.min <= z <= altitude_range.max. "
+    "Cruise bounds: altitude_range.min <= z <= altitude_range.max. "
+    "For a ground base (base.z=0), flight below cruise minimum is allowed ONLY within "
+    "0.75 metres horizontally of base. First climb vertically over base to min+0.2 levels "
+    "before departing. On return approach directly above base at min+0.2 then descend "
+    "vertically to base.z=0. Never fly diagonally from ground across the map. "
+    "Without preferred_altitude, choose a collision-free 3D route using horizontal detours "
+    "and climbs/descents as needed; do not force a constant altitude. "
     "building_volumes are closed axis-aligned GRID boxes from min to max. "
     "When buildings are provided instead, they are centered at x,y, footprint 0.78 cells "
     "square, from z=0 to height. Keep 0.6 metres clearance from building and no-fly AABBs "
@@ -188,6 +194,19 @@ class MockLLMAgent(BaseLLMAgent):
         start, goal = _point(context["position"]), _point(context["goal"])
         if checker.validate_waypoint(start) or checker.validate_waypoint(goal):
             raise ValueError("Start or goal is unsafe.")
+        # Ground transitions are real waypoints and pass the same segment checks.
+        if min(start[2], goal[2]) < checker.lower[2]:
+            height = min(checker.upper[2], checker.lower[2] + 0.2)
+            entry = (*start[:2], height) if start[2] < checker.lower[2] else start
+            exit_point = (*goal[:2], height) if goal[2] < checker.lower[2] else goal
+            airborne = deepcopy(context)
+            airborne.update(position=dict(zip("xyz", entry)), goal=dict(zip("xyz", exit_point)))
+            middle = MockLLMAgent.plan(self, airborne, feedback)
+            route = ((entry,) if entry != start else ()) + middle.waypoints + ((goal,) if exit_point != goal else ())
+            errors = checker.validate_path(start, route)
+            if errors:
+                raise ValueError("Unsafe takeoff or landing transition: " + "; ".join(errors))
+            return replace(middle, waypoints=route, reason="Vertical base transition. " + middle.reason)
         route = preferred_route(context)
         reason = "Low-altitude route between buildings."
         if route is None:

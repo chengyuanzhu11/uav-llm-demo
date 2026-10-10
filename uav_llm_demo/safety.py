@@ -65,6 +65,9 @@ class SafetyChecker:
         self.upper = (self.grid_size - 1, self.grid_size - 1, _number(altitude["max"]))
         if self.grid_size < 1 or self.lower[2] > self.upper[2]:
             raise ValueError("Invalid flight bounds.")
+        base = context.get("base")
+        self.ground_base = (_point(base) if base is not None and _point(base)[2] == 0 else None)
+        self.pad_radius_m = 0.75
         self.boxes = []
         for item in context.get("buildings", []):
             x, y, height = (_number(item[key]) for key in ("x", "y", "height"))
@@ -81,13 +84,26 @@ class SafetyChecker:
             tuple(lo - self.clearance / scale for lo, scale in zip(lower, SCALE)),
             tuple(hi + self.clearance / scale for hi, scale in zip(upper, SCALE)), label))
 
+    def _inside_bounds(self, point):
+        x, y, z = point
+        if not (self.lower[0] <= x <= self.upper[0] and self.lower[1] <= y <= self.upper[1] and z <= self.upper[2]):
+            return False
+        if z >= self.lower[2]:
+            return True
+        return z >= 0 and self._over_pad(point)
+
+    def _over_pad(self, point):
+        return self.ground_base is not None and math.hypot(
+            (point[0] - self.ground_base[0]) * SCALE[0],
+            (point[1] - self.ground_base[1]) * SCALE[1]) <= self.pad_radius_m
+
     def validate_waypoint(self, point) -> list[str]:
         try:
             point = _point(point)
         except ValueError:
             return ["Invalid waypoint: expected three finite numeric coordinates."]
         errors = []
-        if any(p < lo or p > hi for p, lo, hi in zip(point, self.lower, self.upper)):
+        if not self._inside_bounds(point):
             errors.append("Waypoint outside flight bounds.")
         for lower, upper, label in self.boxes:
             if _intersects(point, point, lower, upper):
@@ -99,10 +115,12 @@ class SafetyChecker:
             a, b = _point(a), _point(b)
         except ValueError:
             return False
-        # Flight bounds are convex; endpoints suffice. The closed segment test
-        # includes both endpoints, so separate obstacle scans are redundant.
-        if any(p < lo or p > hi for point in (a, b)
-               for p, lo, hi in zip(point, self.lower, self.upper)):
+        # Check cruise bounds and the separate ground column before obstacles.
+        # Closed segment tests below include both endpoints.
+        if not all(self._inside_bounds(point) for point in (a, b)):
+            return False
+        # Low flight is confined to the base column; do not cut diagonally out of it.
+        if min(a[2], b[2]) < self.lower[2] and not all(self._over_pad(p) for p in (a, b)):
             return False
         lower = tuple(min(x, y) for x, y in zip(a, b))
         upper = tuple(max(x, y) for x, y in zip(a, b))

@@ -86,6 +86,13 @@ let environmentReady = false;
 let displayedGridSize = 0;
 let uavGroup = null;
 let pathLine = null;
+let goalStar = null;
+const goalReward = document.createElement("div");
+goalReward.className = "goal-reward";
+goalReward.setAttribute("role", "status");
+goalReward.setAttribute("aria-live", "polite");
+goalReward.hidden = true;
+sceneContainer.appendChild(goalReward);
 let birdMeshes = new Map();
 let hoveredBird = null;
 const birdPointer = new THREE.Vector2(2, 2);
@@ -159,6 +166,7 @@ function acceptState(payload) {
     return false;
   }
   const initial = !state
+    || payload.diagnostics?.run_id !== state.diagnostics?.run_id
     || payload.scenario_id !== state.scenario_id
     || payload.runtime_backend !== state.runtime_backend
     || ["x", "y", "z"].some((axis) => payload.target?.[axis] !== state.target?.[axis])
@@ -465,6 +473,9 @@ function buildEnvironment() {
     }
   });
 
+  goalStar = createGoalStar();
+  scene.add(goalStar);
+
   uavGroup = createDrone();
   uavGroup.position.copy(toWorld(state.uav));
   scene.add(uavGroup);
@@ -478,6 +489,85 @@ function buildEnvironment() {
   });
 
   environmentReady = true;
+}
+
+
+function createGoalStar() {
+  const group = new THREE.Group();
+  group.name = "goal-star";
+  group.userData.environment = true;
+  group.position.copy(toWorld(state.target));
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 10; i += 1) {
+    const angle = Math.PI / 2 + i * Math.PI / 5;
+    const radius = i % 2 === 0 ? 1.6 : 0.72;
+    const x = Math.cos(angle) * radius, y = Math.sin(angle) * radius;
+    if (i === 0) shape.moveTo(x, y); else shape.lineTo(x, y);
+  }
+  shape.closePath();
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.35, bevelEnabled: true, bevelSize: 0.1, bevelThickness: 0.1, bevelSegments: 2, steps: 1,
+  });
+  geometry.center();
+  const material = new THREE.MeshBasicMaterial({color: 0xffd34d, transparent: true,
+    depthTest: false, depthWrite: false, toneMapped: false});
+  const star = new THREE.Mesh(geometry, material);
+  star.renderOrder = 7;
+  group.add(star);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(2.1, 0.055, 8, 48), material.clone());
+  ring.rotation.x = Math.PI / 2;
+  ring.renderOrder = 6;
+  group.add(ring);
+  const sparks = [];
+  for (let i = 0; i < 16; i += 1) {
+    const spark = new THREE.Mesh(new THREE.OctahedronGeometry(0.15), material.clone());
+    spark.renderOrder = 8;
+    spark.visible = false;
+    group.add(spark);
+    sparks.push(spark);
+  }
+  group.userData.reward = {star, ring, sparks, collected: Boolean(state.milestones?.target_reached), age: null};
+  group.visible = !group.userData.reward.collected;
+  return group;
+}
+
+
+function updateGoalStar(delta, elapsed, active) {
+  if (!goalStar) return;
+  const reward = goalStar.userData.reward;
+  if (state.milestones?.target_reached && !reward.collected) {
+    reward.collected = true;
+    reward.age = 0;
+    reward.startedAt = elapsed;
+    goalReward.textContent = "★ +1 · Target reached";
+    goalReward.hidden = !active;
+  }
+  if (!reward.collected) {
+    goalStar.visible = active;
+    reward.star.position.y = Math.sin(elapsed * 2.2) * 0.28;
+    reward.star.rotation.y = elapsed * 1.2;
+    reward.ring.scale.setScalar(1 + Math.sin(elapsed * 2.2) * 0.08);
+    return;
+  }
+  if (reward.age === null) { goalStar.visible = false; return; }
+  reward.age = Math.max(0, elapsed - reward.startedAt);
+  const t = Math.min(1, reward.age / 1.8);
+  goalStar.visible = active && t < 1;
+  goalReward.hidden = !active || t >= 1;
+  reward.star.position.y = 3 * t;
+  reward.star.rotation.y += delta * 7;
+  reward.star.scale.setScalar(1 + Math.sin(t * Math.PI) * 0.55);
+  reward.star.material.opacity = 1 - t;
+  reward.ring.scale.setScalar(1 + t * 2.5);
+  reward.ring.material.opacity = 1 - t;
+  reward.sparks.forEach((spark, index) => {
+    const angle = index * Math.PI * 2 / reward.sparks.length;
+    spark.visible = t < 1;
+    spark.position.set(Math.cos(angle) * t * 4, Math.sin(index * 2.4) * t * 2 + t,
+      Math.sin(angle) * t * 4);
+    spark.material.opacity = 1 - t;
+    spark.scale.setScalar(1 - t * 0.8);
+  });
 }
 
 
@@ -582,6 +672,8 @@ function createDrone() {
   const beacon = new THREE.PointLight(0x45d5d2, 3, 7);
   beacon.position.set(0, 0.1, 0);
   group.add(beacon);
+  // Telemetry z=0 denotes ground contact; keep the model above its contact plane.
+  group.children.forEach(child => { child.position.y += 0.72; });
   group.scale.setScalar(0.72);
   return group;
 }
@@ -791,6 +883,8 @@ function setSceneActorVisibility(htmlRuntimeActive) {
 
 
 function clearEnvironment() {
+  goalReward.hidden = true;
+  goalStar = null;
   disposeRoute();
   if (avoidanceRoute) {
     avoidanceRoute.geometry.dispose();
@@ -848,7 +942,7 @@ function renderToolbarState() {
   simulator?.setAttribute("data-operation", commandError ? "error" : state?.flight?.mode || "idle");
 
   const missionPhase = { fly_to_target: "Outbound", returning_home: "Returning", completed: "Completed" }[state?.phase] || "--";
-  setText(phaseValue, `${missionPhase} / ${state?.flight?.mode || "idle"}`);
+  setText(phaseValue, `${missionPhase} / ${state?.flight?.stage || "--"} / ${state?.flight?.mode || "idle"}`);
   const traceDecision = getHistoryEntries()[0]?.decision;
   const traceBackend = traceDecision?.agent_backend || state?.agent_backend;
   const traceModel = traceDecision?.agent_backend
@@ -1016,7 +1110,7 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
   setText(resultActionValue, `${flight.mode || "idle"} / ${formatNumber(flight.speed_mps)} m/s`);
   setText(executionPositionValue, formatPoint(state.uav));
   const milestones = state.milestones || {};
-  setText(missionProgressText, `${milestones.target_reached ? "Target reached" : "Target pending"} · ${milestones.base_returned ? "Returned to base" : "Return pending"}`);
+  setText(missionProgressText, `${milestones.target_reached ? "★ Collected · Target reached" : "☆ Target pending"} · ${milestones.base_returned ? "Returned to base" : "Return pending"}`);
   const recovery = flight.recovery || {};
   const recoveryLabels = {
     refresh_observation_and_retry_provider: "Waiting for API recovery",
@@ -1416,6 +1510,7 @@ function animate() {
   const htmlRuntimeActive = state?.runtime_backend === "html";
 
   if (uavGroup && htmlRuntimeActive) {
+    const grounded = state.flight?.stage === "landed";
     if (uavGroup.userData.targetPosition) {
       const target = uavGroup.userData.targetPosition;
       const direction = target.clone().sub(uavGroup.position);
@@ -1423,10 +1518,10 @@ function animate() {
       if (Math.abs(direction.x) + Math.abs(direction.z) > 0.001) {
         uavGroup.rotation.y = Math.atan2(direction.x, direction.z);
       }
-      uavGroup.rotation.z = Math.sin(elapsed * 2.2) * 0.018;
+      uavGroup.rotation.z = grounded ? 0 : Math.sin(elapsed * 2.2) * 0.018;
     }
     rotorMeshes.forEach((rotor) => {
-      rotor.rotation.y += delta * 42 * rotor.userData.speed;
+      if (!grounded || state.flight?.running) rotor.rotation.y += delta * 42 * rotor.userData.speed;
     });
   }
 
@@ -1460,6 +1555,7 @@ function animate() {
       bird.userData.safetyBubble.material.color.set(high ? 0xff6b57 : near ? 0xf2b84b : 0x74d8df);
     });
   }
+  updateGoalStar(delta, elapsed, htmlRuntimeActive);
   updateBirdHover(htmlRuntimeActive);
 
   if (cameraMode === "follow" && uavGroup) {

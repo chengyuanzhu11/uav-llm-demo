@@ -106,7 +106,10 @@ class RuntimeApiTest(unittest.TestCase):
         service = MissionService(agent=MockLLMAgent())
         app = self.make_app(service=service)
         client = app.test_client()
-        client.post("/api/mission/start")
+        # Drive ticks explicitly: background flight may legitimately move between HTTP requests.
+        with patch.object(service, "_ensure_loop"):
+            client.post("/api/mission/start")
+        wait_for(service, lambda state: state["step_count"] > 0)
         before = client.get("/api/state").get_json()
 
         selected = client.post(

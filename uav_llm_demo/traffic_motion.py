@@ -50,10 +50,39 @@ class ContinuousTraffic:
         self.models = {}
         self.checkers = {}
         self.graphs = {}
+        self.route_ids = {bird.object_id for bird in scenario.dynamic_objects if bird.kind == "route_bird"}
+        self.patrols = {}
+        self.pending_patrols = {}
+        self.scenario = scenario
         navigation_by_radius = {}
+        if self.route_ids:
+            # A static reference seeds traffic only; it is never used as the UAV plan.
+            from .agents import MockLLMAgent
+            context = scenario.to_dict()
+            context.update(position=context["base"], goal=context["target"])
+            reference = (scenario.base,) + MockLLMAgent().plan(context).waypoints
+            route_context = scenario.to_dict()
+            route_context.pop("base", None)
+            route_checker = SafetyChecker(route_context, clearance=max(
+                bird.radius for bird in scenario.dynamic_objects if bird.kind == "route_bird") * 3 + 0.2)
+            crossings = self._crossings(reference, route_checker, scenario.base)
+        route_index = 0
         for bird in scenario.dynamic_objects:
+            if bird.object_id in self.route_ids and crossings:
+                lane = crossings[min(len(crossings)-1, round((route_index + .5) * len(crossings) / len(self.route_ids)))]
+                route_index += 1
+                if self.rng.random() < .5:
+                    lane = lane[::-1]
+                self.checkers[bird.object_id] = route_checker
+                self.patrols[bird.object_id] = lane
+                self.models[bird.object_id] = dict(segments=[], phase=self.rng.uniform(0, math.tau), route_aware=True)
+                self._append_route(bird.object_id, lane[0], 0.0)
+                continue
+            # If a map offers no safe crossing, this bird joins ordinary traffic.
+            self.route_ids.discard(bird.object_id)
             if bird.radius not in navigation_by_radius:
                 context = scenario.to_dict()
+                context.pop("base", None)  # Birds do not inherit the UAV landing-column exception.
                 context["altitude_range"] = dict(min=1.6, max=2.4)
                 checker = SafetyChecker(context, clearance=bird.radius * 3 + 0.2)
                 edge = bird.radius + 0.1
@@ -79,7 +108,59 @@ class ContinuousTraffic:
             self.models[bird.object_id] = dict(segments=[], phase=self.rng.uniform(0, math.tau))
             self._append_route(bird.object_id, start, 0.0)
 
+    def _crossings(self, route, checker, vehicle):
+        crossings = []
+        for start, end in zip(route, route[1:]):
+            length = metric_distance(start, end)
+            horizontal = math.hypot(end[0]-start[0], end[1]-start[1])
+            if length < 6 or horizontal < 0.5:
+                continue
+            normal = (-(end[1]-start[1])/horizontal, (end[0]-start[0])/horizontal)
+            for index in range(1, max(2, math.ceil(length/10))):
+                fraction = index / max(2, math.ceil(length/10))
+                center = tuple(a+(b-a)*fraction for a,b in zip(start,end))
+                if min(metric_distance(center, p) for p in (vehicle, self.scenario.base, route[-1])) < 12:
+                    continue
+                for width in (8.0, 5.0, 3.0):
+                    a = (center[0]+normal[0]*width/3, center[1]+normal[1]*width/3, center[2])
+                    b = (center[0]-normal[0]*width/3, center[1]-normal[1]*width/3, center[2])
+                    if checker.segment_safe(a, b):
+                        crossings.append((a,b))
+                        break
+        return crossings
+
+    def focus_route(self, start, waypoints):
+        """Retarget future patrol legs only; current position and velocity stay continuous."""
+        if not self.patrols:
+            return 0
+        checker = self.checkers[next(iter(self.patrols))]
+        crossings = self._crossings((tuple(start),)+tuple(waypoints), checker, start)
+        assigned = 0
+        for object_id in self.patrols:
+            endpoint = self.models[object_id]["segments"][-1]["controls"][-1]
+            available = [lane for lane in crossings if checker.segment_safe(endpoint, lane[0])]
+            if available:
+                lane = min(available, key=lambda item: metric_distance(endpoint, item[0]))
+                self.pending_patrols[object_id] = lane
+                crossings.remove(lane)
+                assigned += 1
+        return assigned
+
+    def _append_patrol(self, object_id, start, started):
+        if object_id in self.pending_patrols:
+            self.patrols[object_id] = self.pending_patrols.pop(object_id)
+        a, b = self.patrols[object_id]
+        goal = b if metric_distance(start, a) < .001 else a
+        controls = [start, start, goal, goal]
+        if not self.checkers[object_id].segment_safe(start, goal):
+            raise ValueError("Unsafe route-aware traffic transition.")
+        duration = max(4.0, 1.5 * metric_distance(start, goal) / self.rng.uniform(1.6, 2.4))
+        self.models[object_id]["segments"].append(dict(start=started, duration=duration, controls=controls))
+
     def _append_route(self, object_id, start, started):
+        if object_id in self.patrols:
+            self._append_patrol(object_id, start, started)
+            return
         checker, graph = self.checkers[object_id], self.graphs[object_id]
         origin = min(graph, key=lambda point: metric_distance(start, point))
         parents, queue = {origin: None}, deque([origin])
