@@ -61,21 +61,26 @@ HTML 中 UAV 和鸟类共用仿真时钟，页面只读取快照；暂停任务�
 
 在 VS Code 中打开 WSL / Ubuntu（Bash）终端；如果当前是 PowerShell，先输入 `wsl`。运行以下命令无需额外插件。
 
-进入项目目录，首次使用时安装依赖：
+需要已安装 WSL / Ubuntu。首次使用时准备 Git 和 Python，并克隆仓库（示例放在 WSL 的 `~/code` 目录）：
 
 ```bash
-cd "/mnt/c/Users/kyrie/Documents/New project 3"
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip
+mkdir -p ~/code
+cd ~/code
+git clone https://github.com/chengyuanzhu11/uav-llm-demo.git
+cd uav-llm-demo
 bash scripts/setup_wsl.sh
 ```
 
-Linux 环境位于 `~/.venvs/uav-llm-demo`，无需手动激活；项目内的 Windows `.venv` / `.venv-airsim` 不用于 WSL。
+已有仓库时，直接进入仓库目录运行 `bash scripts/setup_wsl.sh`。Linux 环境位于 `~/.venvs/uav-llm-demo`，无需手动激活；项目内的 Windows `.venv` / `.venv-airsim` 不用于 WSL。
 
 ## 启动（WSL）
 
-在 WSL 终端执行：
+在 WSL 终端进入克隆的仓库目录（若克隆在其他位置，请使用实际目录）：
 
 ```bash
-cd "/mnt/c/Users/kyrie/Documents/New project 3"
+cd ~/code/uav-llm-demo
 bash scripts/start_demo.sh
 ```
 
