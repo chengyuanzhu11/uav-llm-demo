@@ -6,13 +6,9 @@ from collections.abc import Mapping
 from flask import Flask, jsonify, render_template, request
 
 from .airsim_runtime import AirSimRuntime, AirSimRuntimeConfig
-from .mission_service import MissionService, validated_decision
+from .mission_service import MissionService
 from .runtime import RuntimeCapabilityError, RuntimeUnavailableError
 from .scenarios import list_scenarios
-
-
-_validated_decision = validated_decision
-
 
 def create_app(
     *,
@@ -24,6 +20,8 @@ def create_app(
         runtime_factory=runtime_factory or _build_runtime
     )
     app.extensions["mission_service"] = mission_service
+    if service is None:
+        mission_service._ensure_loop()
 
     @app.get("/")
     def index():
@@ -41,12 +39,27 @@ def create_app(
     def api_scenarios():
         return jsonify(scenarios=list_scenarios())
 
-    @app.post("/api/step")
-    def api_step():
+    @app.post("/api/mission/start")
+    def api_start():
         try:
-            return jsonify(mission_service.step())
+            return jsonify(mission_service.start())
         except RuntimeUnavailableError as exc:
             return _runtime_error_response(mission_service, exc, 503)
+
+    @app.post("/api/mission/plan")
+    def api_plan():
+        try:
+            return jsonify(mission_service.plan())
+        except RuntimeUnavailableError as exc:
+            return _runtime_error_response(mission_service, exc, 503)
+
+    @app.post("/api/mission/goal")
+    def api_goal():
+        data = request.get_json(silent=True) or {}
+        try:
+            return jsonify(mission_service.update_goal(data.get("target"), data.get("task")))
+        except (TypeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 400
 
     @app.post("/api/reset")
     def api_reset():
@@ -54,6 +67,8 @@ def create_app(
             return jsonify(mission_service.reset())
         except RuntimeUnavailableError as exc:
             return _runtime_error_response(mission_service, exc, 503)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
 
     @app.post("/api/scenario")
     def api_scenario():

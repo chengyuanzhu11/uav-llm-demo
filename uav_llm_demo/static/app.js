@@ -1,15 +1,19 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/OrbitControls.js";
+import { sampleTraffic } from "./traffic.js";
+import { buildUrbanCity, urbanSurfaceTexture } from "./urban_city.js";
 
 
 const sceneContainer = document.getElementById("sceneContainer");
-const stepBtn = document.getElementById("stepBtn");
-const autoBtn = document.getElementById("autoBtn");
+const planBtn = document.getElementById("planBtn");
+const startBtn = document.getElementById("startBtn");
 const resetBtn = document.getElementById("resetBtn");
 const overviewBtn = document.getElementById("overviewBtn");
 const followBtn = document.getElementById("followBtn");
+const agentButtons = [...document.querySelectorAll("[data-agent]")];
 const runtimeButtons = [...document.querySelectorAll("[data-runtime]")];
-const airsimPanel = document.getElementById("airsimPanel");
+const agentKeyBtn = document.getElementById("agentKeyBtn");
+const airsimConfigBtn = document.getElementById("airsimConfigBtn");
 const vehicleName = document.getElementById("vehicleName");
 const airsimHost = document.getElementById("airsimHost");
 const airsimPort = document.getElementById("airsimPort");
@@ -22,12 +26,18 @@ const scenarioSelect = document.getElementById("scenarioSelect");
 
 const simulator = document.getElementById("simulator")
   || document.querySelector(".simulator");
-const settingsBtn = document.getElementById("settingsBtn");
-const settingsDialog = document.getElementById("settingsDialog");
-const closeSettingsBtn = document.getElementById("closeSettingsBtn");
-const operationBanner = document.getElementById("operationBanner");
-const operationStatus = document.getElementById("operationStatus");
-const sceneExecutionStatus = document.getElementById("sceneExecutionStatus");
+const agentDialog = document.getElementById("agentDialog");
+const agentForm = document.getElementById("agentForm");
+const closeAgentBtn = document.getElementById("closeAgentBtn");
+const cancelAgentBtn = document.getElementById("cancelAgentBtn");
+const deepseekApiKey = document.getElementById("deepseekApiKey");
+const deepseekModel = document.getElementById("deepseekModel");
+const deepseekBaseUrl = document.getElementById("deepseekBaseUrl");
+const saveAgentBtn = document.getElementById("saveAgentBtn");
+const agentDialogError = document.getElementById("agentDialogError");
+const airsimDialog = document.getElementById("airsimDialog");
+const closeAirSimBtn = document.getElementById("closeAirSimBtn");
+const closeAirSimFooterBtn = document.getElementById("closeAirSimFooterBtn");
 const currentStepValue = document.getElementById("currentStepValue");
 const goalDirectionValue = document.getElementById("goalDirectionValue");
 const goalDistanceValue = document.getElementById("goalDistanceValue");
@@ -41,9 +51,6 @@ const executedActionValue = document.getElementById("executedActionValue");
 const guardStatus = document.getElementById("guardStatus");
 const executionPositionValue = document.getElementById("executionPositionValue");
 const resultActionValue = document.getElementById("resultActionValue");
-const settingsAgentValue = document.querySelector('[data-settings-value="agent"]');
-const settingsScenarioValue = document.querySelector('[data-settings-value="scenario"]');
-const settingsRuntimeValue = document.querySelector('[data-settings-value="runtime"]');
 
 const positionValue = document.getElementById("positionValue");
 const altitudeValue = document.getElementById("altitudeValue");
@@ -53,39 +60,45 @@ const phaseValue = document.getElementById("phaseValue");
 const threatValue = document.getElementById("threatValue");
 const backendValue = document.getElementById("backendValue");
 const feedbackText = document.getElementById("feedbackText");
+const missionProgressText = document.getElementById("missionProgressText");
+const recoveryText = document.getElementById("recoveryText");
 const runtimeStatus = document.getElementById("runtimeStatus");
 
 const WORLD_SCALE = 3;
-const ALTITUDE_SCALE = 2.15;
+const ALTITUDE_SCALE = 5;
 const timer = new THREE.Timer();
 
 let state = null;
-let autoRunning = false;
-let stepInFlight = false;
-let runtimePending = false;
+let trafficMotion = null;
+let commandPending = false;
+let pollActive = false;
+let lastSequence = -1;
+let commandError = "";
+let plannedRoute = null;
+let plannedRouteKey = "";
+let avoidanceRoute = null;
+let pathKey = "";
 let cameraMode = "overview";
+let followOffset = new THREE.Vector3(9, 7, 12);
+const followAnchor = new THREE.Vector3();
+let cameraObstacles = [];
 let environmentReady = false;
+let displayedGridSize = 0;
 let uavGroup = null;
-let targetMarker = null;
-let baseMarker = null;
 let pathLine = null;
 let birdMeshes = new Map();
-let birdTargets = new Map();
+let hoveredBird = null;
+const birdPointer = new THREE.Vector2(2, 2);
+const birdRaycaster = new THREE.Raycaster();
+const birdTooltip = document.createElement("div");
+birdTooltip.className = "bird-tooltip";
+birdTooltip.hidden = true;
+sceneContainer.appendChild(birdTooltip);
 let rotorMeshes = [];
-let activeTrajectory = null;
-let trajectoryStartedAt = 0;
-let trajectoryDurationMs = 0;
 let scenariosLoaded = false;
-let operationState = "ready";
-let operationMessage = "Ready";
-let autoLoopActive = false;
-let runtimeStopPending = false;
-let currentStepSettled = Promise.resolve(null);
-let settleCurrentStep = null;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x9ec4d5);
-scene.fog = new THREE.FogExp2(0xa8c7d3, 0.009);
+scene.fog = new THREE.FogExp2(0xbfc5c6, 0.002);
 
 const camera = new THREE.PerspectiveCamera(
   54,
@@ -93,7 +106,7 @@ const camera = new THREE.PerspectiveCamera(
   0.1,
   400,
 );
-camera.position.set(40, 42, 48);
+camera.position.set(55, 60, 65);
 
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
@@ -106,8 +119,14 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
+renderer.toneMappingExposure = 0.95;
 sceneContainer.appendChild(renderer.domElement);
+renderer.domElement.addEventListener("pointermove", (event) => {
+  const bounds = renderer.domElement.getBoundingClientRect();
+  birdPointer.set((event.clientX - bounds.left) / bounds.width * 2 - 1,
+    -(event.clientY - bounds.top) / bounds.height * 2 + 1);
+});
+renderer.domElement.addEventListener("pointerleave", () => birdPointer.set(2, 2));
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -115,7 +134,7 @@ controls.dampingFactor = 0.07;
 controls.maxPolarAngle = Math.PI * 0.48;
 controls.minDistance = 16;
 controls.maxDistance = 115;
-controls.target.set(0, 6, 0);
+controls.target.set(0, 17, 0);
 
 setupLighting();
 setupAtmosphere();
@@ -130,16 +149,87 @@ async function requestJson(url, options = {}) {
   if (!response.ok) {
     throw new Error(payload.error || `Request failed: ${response.status}`);
   }
+
   return payload;
 }
 
 
-async function loadState() {
-  await loadScenarios();
-  state = await requestJson("/api/state");
-  syncScene(true);
+function acceptState(payload) {
+  if (!Number.isFinite(payload.sequence) || payload.sequence <= lastSequence) {
+    return false;
+  }
+  const initial = !state
+    || payload.scenario_id !== state.scenario_id
+    || payload.runtime_backend !== state.runtime_backend
+    || ["x", "y", "z"].some((axis) => payload.target?.[axis] !== state.target?.[axis])
+    || (payload.flight?.plan_id === 0 && state.flight?.plan_id !== 0)
+    || (payload.continuous_path || payload.path || []).length
+      < (state.continuous_path || state.path || []).length;
+  lastSequence = payload.sequence;
+  state = payload;
+  if (hasOwn(payload, "traffic_motion")) {
+    trafficMotion = payload.traffic_motion;
+  }
+  if (initial) clearEnvironment();
+  syncScene(initial);
   renderUi();
-  setOperationState("ready", "Ready");
+  return true;
+}
+
+
+async function pollState() {
+  if (pollActive) return;
+  pollActive = true;
+  while (pollActive) {
+    try {
+      acceptState(await requestJson("/api/state"));
+    } catch {
+      setText(feedbackText, "Telemetry unavailable; reconnecting");
+    }
+    await sleep(125);
+  }
+}
+
+
+// Mutations share one gate; reads remain independent during planner latency.
+async function runCommand(action) {
+  if (commandPending || !state) return false;
+  commandPending = true;
+  commandError = "";
+  renderUi();
+  try {
+    await action();
+    return true;
+  } catch {
+    // Do not echo provider errors that might contain credentials.
+    commandError = "Request failed. Check the connection and configuration.";
+    return false;
+  } finally {
+    commandPending = false;
+    renderUi();
+  }
+}
+
+
+async function postState(url, body) {
+  const payload = await requestJson(url, {
+    method: "POST",
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  acceptState(payload);
+}
+
+
+async function toggleMission() {
+  return runCommand(() => postState(
+    state.flight?.running || state.flight?.planning
+      ? "/api/runtime/stop" : "/api/mission/start",
+  ));
+}
+
+
+async function planMission() {
+  return runCommand(() => postState("/api/mission/plan"));
 }
 
 
@@ -159,234 +249,63 @@ async function loadScenarios() {
 }
 
 
-async function stepSimulation() {
-  if (stepInFlight) {
-    return currentStepSettled;
-  }
-  if (!state || state.status !== "active") {
-    renderToolbarState();
-    return null;
-  }
-
-  stepInFlight = true;
-  const stepBackend = state.runtime_backend;
-  const stepBefore = Number(state.step_count || 0);
-  let outcome = {
-    status: "pending",
-    backend: stepBackend,
-    stepBefore,
-  };
-  currentStepSettled = new Promise((resolve) => {
-    settleCurrentStep = resolve;
-  });
-  setOperationState(
-    "executing",
-    `${String(stepBackend || "runtime").toUpperCase()} executing step #${stepBefore + 1}`,
-  );
-  try {
-    state = await requestJson("/api/step", { method: "POST" });
-    outcome = {
-      status: "committed",
-      backend: stepBackend,
-      stepBefore,
-      stepAfter: Number(state.step_count || stepBefore),
-    };
-    syncScene(false);
-    renderUi();
-    stopAutoWhenDone();
-    if (state.status !== "active") {
-      setOperationState(
-        "ready",
-        `Mission ${state.status} after step #${state.step_count}`,
-      );
-    } else if (autoRunning) {
-      setOperationState(
-        "executing",
-        `Auto running after step #${state.step_count}`,
-      );
-    } else if (!runtimeStopPending) {
-      setOperationState("ready", `Ready after step #${state.step_count}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    outcome = {
-      status: "failed",
-      backend: stepBackend,
-      stepBefore,
-      message,
-    };
-    autoRunning = false;
-    setText(feedbackText, message);
-    const expectedAirSimCancellation = runtimeStopPending
-      && stepBackend === "airsim"
-      && isCancellationError(message);
-    if (!expectedAirSimCancellation) {
-      setOperationState("error", message);
-    }
-  } finally {
-    stepInFlight = false;
-    const resolveStep = settleCurrentStep;
-    settleCurrentStep = null;
-    resolveStep?.(outcome);
-    renderToolbarState();
-  }
-  return outcome;
-}
-
-
 async function resetSimulation() {
-  await stopAuto();
-  setOperationState("executing", "Resetting mission");
-  try {
-    state = await requestJson("/api/reset", { method: "POST" });
-    clearEnvironment();
-    syncScene(true);
-    renderUi();
-    setOperationState("ready", "Mission reset");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setText(feedbackText, message);
-    setOperationState("error", message);
-  }
+  return runCommand(() => postState("/api/reset"));
 }
 
 
 async function switchScenario(scenarioId) {
-  if (!state || runtimePending || scenarioId === state.scenario_id) {
-    return;
-  }
-  await stopAuto(true);
-  setRuntimePending(true);
-  setOperationState("executing", `Switching scenario to ${scenarioId}`);
-  try {
-    state = await requestJson("/api/scenario", {
-      method: "POST",
-      body: JSON.stringify({ scenario_id: scenarioId }),
-    });
-    clearEnvironment();
-    syncScene(true);
-    renderUi();
-    setOperationState("ready", `Scenario ${scenarioId} ready`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setText(feedbackText, message);
-    scenarioSelect.value = state.scenario_id;
-    setOperationState("error", message);
-  } finally {
-    setRuntimePending(false);
-  }
+  if (scenarioId === state?.scenario_id) return;
+  return runCommand(() => postState("/api/scenario", { scenario_id: scenarioId }));
 }
 
 
-function toggleAuto() {
-  if (autoRunning) {
-    void stopAuto(true);
-    return;
+async function switchAgent(backend, force = false, config = {}) {
+  if (!state || commandPending) return false;
+  const normalized = String(backend || "").trim().toLowerCase();
+  if (!["mock", "deepseek"].includes(normalized)) return false;
+  if (!force && normalized === state.agent_backend) return true;
+  if (normalized === "deepseek" && !config.api_key && !state.deepseek_key_configured) {
+    openAgentDialog();
+    return false;
   }
-  if (
-    runtimeStopPending
-    || runtimePending
-    || stepInFlight
-    || !state
-    || state.status !== "active"
-  ) {
-    return;
-  }
-  autoRunning = true;
-  setOperationState("executing", "Auto running");
-  startAutoLoop();
-}
-
-
-async function stopAuto(commandStop = false) {
-  autoRunning = false;
-  renderToolbarState();
-  if (!commandStop || !state) {
-    return;
-  }
-
-  const backend = state.runtime_backend;
-  const stepBeforeStop = Number(state.step_count || 0);
-  const pendingStep = stepInFlight ? currentStepSettled : null;
-  runtimeStopPending = true;
-  setOperationState(
-    "executing",
-    `Pausing ${String(backend || "runtime").toUpperCase()}`,
-  );
-  try {
-    const stoppedState = await requestJson("/api/runtime/stop", { method: "POST" });
-    const stepOutcome = pendingStep ? await pendingStep : null;
-    if (stepOutcome?.status !== "committed") {
-      state = stoppedState;
-    }
-    renderUi();
-
-    const stoppedAtStep = Number(state.step_count || 0);
-    if (stepOutcome?.status === "failed") {
-      const cancelledBeforeCommit = backend === "airsim"
-        && stoppedAtStep === stepBeforeStop
-        && isCancellationError(stepOutcome.message);
-      if (cancelledBeforeCommit) {
-        setOperationState(
-          "paused",
-          `Paused; current action cancelled before commit at step #${stoppedAtStep} (AirSim)`,
-        );
-      } else {
-        setText(feedbackText, stepOutcome.message);
-        setOperationState("error", stepOutcome.message);
-      }
-    } else {
-      setOperationState("paused", `Paused after step #${stoppedAtStep}`);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setText(feedbackText, message);
-    setOperationState("error", message);
-  } finally {
-    runtimeStopPending = false;
-    renderToolbarState();
-  }
-}
-
-
-function stopAutoWhenDone() {
-  if (state && state.status !== "active") {
-    autoRunning = false;
-    renderToolbarState();
-  }
-}
-
-
-async function runAutoLoop() {
-  while (autoRunning && state && state.status === "active") {
-    const outcome = await stepSimulation();
-    if (outcome?.status === "failed") {
-      break;
-    }
-    if (!autoRunning || !state || state.status !== "active") {
-      break;
-    }
-    const motionDelay = Math.max(
-      120,
-      Number(state.trajectory_duration || 0) * 1000 + 80,
-    );
-    await sleep(motionDelay);
-  }
-  stopAutoWhenDone();
-}
-
-
-function startAutoLoop() {
-  if (autoLoopActive) {
-    return;
-  }
-  autoLoopActive = true;
-  void runAutoLoop().finally(() => {
-    autoLoopActive = false;
-    if (autoRunning && state?.status === "active") {
-      startAutoLoop();
-    }
+  const switched = await runCommand(async () => {
+    // Config preserves the route and running state in the backend, including
+    // invalidating any old planner generation. No frontend pause/resume race.
+    await postState("/api/config", { backend: normalized, ...config });
+    closeDialog(agentDialog);
   });
+  if (!switched && agentDialogError) {
+    setText(agentDialogError, commandError);
+    agentDialogError.hidden = false;
+  }
+  return switched;
+}
+
+
+async function configureDeepSeekFromDialog(event) {
+  event?.preventDefault();
+  if (commandPending) {
+    return;
+  }
+  const config = {
+    model: deepseekModel?.value.trim(),
+    base_url: deepseekBaseUrl?.value.trim(),
+  };
+  const apiKey = deepseekApiKey?.value.trim();
+  if (apiKey) {
+    config.api_key = apiKey;
+  }
+  const switched = await switchAgent("deepseek", true, config);
+  if (switched) {
+    if (deepseekApiKey) {
+      deepseekApiKey.value = "";
+    }
+    if (agentDialogError) {
+      agentDialogError.hidden = true;
+      agentDialogError.textContent = "";
+    }
+  }
 }
 
 
@@ -396,67 +315,21 @@ function sleep(milliseconds) {
 
 
 async function switchRuntime(backend, force = false) {
-  if (runtimePending || !state) {
-    return;
-  }
-  if (!force && backend === state.runtime_backend) {
-    return;
-  }
-  const confirmed = window.confirm(
-    `切换到 ${backend.toUpperCase()} 会停止自动运行并从基地重置任务。是否继续？`,
-  );
-  if (!confirmed) {
-    renderRuntimeControls();
-    return;
-  }
-
-  await stopAuto(true);
-  setRuntimePending(true);
-  setOperationState("executing", `Switching runtime to ${backend}`);
-  try {
-    state = await requestJson("/api/runtime", {
-      method: "POST",
-      body: JSON.stringify({
-        backend,
-        config: backend === "airsim" ? airsimConfig() : {},
-      }),
-    });
-    clearEnvironment();
-    syncScene(true);
-    renderUi();
-    setOperationState("ready", `${backend.toUpperCase()} runtime ready`);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setText(feedbackText, message);
-    renderRuntimeControls();
-    setOperationState("error", message);
-  } finally {
-    setRuntimePending(false);
-  }
+  if (commandPending || !state || (!force && backend === state.runtime_backend)) return;
+  if (!window.confirm(`Switch to ${backend.toUpperCase()} and reset the mission?`)) return;
+  return runCommand(() => postState("/api/runtime", {
+    backend,
+    config: backend === "airsim" ? airsimConfig() : {},
+  }));
 }
 
 
 async function applyWind() {
-  applyWindBtn.disabled = true;
-  setOperationState("executing", "Applying AirSim wind");
-  try {
-    state = await requestJson("/api/runtime/wind", {
-      method: "POST",
-      body: JSON.stringify({
-        north: Number(windNorth.value),
-        east: Number(windEast.value),
-        down: Number(windDown.value),
-      }),
-    });
-    renderUi();
-    setOperationState("ready", "AirSim wind updated");
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    setText(feedbackText, message);
-    setOperationState("error", message);
-  } finally {
-    applyWindBtn.disabled = !state?.runtime?.connected;
-  }
+  return runCommand(() => postState("/api/runtime/wind", {
+    north: Number(windNorth.value),
+    east: Number(windEast.value),
+    down: Number(windDown.value),
+  }));
 }
 
 
@@ -474,20 +347,12 @@ function airsimConfig() {
 }
 
 
-function setRuntimePending(pending) {
-  runtimePending = pending;
-  document.body.classList.toggle("runtime-pending", pending);
-  renderToolbarState();
-  renderRuntimeSettings();
-}
-
-
 function setupLighting() {
-  const skyLight = new THREE.HemisphereLight(0xdff4ff, 0x506447, 2.1);
+  const skyLight = new THREE.HemisphereLight(0xb6c9db, 0x4d4942, 0.85);
   scene.add(skyLight);
 
-  const sun = new THREE.DirectionalLight(0xfff1d2, 4.2);
-  sun.position.set(-32, 55, 18);
+  const sun = new THREE.DirectionalLight(0xffdfae, 3.2);
+  sun.position.set(-90, 110, 60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   sun.shadow.camera.left = -55;
@@ -495,43 +360,46 @@ function setupLighting() {
   sun.shadow.camera.top = 55;
   sun.shadow.camera.bottom = -55;
   sun.shadow.camera.near = 1;
-  sun.shadow.camera.far = 130;
+  sun.shadow.camera.far = 300;
+  sun.shadow.bias = -0.0002;
+  sun.shadow.normalBias = 0.04;
   scene.add(sun);
 }
 
 
 function setupAtmosphere() {
-  const sunDisc = new THREE.Mesh(
-    new THREE.SphereGeometry(3.2, 24, 24),
-    new THREE.MeshBasicMaterial({ color: 0xffe0a0 }),
-  );
-  sunDisc.position.set(-58, 55, -80);
-  scene.add(sunDisc);
-
-  for (let i = 0; i < 10; i += 1) {
-    const cloud = new THREE.Group();
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 1,
-      transparent: true,
-      opacity: 0.7,
-    });
-    for (let j = 0; j < 4; j += 1) {
-      const puff = new THREE.Mesh(
-        new THREE.SphereGeometry(2.2 + (j % 2), 12, 8),
-        material,
-      );
-      puff.position.set(j * 2.1, Math.sin(j) * 0.8, 0);
-      cloud.add(puff);
+  const canvas = document.createElement("canvas");
+  canvas.width = 2048;
+  canvas.height = 1024;
+  const ctx = canvas.getContext("2d");
+  const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  sky.addColorStop(0, "#738da3");
+  sky.addColorStop(0.3, "#a9b8c3");
+  sky.addColorStop(0.49, "#b9c4cf");
+  sky.addColorStop(0.56, "#a8aaa3");
+  sky.addColorStop(1, "#6c746e");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  // Distant layered clouds replace the low floating spheres in the flight scene.
+  for (let layer = 0; layer < 5; layer += 1) {
+    for (let cloud = 0; cloud < 13; cloud += 1) {
+      const x = cloud * 180 + Math.sin(cloud * 2 + layer) * 95;
+      const y = 260 + layer * 50 + Math.sin(cloud * 1.7 + layer) * 25;
+      const gradient = ctx.createRadialGradient(x, y, 2, x, y, 130);
+      gradient.addColorStop(0, "rgba(245,239,225,0.48)");
+      gradient.addColorStop(1, "rgba(245,239,225,0)");
+      ctx.save(); ctx.translate(x, y); ctx.scale(1.8, 0.35); ctx.translate(-x, -y);
+      ctx.fillStyle = gradient;
+      ctx.fillRect(x - 130, y - 130, 260, 260);
+      ctx.restore();
     }
-    cloud.position.set(
-      -65 + ((i * 19) % 130),
-      28 + (i % 3) * 6,
-      -58 + ((i * 31) % 116),
-    );
-    cloud.scale.setScalar(0.8 + (i % 3) * 0.2);
-    scene.add(cloud);
   }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  scene.background = texture;
+  scene.environment = texture;
+  scene.environmentIntensity = 0.35;
 }
 
 
@@ -540,143 +408,117 @@ function buildEnvironment() {
     return;
   }
 
-  const terrain = new THREE.Mesh(
-    new THREE.PlaneGeometry(state.grid_size * WORLD_SCALE + 22, state.grid_size * WORLD_SCALE + 22),
-    new THREE.MeshStandardMaterial({ color: 0x75945e, roughness: 0.96 }),
-  );
-  terrain.rotation.x = -Math.PI / 2;
-  terrain.receiveShadow = true;
-  terrain.userData.environment = true;
-  scene.add(terrain);
-
-  addRoads();
-  addBuildings();
-  addTrees();
-
-  baseMarker = createLandingMarker(0x4fd477, "base");
-  baseMarker.position.copy(toWorld(state.base));
-  scene.add(baseMarker);
-
-  targetMarker = createLandingMarker(0xf2b84b, "target");
-  targetMarker.position.copy(toWorld(state.target));
-  scene.add(targetMarker);
+  const urbanParcels = state.scenario?.urban_parcels || [];
+  const mapScale = Math.max(1, state.grid_size / 20);
+  controls.maxDistance = 115 * mapScale;
+  scene.fog.density = 0.002 / mapScale;
+  if (displayedGridSize !== state.grid_size) {
+    displayedGridSize = state.grid_size;
+    if (cameraMode === "overview") setCameraMode("overview");
+    const sun = scene.children.find((object) => object.isDirectionalLight);
+    const shadow = sun.shadow.camera;
+    shadow.left = shadow.bottom = -55 * mapScale;
+    shadow.right = shadow.top = 55 * mapScale;
+    shadow.far = 300 * mapScale;
+    shadow.updateProjectionMatrix();
+  }
+  const beaconHeight = Math.max(36, ...state.scene_layout
+    .filter((item) => item.name.startsWith("building_"))
+    .map((item) => item.position.z * ALTITUDE_SCALE + item.size.z / 2 + 12));
+  const surfaceTextures = new Map();
+  state.scene_layout.forEach((item) => {
+    if (urbanParcels.length && item.name.startsWith("building_")) return;
+    let map = null;
+    if (urbanParcels.length && (item.name === "ground" || item.name.startsWith("road_")
+        || item.name.startsWith("sidewalk_"))) {
+      const kind = item.name.startsWith("road_") ? "asphalt" : "concrete";
+      const key = `${kind}:${item.size.x}:${item.size.y}`;
+      if (!surfaceTextures.has(key)) {
+        const texture = urbanSurfaceTexture(kind);
+        texture.repeat.set(item.size.x / 8, item.size.y / 8);
+        surfaceTextures.set(key, texture);
+      }
+      map = surfaceTextures.get(key);
+    }
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(item.size.x, item.size.z, item.size.y),
+      new THREE.MeshStandardMaterial({ color: map ? "#ffffff" : item.color, map, roughness: 0.9 }),
+    );
+    mesh.position.copy(toWorld(item.position));
+    mesh.castShadow = item.name.startsWith("building_");
+    mesh.receiveShadow = true;
+    mesh.userData.environment = true;
+    mesh.userData.cameraOccluder = item.name.startsWith("building_");
+    scene.add(mesh);
+    if (item.name === "base_pad" || item.name === "target_pad") {
+      scene.add(createEndpointBeacon(item, beaconHeight));
+    }
+  });
+  if (urbanParcels.length) {
+    const roads = state.scene_layout.filter(item => item.name.startsWith("road_"));
+    scene.add(buildUrbanCity(state.scenario, toWorld, WORLD_SCALE, ALTITUDE_SCALE, roads));
+  }
+  scene.updateMatrixWorld(true);
+  scene.traverse((object) => {
+    if (object.userData.cameraOccluder) {
+      cameraObstacles.push(new THREE.Box3().setFromObject(object).expandByScalar(0.15));
+    }
+  });
 
   uavGroup = createDrone();
   uavGroup.position.copy(toWorld(state.uav));
   scene.add(uavGroup);
+  if (cameraMode === "follow") setCameraMode("follow");
 
   state.dynamic_objects.forEach((item) => {
-    const bird = createBird();
+    const bird = createBird(item);
     bird.position.copy(toWorld(item.position));
     scene.add(bird);
     birdMeshes.set(item.id, bird);
-    birdTargets.set(item.id, toWorld(item.position));
   });
 
   environmentReady = true;
 }
 
 
-function addRoads() {
-  const roadMaterial = new THREE.MeshStandardMaterial({
-    color: 0x4b5150,
-    roughness: 0.92,
+function createEndpointBeacon(item, height) {
+  const group = new THREE.Group();
+  group.name = item.name + "_beacon";
+  group.userData.environment = true;
+  group.position.copy(toWorld(item.position));
+  group.position.y += item.size.z / 2;
+  // Overlay the glow so buildings cannot hide the destination in follow mode.
+  const material = new THREE.MeshBasicMaterial({
+    color: item.color, transparent: true, opacity: 0.14,
+    side: THREE.DoubleSide, depthWrite: false, depthTest: false,
+    fog: false, toneMapped: false,
   });
-  const laneMaterial = new THREE.MeshBasicMaterial({ color: 0xe7dfb4 });
-  [-18, 18].forEach((offset) => {
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(5.4, 78), roadMaterial);
-    road.rotation.x = -Math.PI / 2;
-    road.position.set(offset, 0.035, 0);
-    road.receiveShadow = true;
-    road.userData.environment = true;
-    scene.add(road);
-
-    for (let z = -34; z <= 34; z += 6) {
-      const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.15, 2.8), laneMaterial);
-      stripe.rotation.x = -Math.PI / 2;
-      stripe.position.set(offset, 0.05, z);
-      stripe.userData.environment = true;
-      scene.add(stripe);
-    }
-  });
+  const geometry = new THREE.BoxGeometry(item.size.x, height, item.size.y);
+  // Keep only the four vertical faces, leaving the light column open at both ends.
+  const indices = geometry.index.array;
+  geometry.setIndex([...indices.slice(0, 12), ...indices.slice(24)]);
+  geometry.clearGroups();
+  const column = new THREE.Mesh(geometry, material);
+  column.position.y = height / 2;
+  column.renderOrder = 3;
+  group.add(column);
+  const halfWidth = item.size.x / 2;
+  const halfDepth = item.size.y / 2;
+  const ring = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-halfWidth, 0.025, -halfDepth),
+    new THREE.Vector3(halfWidth, 0.025, -halfDepth),
+    new THREE.Vector3(halfWidth, 0.025, halfDepth),
+    new THREE.Vector3(-halfWidth, 0.025, halfDepth),
+  ]), new THREE.LineBasicMaterial({
+    color: item.color, transparent: true, opacity: 0.8,
+    depthWrite: false, depthTest: false, fog: false, toneMapped: false,
+  }));
+  ring.renderOrder = 4;
+  group.add(ring);
+  return group;
 }
 
 
-function addBuildings() {
-  const colors = [0xbcc4c3, 0x9da9aa, 0xc6b8a1, 0x7e9195, 0xb2aca2];
-  state.buildings.forEach((building, index) => {
-    const height = building.height * ALTITUDE_SCALE;
-    const geometry = new THREE.BoxGeometry(WORLD_SCALE * 0.78, height, WORLD_SCALE * 0.78);
-    const material = new THREE.MeshStandardMaterial({
-      color: colors[index % colors.length],
-      roughness: 0.72,
-      metalness: 0.05,
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    const world = toWorld({ x: building.x, y: building.y, z: 0 });
-    mesh.position.set(world.x, height / 2, world.z);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    mesh.userData.environment = true;
-    scene.add(mesh);
-
-    addWindows(mesh, height, index);
-  });
-}
-
-
-function addWindows(building, height, index) {
-  if (height < 7) {
-    return;
-  }
-  const windowMaterial = new THREE.MeshBasicMaterial({
-    color: index % 3 === 0 ? 0xb8e3e8 : 0x36535a,
-  });
-  const rows = Math.max(2, Math.floor(height / 3.5));
-  for (let row = 0; row < rows; row += 1) {
-    const windowMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(0.85, 0.62),
-      windowMaterial,
-    );
-    windowMesh.position.set(
-      building.position.x,
-      1.8 + row * 3.0,
-      building.position.z + WORLD_SCALE * 0.397,
-    );
-    windowMesh.userData.environment = true;
-    scene.add(windowMesh);
-  }
-}
-
-
-function addTrees() {
-  const occupied = new Set(state.buildings.map((item) => `${item.x},${item.y}`));
-  for (let i = 0; i < 42; i += 1) {
-    const x = (i * 7 + 2) % state.grid_size;
-    const y = (i * 11 + 3) % state.grid_size;
-    if (occupied.has(`${x},${y}`) || (x < 3 && y > 15) || (x > 15 && y < 5)) {
-      continue;
-    }
-    const tree = new THREE.Group();
-    const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.13, 0.19, 1.2, 7),
-      new THREE.MeshStandardMaterial({ color: 0x6d5438, roughness: 1 }),
-    );
-    trunk.position.y = 0.6;
-    const crown = new THREE.Mesh(
-      new THREE.ConeGeometry(0.75, 2.2, 8),
-      new THREE.MeshStandardMaterial({ color: 0x3d7045, roughness: 1 }),
-    );
-    crown.position.y = 2.05;
-    trunk.castShadow = true;
-    crown.castShadow = true;
-    tree.add(trunk, crown);
-    const world = toWorld({ x, y, z: 0 });
-    tree.position.set(world.x, 0, world.z);
-    tree.userData.environment = true;
-    scene.add(tree);
-  }
-}
 
 
 function createDrone() {
@@ -745,141 +587,103 @@ function createDrone() {
 }
 
 
-function createBird() {
+function createBird(item) {
   const group = new THREE.Group();
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x2e3031,
-    roughness: 0.9,
-    side: THREE.DoubleSide,
+  const anatomy = new THREE.Group();
+  const radius = item.radius * WORLD_SCALE;
+  anatomy.scale.setScalar(radius / 1.65);
+  group.add(anatomy);
+  const dark = new THREE.MeshStandardMaterial({ color: 0x35414a, roughness: 0.8 });
+  const light = new THREE.MeshStandardMaterial({ color: 0xe4e8e5, roughness: 0.85 });
+  const beakMaterial = new THREE.MeshStandardMaterial({ color: 0xd9b25c, roughness: 0.6 });
+  const part = (geometry, material, position, scale) => {
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.position.set(...position);
+    if (scale) mesh.scale.set(...scale);
+    mesh.castShadow = true;
+    anatomy.add(mesh);
+    return mesh;
+  };
+  part(new THREE.SphereGeometry(0.33, 16, 12), light, [0, 0, 0], [0.7, 0.8, 1.7]);
+  part(new THREE.SphereGeometry(0.22, 14, 10), dark, [0, 0.18, 0.45]);
+  const beak = part(new THREE.ConeGeometry(0.09, 0.3, 6), beakMaterial, [0, 0.15, 0.73]);
+  beak.rotation.x = Math.PI / 2;
+  for (const side of [-1, 1]) {
+    part(new THREE.SphereGeometry(0.035, 8, 6), light, [side * 0.18, 0.23, 0.53]);
+    const tail = part(new THREE.BoxGeometry(0.17, 0.045, 0.48), dark, [side * 0.09, 0.02, -0.61]);
+    tail.rotation.y = side * 0.18;
+  }
+  const wings = [-1, 1].map((side) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(side * 0.15, 0.09, 0.02);
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 0.22);
+    shape.quadraticCurveTo(0.65, 0.35, 1.38, -0.28);
+    shape.lineTo(1.12, -0.46);
+    shape.lineTo(0.5, -0.3);
+    shape.lineTo(0, -0.2);
+    shape.closePath();
+    const geometry = new THREE.ExtrudeGeometry(shape, { depth: 0.045, bevelEnabled: false, curveSegments: 8 });
+    geometry.rotateX(Math.PI / 2);
+    const mesh = new THREE.Mesh(geometry, dark);
+    mesh.scale.x = side;
+    mesh.castShadow = true;
+    pivot.add(mesh);
+    anatomy.add(pivot);
+    return pivot;
   });
-  const body = new THREE.Mesh(new THREE.SphereGeometry(0.34, 12, 8), material);
-  body.scale.set(1.4, 0.7, 0.7);
-  body.castShadow = true;
-  group.add(body);
-
-  const wingGeometry = new THREE.BufferGeometry();
-  wingGeometry.setAttribute(
-    "position",
-    new THREE.Float32BufferAttribute(
-      [0, 0, 0, 1.25, 0.05, 0.25, 0.25, 0, -0.18],
-      3,
-    ),
-  );
-  wingGeometry.computeVertexNormals();
-
-  const leftWing = new THREE.Mesh(wingGeometry, material);
-  const rightWing = new THREE.Mesh(wingGeometry, material);
-  rightWing.scale.x = -1;
-  leftWing.userData.wing = true;
-  rightWing.userData.wing = true;
-  group.add(leftWing, rightWing);
-
-  const warning = new THREE.PointLight(0xff5d4b, 1.8, 5);
-  group.add(warning);
-
-  const safetyBubble = new THREE.Mesh(
-    new THREE.SphereGeometry(1.05, 14, 10),
-    new THREE.MeshBasicMaterial({
-      color: 0xff6b57,
-      transparent: true,
-      opacity: 0.16,
-      wireframe: true,
-    }),
-  );
+  const safetyBubble = new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 12),
+    new THREE.MeshBasicMaterial({ color: 0xf2b84b, transparent: true, opacity: 0.12, depthWrite: false }));
+  safetyBubble.visible = false;
   group.add(safetyBubble);
-  group.userData.wings = [leftWing, rightWing];
+  group.userData = { wings, anatomy, safetyBubble, id: item.id, radius, yaw: null };
   return group;
 }
 
 
-function createLandingMarker(color, type) {
-  const group = new THREE.Group();
-  const pad = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.25, 1.25, 0.12, 32),
-    new THREE.MeshStandardMaterial({
-      color: 0x263331,
-      roughness: 0.72,
-      metalness: 0.22,
-    }),
-  );
-  pad.receiveShadow = true;
-  group.add(pad);
-
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(0.84, 0.08, 10, 36),
-    new THREE.MeshBasicMaterial({ color }),
-  );
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.1;
-  group.add(ring);
-
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.3, 0.75, type === "target" ? 8 : 3, 18, 1, true),
-    new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: type === "target" ? 0.16 : 0.08,
-      side: THREE.DoubleSide,
-    }),
-  );
-  beam.position.y = type === "target" ? 4 : 1.5;
-  group.add(beam);
-  return group;
-}
 
 
 function syncScene(initial) {
   buildEnvironment();
 
+  const htmlRuntimeActive = state.runtime_backend === "html";
   const uavTarget = toWorld(state.uav);
   uavGroup.userData.targetPosition = uavTarget;
-  if (initial) {
-    uavGroup.position.copy(uavTarget);
-    activeTrajectory = null;
-  } else if (state.trajectory && state.trajectory.length > 1) {
-    const trajectoryPoints = state.trajectory.map((point) => toWorld(point));
-    activeTrajectory = new THREE.CatmullRomCurve3(
-      trajectoryPoints,
-      false,
-      "centripetal",
-      0.35,
-    );
-    trajectoryStartedAt = performance.now();
-    trajectoryDurationMs = Math.max(
-      120,
-      Number(state.trajectory_duration || 0.9) * 1000,
-    );
-  }
+  if (initial) uavGroup.position.copy(uavTarget);
 
   state.dynamic_objects.forEach((item) => {
     let bird = birdMeshes.get(item.id);
     if (!bird) {
-      bird = createBird();
+      bird = createBird(item);
       scene.add(bird);
       birdMeshes.set(item.id, bird);
     }
     const target = toWorld(item.position);
-    birdTargets.set(item.id, target);
     if (initial) {
       bird.position.copy(target);
-    }
-    const velocity = new THREE.Vector3(item.velocity.x, 0, item.velocity.y);
-    if (velocity.lengthSq() > 0.001) {
-      bird.rotation.y = Math.atan2(velocity.x, velocity.z);
     }
   });
 
   updatePath();
+  updateWaypoints();
+  setSceneActorVisibility(htmlRuntimeActive);
 }
 
 
 function updatePath() {
+  const nextKey = JSON.stringify(state.continuous_path || state.path || []);
+  if (nextKey === pathKey) return;
+  pathKey = nextKey;
   if (pathLine) {
     scene.remove(pathLine);
     pathLine.geometry.dispose();
     pathLine.material.dispose();
+    pathLine = null;
   }
-  const points = (state.continuous_path || state.path).map((point) => toWorld(point));
+  if (state.runtime_backend !== "html") {
+    return;
+  }
+  const points = (state.continuous_path || state.path || []).map((point) => toWorld(point));
   if (points.length < 2) {
     return;
   }
@@ -905,19 +709,116 @@ function updatePath() {
 }
 
 
+function disposeRoute() {
+  if (plannedRoute) {
+    plannedRoute.traverse((object) => {
+      object.geometry?.dispose();
+      object.material?.dispose();
+    });
+    scene.remove(plannedRoute);
+  }
+  plannedRoute = null;
+  plannedRouteKey = "";
+}
+
+
+function updateWaypoints() {
+  updateAvoidanceRoute();
+  const waypoints = state.flight?.waypoints || [];
+  const planStart = state.flight?.plan_start;
+  const key = JSON.stringify([state.flight?.plan_id, planStart, waypoints]);
+  if (key === plannedRouteKey) return;
+  disposeRoute();
+  plannedRouteKey = key;
+  if (!waypoints.length) return;
+  plannedRoute = new THREE.Group();
+  const points = waypoints.map(toWorld);
+  // The origin belongs to the accepted plan, not the moving UAV or mission base.
+  const routePoints = planStart ? [toWorld(planStart), ...points] : points;
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(routePoints),
+    new THREE.LineDashedMaterial({ color: 0xffc857, dashSize: 0.7, gapSize: 0.4 }),
+  );
+  line.computeLineDistances();
+  plannedRoute.add(line);
+  points.forEach((point) => {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.28, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffc857 }),
+    );
+    marker.position.copy(point);
+    plannedRoute.add(marker);
+  });
+  scene.add(plannedRoute);
+}
+
+
+function updateAvoidanceRoute() {
+  const avoidance = state.flight?.avoidance;
+  if (!avoidanceRoute) {
+    avoidanceRoute = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineDashedMaterial({ color: 0xff9f43, dashSize: 0.25, gapSize: 0.15, depthTest: false }),
+    );
+    avoidanceRoute.renderOrder = 6;
+    scene.add(avoidanceRoute);
+  }
+  avoidanceRoute.visible = state.runtime_backend === "html" && Boolean(avoidance?.active && avoidance.target);
+  if (avoidanceRoute.visible) {
+    const positions = avoidanceRoute.geometry.attributes.position;
+    [toWorld(state.uav), toWorld(avoidance.target)].forEach((point, index) => positions.setXYZ(index, point.x, point.y, point.z));
+    positions.needsUpdate = true;
+    avoidanceRoute.geometry.computeBoundingSphere();
+    avoidanceRoute.computeLineDistances();
+    avoidanceRoute.material.color.set(avoidance.limited ? 0xff5555 : 0xff9f43);
+  }
+}
+
+
+function setSceneActorVisibility(htmlRuntimeActive) {
+  if (plannedRoute) plannedRoute.visible = htmlRuntimeActive;
+  if (avoidanceRoute && !htmlRuntimeActive) avoidanceRoute.visible = false;
+  if (uavGroup) {
+    uavGroup.visible = htmlRuntimeActive;
+  }
+  birdMeshes.forEach((bird) => {
+    bird.visible = htmlRuntimeActive;
+  });
+  if (pathLine) {
+    pathLine.visible = htmlRuntimeActive;
+  }
+}
+
+
 function clearEnvironment() {
+  disposeRoute();
+  if (avoidanceRoute) {
+    avoidanceRoute.geometry.dispose();
+    avoidanceRoute.material.dispose();
+    scene.remove(avoidanceRoute);
+    avoidanceRoute = null;
+  }
+  pathKey = "";
   [...scene.children].forEach((child) => {
-    if (child.userData.environment || child === uavGroup || birdMeshesHas(child) || child === pathLine || child === targetMarker || child === baseMarker) {
+    if (child.userData.environment || child === uavGroup || birdMeshesHas(child) || child === pathLine) {
+      child.traverse((object) => {
+        object.geometry?.dispose();
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => {
+          material?.map?.dispose();
+          material?.dispose();
+        });
+      });
       scene.remove(child);
     }
   });
   birdMeshes.clear();
-  birdTargets.clear();
+  cameraObstacles = [];
+  followOffset.set(9, 7, 12);
+  followAnchor.set(0, 0, 0);
   rotorMeshes = [];
   uavGroup = null;
   pathLine = null;
-  targetMarker = null;
-  baseMarker = null;
   environmentReady = false;
 }
 
@@ -938,43 +839,44 @@ function renderUi() {
     return;
   }
   renderTelemetry();
-  renderRuntimeSettings();
+  renderRuntimeControls();
   renderDecisionTrace(getHistoryEntries()[0] || null);
 }
 
 
 function renderToolbarState() {
-  simulator?.setAttribute("data-operation", operationState);
-  operationBanner?.setAttribute("data-operation", operationState);
-  operationBanner?.setAttribute("aria-live", "polite");
-  setText(operationStatus, operationMessage);
-  setText(sceneExecutionStatus, operationMessage);
+  simulator?.setAttribute("data-operation", commandError ? "error" : state?.flight?.mode || "idle");
 
-  setText(phaseValue, state?.phase);
-  setText(
-    backendValue,
-    state?.agent_model
-      ? `${state.agent_backend}:${state.agent_model}`
-      : state?.agent_backend,
-  );
-  const missionActive = state?.status === "active";
-  stepBtn.disabled = runtimePending
-    || runtimeStopPending
-    || stepInFlight
-    || autoRunning
-    || !missionActive;
-  autoBtn.disabled = runtimePending
-    || runtimeStopPending
-    || !missionActive
-    || (stepInFlight && !autoRunning);
-  resetBtn.disabled = runtimePending || stepInFlight;
-  scenarioSelect.disabled = runtimePending || stepInFlight;
-  autoBtn.setAttribute("aria-pressed", String(autoRunning));
+  const missionPhase = { fly_to_target: "Outbound", returning_home: "Returning", completed: "Completed" }[state?.phase] || "--";
+  setText(phaseValue, `${missionPhase} / ${state?.flight?.mode || "idle"}`);
+  const traceDecision = getHistoryEntries()[0]?.decision;
+  const traceBackend = traceDecision?.agent_backend || state?.agent_backend;
+  const traceModel = traceDecision?.agent_backend
+    ? traceDecision.agent_model
+    : state?.agent_model;
+  setText(backendValue, traceModel ? `${traceBackend}:${traceModel}` : traceBackend);
+  const flight = state?.flight || {};
+  const active = Boolean(flight.running || flight.planning);
+  const unavailable = !state || state.status !== "active";
+  planBtn.disabled = commandPending || unavailable || active || flight.mode === "braking";
+  startBtn.disabled = commandPending || unavailable || flight.mode === "braking";
+  resetBtn.disabled = commandPending || !state;
+  scenarioSelect.disabled = commandPending || !state;
+  agentButtons.forEach((button) => {
+    const selected = button.dataset.agent === state?.agent_backend;
+    button.setAttribute("aria-checked", String(selected));
+    button.classList.toggle("active", selected);
+    button.disabled = commandPending;
+  });
+  if (agentKeyBtn) {
+    agentKeyBtn.disabled = commandPending;
+  }
+  startBtn.setAttribute("aria-pressed", String(active));
 
   const iconChanged = updateCommandButton(
-    autoBtn,
-    autoRunning ? "Pause" : "Auto",
-    autoRunning ? "pause" : "play",
+    startBtn,
+    active ? "Pause" : "Start",
+    active ? "pause" : "play",
   );
   if (iconChanged) {
     createLucideIcons();
@@ -1007,9 +909,9 @@ function renderTelemetry() {
     batteryValue,
     state.battery === null || state.battery === undefined
       ? "--"
-      : `${state.battery}%`,
+      : `${Math.round(state.battery)}%`,
   );
-  setText(telemetryPhaseValue, state.phase);
+  setText(telemetryPhaseValue, state.flight?.mode);
 
   const observation = isRecord(state.observation) ? state.observation : {};
   const threat = isRecord(observation.nearest_dynamic_obstacle)
@@ -1041,10 +943,8 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
   const structuredEntryObservation = isRecord(entry?.observation)
     ? entry.observation
     : null;
-  const observation = structuredEntryObservation
-    || ((!entry || isLatestEntry) && isRecord(state.observation)
-      ? state.observation
-      : {});
+  const observation = ((!entry || isLatestEntry) && isRecord(state.observation)
+    ? state.observation : structuredEntryObservation) || {};
   const hasObservation = Boolean(
     entry?.observation || Object.keys(observation).length,
   );
@@ -1056,10 +956,10 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
 
   setText(
     currentStepValue,
-    `#${state.step_count ?? 0}`,
+    `#${state.flight?.plan_id ?? 0}`,
   );
   setText(goalDirectionValue, observation.goal_direction);
-  setText(goalDistanceValue, observation.goal_distance);
+  setText(goalDistanceValue, formatNumber(observation.goal_distance));
   setText(
     staticRiskValue,
     formatStaticRisk(
@@ -1076,102 +976,85 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
   );
 
   const decision = isRecord(entry?.decision) ? entry.decision : {};
-  setText(agentActionValue, decision.action);
+  const waypoints = Array.isArray(decision.waypoints) ? decision.waypoints : [];
+  const flight = state.flight || {};
+  const avoidance = flight.avoidance || {};
+  setText(agentActionValue, waypoints.length ? waypoints.map(formatPoint).join(" -> ") : "--");
+  setText(document.getElementById("plannerProgress"), `${flight.planner_calls ?? 0} planner calls | ${avoidance.replans ?? 0} local replans | ${Math.min(flight.waypoint_index ?? 0, flight.waypoints?.length ?? 0)}/${flight.waypoints?.length ?? 0} reached`);
   setText(agentRiskValue, decision.risk);
   setText(agentReasonValue, decision.reason);
 
-  const proposedAction = decision.proposed_action || decision.action;
-  const executedAction = entry?.action ?? decision.action;
   const safetyIntervention = decision.safety_intervention;
   const hasDecision = Object.keys(decision).length > 0;
   setTraceStageStatus(
     "agent",
-    hasDecision ? "pass" : "waiting",
-    hasDecision ? "PROPOSED" : "WAITING",
+    flight.planning ? "active" : decision.provider_error ? "error" : hasDecision ? "pass" : "waiting",
+    flight.planning ? "PLANNING" : decision.provider_error ? "API ERROR" : hasDecision ? "PLANNED" : "WAITING",
   );
   const guardOverrode = Boolean(
-    decision.safety_intervened
-      || safetyIntervention
-      || (
-        proposedAction
-        && executedAction
-        && proposedAction !== executedAction
-      ),
+    avoidance.active || decision.safety_intervened || safetyIntervention,
   );
-  setText(proposedActionValue, proposedAction);
-  setText(executedActionValue, executedAction);
-  const guardLabel = hasDecision ? (guardOverrode ? "OVERRIDE" : "PASS") : "WAITING";
+  setText(proposedActionValue, decision.expected_result);
+  setText(executedActionValue, formatPoint(avoidance.active ? avoidance.target : flight.waypoints?.[flight.waypoint_index]));
+  const guardLabel = avoidance.active ? "LOCAL AVOIDANCE" : decision.provider_error ? "API ERROR" : hasDecision ? (guardOverrode ? "OVERRIDE" : "PASS") : "WAITING";
   setText(guardStatus, guardLabel);
   const guardContainer = guardStatus?.closest(".decision-guard");
   guardContainer?.setAttribute(
     "data-status",
-    hasDecision ? (guardOverrode ? "override" : "pass") : "waiting",
+    decision.provider_error ? "error" : guardOverrode ? "override" : hasDecision ? "pass" : "waiting",
   );
   guardStatus?.setAttribute(
     "data-status",
-    hasDecision ? (guardOverrode ? "override" : "pass") : "waiting",
+    decision.provider_error ? "error" : guardOverrode ? "override" : hasDecision ? "pass" : "waiting",
   );
 
-  const execution = isRecord(entry?.execution) ? entry.execution : {};
-  const useCurrentExecution = !entry || isLatestEntry;
-  const executionPosition = execution.position
-    ?? entry?.position
-    ?? (useCurrentExecution ? state.uav : null);
-  const executionFeedback = entry?.feedback
-    ?? execution.feedback
-    ?? (!entry ? state.feedback : null);
-  const hasExecution = Boolean(
-    entry && (
-      executionFeedback
-      || Object.keys(execution).length
-    ),
-  );
   setTraceStageStatus(
     "execution",
-    hasExecution ? "pass" : "waiting",
-    hasExecution ? "EXECUTED" : "WAITING",
+    avoidance.active ? (avoidance.limited ? "error" : "active") : flight.error ? "error" : flight.running || flight.planning ? "active" : "pass",
+    String(flight.mode || "idle").toUpperCase(),
   );
+  setText(resultActionValue, `${flight.mode || "idle"} / ${formatNumber(flight.speed_mps)} m/s`);
+  setText(executionPositionValue, formatPoint(state.uav));
+  const milestones = state.milestones || {};
+  setText(missionProgressText, `${milestones.target_reached ? "Target reached" : "Target pending"} · ${milestones.base_returned ? "Returned to base" : "Return pending"}`);
+  const recovery = flight.recovery || {};
+  const recoveryLabels = {
+    refresh_observation_and_retry_provider: "Waiting for API recovery",
+    repair_response: "Requesting a valid response",
+    repair_rejected_segments: "Repairing rejected route",
+    choose_different_corridor: "Requesting a different corridor",
+    refresh_observation_and_change_route: "Replanning after stalled progress",
+    track_accepted_route: "Following accepted route",
+  };
+  setText(recoveryText, `${recoveryLabels[recovery.next_action] || "No retry pending"}${flight.retry_in_seconds > 0 ? ` · retry in ${flight.retry_in_seconds.toFixed(1)}s` : ""}`);
+  setText(feedbackText, commandError || (avoidance.active
+    ? [avoidance.message, flight.error].filter(Boolean).join(" ")
+    : flight.error || state.feedback || entry?.feedback));
 
-  setText(resultActionValue, executedAction);
-  setText(executionPositionValue, formatPoint(executionPosition));
-  setText(feedbackText, executionFeedback);
 }
 
 
-function renderRuntimeSettings() {
+function renderRuntimeControls() {
   if (!state) {
     return;
   }
   const runtime = state.runtime || {};
   const connected = Boolean(runtime.connected);
-  setText(runtimeStatus, runtimePending
-    ? `${state.runtime_backend} / switching`
+  setText(runtimeStatus, commandPending
+    ? `${state.runtime_backend} / pending`
     : `${state.runtime_backend} / ${connected ? "connected" : "offline"}`);
-  setText(
-    settingsAgentValue,
-    state.agent_model
-      ? `${state.agent_backend}:${state.agent_model}`
-      : state.agent_backend,
-  );
-  setText(
-    settingsScenarioValue,
-    state.scenario?.name || state.scenario_id,
-  );
-  setText(
-    settingsRuntimeValue,
-    `${String(state.runtime_backend || "--").toUpperCase()} / ${connected ? "connected" : "offline"}`,
-  );
-  runtimeStatus.setAttribute("aria-busy", String(runtimePending));
+  runtimeStatus.setAttribute("aria-busy", String(commandPending));
   runtimeStatus.setAttribute("data-connected", String(connected));
   runtimeStatus.style.color = connected ? "#62d57b" : "#ff6b57";
-  airsimPanel.classList.toggle("is-hidden", state.runtime_backend !== "airsim");
-  airsimPanel.hidden = state.runtime_backend !== "airsim";
   runtimeButtons.forEach((button) => {
     const selected = button.dataset.runtime === state.runtime_backend;
     button.setAttribute("aria-checked", String(selected));
     button.classList.toggle("active", selected);
-    button.disabled = runtimePending;
+    button.disabled = commandPending;
   });
+  if (airsimConfigBtn) {
+    airsimConfigBtn.disabled = commandPending;
+  }
 
   scenarioSelect.value = state.scenario_id || "";
   if (runtime.host !== null && runtime.host !== undefined) {
@@ -1188,20 +1071,66 @@ function renderRuntimeSettings() {
   setInputUnlessFocused(windEast, wind.y ?? 0);
   setInputUnlessFocused(windDown, wind.z ?? 0);
 
-  reconnectAirSimBtn.disabled = runtimePending;
-  applyWindBtn.disabled = runtimePending || !connected;
+  reconnectAirSimBtn.disabled = commandPending;
+  applyWindBtn.disabled = commandPending
+    || !connected
+    || !Boolean(runtime.supports_wind);
 }
 
 
-function renderRuntimeControls() {
-  renderRuntimeSettings();
+function openDialog(dialog) {
+  if (!dialog) {
+    return;
+  }
+  if (typeof dialog.showModal === "function") {
+    if (!dialog.open) {
+      dialog.showModal();
+    }
+  } else {
+    dialog.setAttribute("open", "");
+  }
 }
 
 
-function setOperationState(nextState, message) {
-  operationState = nextState || "ready";
-  operationMessage = valueOrDash(message);
-  renderToolbarState();
+function closeDialog(dialog) {
+  if (!dialog) {
+    return;
+  }
+  if (typeof dialog.close === "function") {
+    if (dialog.open) {
+      dialog.close();
+    }
+  } else {
+    dialog.removeAttribute("open");
+  }
+}
+
+
+function openAgentDialog() {
+  if (commandPending) {
+    return;
+  }
+  if (deepseekApiKey) {
+    deepseekApiKey.value = "";
+  }
+  if (deepseekModel && state?.agent_model) {
+    deepseekModel.value = String(state.agent_model);
+  }
+  if (agentDialogError) {
+    agentDialogError.hidden = true;
+    agentDialogError.textContent = "";
+  }
+  openDialog(agentDialog);
+  window.setTimeout(() => deepseekApiKey?.focus(), 0);
+}
+
+
+function openAirSimDialog() {
+  if (commandPending) {
+    return;
+  }
+  renderRuntimeControls();
+  openDialog(airsimDialog);
 }
 
 
@@ -1337,6 +1266,7 @@ function updateCommandButton(button, label, iconName) {
     }
   }
   button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
 
   const icon = button.querySelector("[data-lucide]");
   if (!icon || icon.getAttribute("data-lucide") === iconName) {
@@ -1351,11 +1281,6 @@ function createLucideIcons() {
   if (window.lucide?.createIcons) {
     window.lucide.createIcons();
   }
-}
-
-
-function isCancellationError(message) {
-  return /\b(cancelled|canceled|aborted)\b/i.test(String(message || ""));
 }
 
 
@@ -1395,14 +1320,91 @@ function toWorld(point) {
 }
 
 
+function visibleFollowDistance(target, offset) {
+  const distance = offset.length();
+  if (distance < 1e-6) return 0;
+  const ray = new THREE.Ray(target, offset.clone().divideScalar(distance));
+  const hit = new THREE.Vector3();
+  let visible = distance;
+  for (const obstacle of cameraObstacles) {
+    if (ray.intersectBox(obstacle, hit)) {
+      visible = Math.min(visible, hit.distanceTo(target));
+    }
+  }
+  return visible;
+}
+
+
+function chooseFollowOffset(target) {
+  // Retain even a shortened safe boom; do not reselect tied directions every frame.
+  if (visibleFollowDistance(target, followOffset) >= followOffset.length() - 0.4) {
+    return followOffset;
+  }
+  const base = new THREE.Vector3(9, 7, 12);
+  const axis = new THREE.Vector3(0, 1, 0);
+  let best = null;
+  let bestScore = Infinity;
+  let fallback = null;
+  let fallbackDistance = 0;
+  for (const height of [7, 12, 20, 36]) {
+    const offsets = [new THREE.Vector3(0, height, 15), new THREE.Vector3(0, height, -15),
+      new THREE.Vector3(15, height, 0), new THREE.Vector3(-15, height, 0)];
+    for (const angle of [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2,
+      -Math.PI / 2, 3 * Math.PI / 4, -3 * Math.PI / 4, Math.PI]) {
+      offsets.push(new THREE.Vector3(base.x, height, base.z).applyAxisAngle(axis, angle));
+    }
+    for (const offset of offsets) {
+      const visible = visibleFollowDistance(target, offset);
+      if (visible > fallbackDistance) {
+        fallbackDistance = visible;
+        fallback = offset.clone().multiplyScalar(Math.max(0.1, visible - 1.2) / offset.length());
+      }
+      if (visible < offset.length() - 0.4) continue;
+      const score = offset.distanceToSquared(followOffset) + 0.15 * offset.distanceToSquared(base);
+      if (score < bestScore) {
+        bestScore = score;
+        best = offset;
+      }
+    }
+  }
+  followOffset = best || fallback || base;
+  return followOffset;
+}
+
+function updateFollowCamera(delta) {
+  const target = uavGroup.position;
+  // Transport the rig with its subject before damping the boom, avoiding polling lag.
+  camera.position.add(target.clone().sub(followAnchor));
+  followAnchor.copy(target);
+  const offset = camera.position.clone().sub(target);
+  offset.lerp(chooseFollowOffset(target), 1 - Math.exp(-3.2 * delta));
+  const length = offset.length();
+  const visible = visibleFollowDistance(target, offset);
+  // Retract along the current sightline instead of teleporting to another angle.
+  if (visible < length && length > 1e-6) {
+    offset.multiplyScalar(Math.max(0.1, visible - 1.2) / length);
+  }
+  camera.position.copy(target).add(offset);
+  camera.lookAt(target);
+}
+
+
 function setCameraMode(mode) {
   cameraMode = mode;
   overviewBtn.classList.toggle("active", mode === "overview");
   followBtn.classList.toggle("active", mode === "follow");
   controls.enabled = mode === "overview";
   if (mode === "overview") {
-    camera.position.set(40, 42, 48);
-    controls.target.set(0, 6, 0);
+    const mapScale = Math.max(1, (state?.grid_size || 20) / 20);
+    const urban = Boolean(state?.scenario?.urban_parcels?.length);
+    camera.position.set((urban ? 50 : 55) * mapScale,
+      (urban ? 42 : 60) * mapScale, (urban ? 56 : 65) * mapScale);
+    controls.target.set(0, urban ? 24 : 17, 0);
+  } else if (uavGroup) {
+    followOffset.set(9, 7, 12);
+    followAnchor.copy(uavGroup.position);
+    camera.position.copy(uavGroup.position).add(chooseFollowOffset(uavGroup.position));
+    camera.lookAt(uavGroup.position);
   }
 }
 
@@ -1411,57 +1413,87 @@ function animate() {
   timer.update();
   const delta = Math.min(timer.getDelta(), 0.05);
   const elapsed = timer.getElapsed();
+  const htmlRuntimeActive = state?.runtime_backend === "html";
 
-  if (uavGroup) {
-    if (activeTrajectory) {
-      const progress = Math.min(
-        1,
-        (performance.now() - trajectoryStartedAt) / trajectoryDurationMs,
-      );
-      const position = activeTrajectory.getPoint(progress);
-      const tangent = activeTrajectory.getTangent(Math.min(1, progress + 0.01));
-      uavGroup.position.copy(position);
-      if (Math.abs(tangent.x) + Math.abs(tangent.z) > 0.001) {
-        uavGroup.rotation.y = Math.atan2(tangent.x, tangent.z);
+  if (uavGroup && htmlRuntimeActive) {
+    if (uavGroup.userData.targetPosition) {
+      const target = uavGroup.userData.targetPosition;
+      const direction = target.clone().sub(uavGroup.position);
+      uavGroup.position.lerp(target, 1 - Math.exp(-20 * delta));
+      if (Math.abs(direction.x) + Math.abs(direction.z) > 0.001) {
+        uavGroup.rotation.y = Math.atan2(direction.x, direction.z);
       }
-      const bank = THREE.MathUtils.clamp(-tangent.x * 0.12, -0.16, 0.16);
-      uavGroup.rotation.z = bank + Math.sin(elapsed * 2.2) * 0.018;
-      if (progress >= 1) {
-        activeTrajectory = null;
-        uavGroup.position.copy(uavGroup.userData.targetPosition);
-      }
-    } else if (uavGroup.userData.targetPosition) {
-      uavGroup.position.lerp(uavGroup.userData.targetPosition, 1 - Math.exp(-5.5 * delta));
-      uavGroup.rotation.z = Math.sin(elapsed * 2.2) * 0.025;
+      uavGroup.rotation.z = Math.sin(elapsed * 2.2) * 0.018;
     }
     rotorMeshes.forEach((rotor) => {
       rotor.rotation.y += delta * 42 * rotor.userData.speed;
     });
   }
 
-  birdMeshes.forEach((bird, id) => {
-    const target = birdTargets.get(id);
-    if (target) {
-      bird.position.lerp(target, 1 - Math.exp(-3.6 * delta));
-    }
-    bird.userData.wings.forEach((wing, index) => {
-      wing.rotation.z = Math.sin(elapsed * 8.5 + index * Math.PI) * 0.5;
+  if (htmlRuntimeActive) {
+    birdMeshes.forEach((bird, id) => {
+      const model = trafficMotion?.models[id];
+      if (model) {
+        const seconds = trafficMotion.elapsed; // Shared backend simulation clock; no wall-time extrapolation.
+        const { position, velocity } = sampleTraffic(model, seconds);
+        bird.position.lerp(toWorld({ x: position[0], y: position[1], z: position[2] }), 1 - Math.exp(-20 * delta));
+        const speed = Math.hypot(velocity[0] * WORLD_SCALE, velocity[1] * WORLD_SCALE, velocity[2] * ALTITUDE_SCALE);
+        if (speed > 0.02) {
+          const yaw = Math.atan2(velocity[0], velocity[1]);
+          const change = bird.userData.yaw === null ? 0 : Math.atan2(Math.sin(yaw - bird.userData.yaw), Math.cos(yaw - bird.userData.yaw));
+          bird.rotation.y = yaw;
+          bird.userData.anatomy.rotation.z = THREE.MathUtils.lerp(bird.userData.anatomy.rotation.z,
+            THREE.MathUtils.clamp(-change / Math.max(delta, 0.001) * 0.3, -0.45, 0.45), 1 - Math.exp(-5 * delta));
+          bird.userData.yaw = yaw;
+          bird.userData.anatomy.rotation.x = -Math.atan2(velocity[2] * ALTITUDE_SCALE,
+            Math.hypot(velocity[0] * WORLD_SCALE, velocity[1] * WORLD_SCALE));
+        }
+        const glide = Math.sin(seconds * 0.65 + model.phase) > 0.5 && speed > 0.8;
+        bird.userData.wings.forEach((wing, index) => {
+          wing.rotation.z = (index === 0 ? -1 : 1) * (glide ? 0.08 : Math.sin(seconds * 9 + model.phase) * 0.45);
+        });
+      }
+      const separation = bird.position.distanceTo(toWorld(state.uav));
+      const high = separation < bird.userData.radius + 1;
+      const near = separation < bird.userData.radius + 4;
+      bird.userData.safetyBubble.visible = near || hoveredBird === bird;
+      bird.userData.safetyBubble.material.color.set(high ? 0xff6b57 : near ? 0xf2b84b : 0x74d8df);
     });
-  });
-
-  if (targetMarker) {
-    targetMarker.rotation.y += delta * 0.35;
   }
+  updateBirdHover(htmlRuntimeActive);
 
   if (cameraMode === "follow" && uavGroup) {
-    const desired = uavGroup.position.clone().add(new THREE.Vector3(9, 7, 12));
-    camera.position.lerp(desired, 1 - Math.exp(-3.2 * delta));
-    camera.lookAt(uavGroup.position);
+    updateFollowCamera(delta);
   } else {
     controls.update();
   }
 
   renderer.render(scene, camera);
+}
+
+function updateBirdHover(active) {
+  hoveredBird = null;
+  if (active && Math.abs(birdPointer.x) <= 1 && Math.abs(birdPointer.y) <= 1) {
+    birdRaycaster.setFromCamera(birdPointer, camera);
+    const hit = birdRaycaster.intersectObjects(scene.children, true)
+      .find((entry) => entry.object.visible && ![...birdMeshes.values()].some((bird) => entry.object === bird.userData.safetyBubble));
+    let object = hit?.object;
+    while (object) {
+      if (object.userData.id && birdMeshes.get(object.userData.id) === object) {
+        hoveredBird = object;
+        break;
+      }
+      object = object.parent;
+    }
+  }
+  birdTooltip.hidden = !hoveredBird;
+  if (hoveredBird) {
+    birdTooltip.textContent = `${hoveredBird.userData.id} · ${hoveredBird.position.y.toFixed(1)} m`;
+    const width = sceneContainer.clientWidth;
+    const height = sceneContainer.clientHeight;
+    birdTooltip.style.left = `${Math.min(width - 150, Math.max(8, (birdPointer.x + 1) * width / 2 + 12))}px`;
+    birdTooltip.style.top = `${Math.min(height - 36, Math.max(8, (1 - birdPointer.y) * height / 2 - 28))}px`;
+  }
 }
 
 
@@ -1474,41 +1506,38 @@ function onResize() {
 }
 
 
-stepBtn.addEventListener("click", stepSimulation);
-autoBtn.addEventListener("click", toggleAuto);
+planBtn.addEventListener("click", planMission);
+startBtn.addEventListener("click", toggleMission);
 resetBtn.addEventListener("click", resetSimulation);
 scenarioSelect.addEventListener("change", () => switchScenario(scenarioSelect.value));
 overviewBtn.addEventListener("click", () => setCameraMode("overview"));
 followBtn.addEventListener("click", () => setCameraMode("follow"));
+agentButtons.forEach((button) => {
+  button.addEventListener("click", () => {
+    const backend = button.dataset.agent;
+    if (backend === "deepseek" && !state?.deepseek_key_configured) {
+      openAgentDialog();
+      return;
+    }
+    void switchAgent(backend);
+  });
+});
 runtimeButtons.forEach((button) => {
   button.addEventListener("click", () => switchRuntime(button.dataset.runtime));
 });
+agentKeyBtn?.addEventListener("click", openAgentDialog);
+airsimConfigBtn?.addEventListener("click", openAirSimDialog);
 reconnectAirSimBtn.addEventListener("click", () => switchRuntime("airsim", true));
 applyWindBtn.addEventListener("click", applyWind);
-settingsBtn?.addEventListener("click", () => {
-  renderRuntimeSettings();
-  if (typeof settingsDialog?.showModal === "function") {
-    if (!settingsDialog.open) {
-      settingsDialog.showModal();
-    }
-  } else {
-    settingsDialog?.setAttribute("open", "");
-  }
-});
-closeSettingsBtn?.addEventListener("click", () => {
-  if (typeof settingsDialog?.close === "function") {
-    settingsDialog.close();
-  } else {
-    settingsDialog?.removeAttribute("open");
-  }
-});
+agentForm?.addEventListener("submit", configureDeepSeekFromDialog);
+closeAgentBtn?.addEventListener("click", () => closeDialog(agentDialog));
+cancelAgentBtn?.addEventListener("click", () => closeDialog(agentDialog));
+closeAirSimBtn?.addEventListener("click", () => closeDialog(airsimDialog));
+closeAirSimFooterBtn?.addEventListener("click", () => closeDialog(airsimDialog));
 window.addEventListener("resize", onResize);
 
 createLucideIcons();
 renderToolbarState();
 renderer.setAnimationLoop(animate);
-loadState().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  setText(feedbackText, message);
-  setOperationState("error", message);
-});
+void pollState();
+void loadScenarios().catch(() => setText(feedbackText, "Scenario list unavailable"));

@@ -33,34 +33,54 @@
         </select>
       </label>
 
-      <div class="runtime-selector" role="radiogroup" aria-label="Simulation runtime">
-        <button type="button" class="runtime-option" data-runtime="html" role="radio" aria-checked="true">
-          <i data-lucide="monitor" aria-hidden="true"></i>
-          <span>HTML</span>
+      <div class="toolbar-control agent-control" aria-label="Agent backend">
+        <span class="toolbar-control-label">Agent</span>
+        <div class="agent-selector" role="radiogroup" aria-label="Agent backend">
+          <button type="button" class="agent-option" data-agent="mock" role="radio" aria-checked="true">
+            <i data-lucide="cpu" aria-hidden="true"></i>
+            <span>Mock</span>
+          </button>
+          <button type="button" class="agent-option" data-agent="deepseek" role="radio" aria-checked="false">
+            <i data-lucide="sparkles" aria-hidden="true"></i>
+            <span>DeepSeek API</span>
+          </button>
+        </div>
+        <button id="agentKeyBtn" type="button" class="icon-button toolbar-config-button" aria-label="Configure DeepSeek API key" title="Configure DeepSeek API key">
+          <i data-lucide="key-round" aria-hidden="true"></i>
         </button>
-        <button type="button" class="runtime-option" data-runtime="airsim" role="radio" aria-checked="false">
-          <i data-lucide="radio" aria-hidden="true"></i>
-          <span>AirSim</span>
+      </div>
+
+      <div class="toolbar-control runtime-control" aria-label="Simulation runtime">
+        <span class="toolbar-control-label">Runtime</span>
+        <div class="runtime-selector" role="radiogroup" aria-label="Simulation runtime">
+          <button type="button" class="runtime-option" data-runtime="html" role="radio" aria-checked="true">
+            <i data-lucide="monitor" aria-hidden="true"></i>
+            <span>HTML</span>
+          </button>
+          <button type="button" class="runtime-option" data-runtime="airsim" role="radio" aria-checked="false">
+            <i data-lucide="radio" aria-hidden="true"></i>
+            <span>AirSim</span>
+          </button>
+        </div>
+        <button id="airsimConfigBtn" type="button" class="icon-button toolbar-config-button" aria-label="Configure AirSim" title="Configure AirSim">
+          <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
         </button>
       </div>
 
       <span id="runtimeStatus" class="runtime-status" aria-live="polite">html / connected</span>
       <div class="toolbar-spacer" aria-hidden="true"></div>
 
-      <button id="settingsBtn" type="button" class="icon-button" aria-label="Settings" title="Settings">
-        <i data-lucide="settings" aria-hidden="true"></i>
-      </button>
       <button id="resetBtn" type="button" class="command-button secondary">
         <i data-lucide="rotate-ccw" aria-hidden="true"></i>
         <span>Reset</span>
       </button>
-      <button id="autoBtn" type="button" class="command-button secondary">
+      <button id="startBtn" type="button" class="command-button secondary" title="Start" aria-label="Start">
         <i data-lucide="play" aria-hidden="true"></i>
-        <span>Auto</span>
+        <span>Start</span>
       </button>
-      <button id="stepBtn" type="button" class="command-button primary">
-        <i data-lucide="step-forward" aria-hidden="true"></i>
-        <span>Step</span>
+      <button id="planBtn" type="button" class="command-button primary" title="Plan once" aria-label="Plan once">
+        <i data-lucide="route" aria-hidden="true"></i>
+        <span>Plan</span>
       </button>
     </header>
 
@@ -81,7 +101,7 @@
           <strong id="batteryValue">--</strong>
         </div>
         <div class="telemetry-item">
-          <span>Phase</span>
+          <span>Flight mode</span>
           <strong id="telemetryPhaseValue">--</strong>
         </div>
         <div class="telemetry-item threat">
@@ -99,15 +119,13 @@
         </button>
       </div>
 
-      <div id="sceneExecutionStatus" class="scene-execution-status" role="status" aria-live="polite">
-        Ready
-      </div>
-
       <div class="scene-legend" aria-label="Scene legend">
         <span><i class="legend-uav" aria-hidden="true"></i>UAV</span>
         <span><i class="legend-bird" aria-hidden="true"></i>Dynamic object</span>
         <span><i class="legend-target" aria-hidden="true"></i>Target</span>
         <span><i class="legend-base" aria-hidden="true"></i>Base</span>
+        <span><i class="legend-planned" aria-hidden="true"></i>Planned</span>
+        <span><i class="legend-flown" aria-hidden="true"></i>Flown</span>
       </div>
     </section>
 
@@ -121,16 +139,13 @@
             <span aria-hidden="true">/</span>
             <span id="phaseValue">--</span>
           </p>
+          <p id="plannerProgress" class="planner-progress">0 planner calls | 0 local replans | 0/0 reached</p>
         </div>
       </header>
 
-      <div id="operationBanner" class="operation-banner" role="status" aria-live="polite">
-        <span id="operationStatus">Ready</span>
-      </div>
-
       <div id="traceView" class="inspector-view">
         <section class="trace-stage" data-stage="observation" data-status="waiting">
-          <header class="stage-header">
+          <header class="stage-header stage-title-row">
             <span class="stage-index">01</span>
             <h2>Observation</h2>
             <span class="stage-status">Waiting</span>
@@ -156,14 +171,14 @@
         </section>
 
         <section class="trace-stage" data-stage="agent" data-status="waiting">
-          <header class="stage-header">
+          <header class="stage-header stage-title-row">
             <span class="stage-index">02</span>
             <h2>Reasoning &amp; Decision</h2>
             <span class="stage-status">Waiting</span>
           </header>
           <dl class="trace-grid">
             <div>
-              <dt>Action</dt>
+              <dt>Waypoints</dt>
               <dd id="agentActionValue">--</dd>
             </div>
             <div>
@@ -182,11 +197,11 @@
             </div>
             <dl class="trace-grid">
               <div>
-                <dt>Proposed</dt>
+                <dt>Expected result</dt>
                 <dd id="proposedActionValue">--</dd>
               </div>
               <div>
-                <dt>Executed</dt>
+                <dt>Current waypoint</dt>
                 <dd id="executedActionValue">--</dd>
               </div>
             </dl>
@@ -194,14 +209,14 @@
         </section>
 
         <section class="trace-stage" data-stage="execution" data-status="waiting">
-          <header class="stage-header">
+          <header class="stage-header stage-title-row">
             <span class="stage-index">03</span>
-            <h2>Result</h2>
+            <h2>Flight</h2>
             <span class="stage-status">Waiting</span>
           </header>
           <dl class="trace-grid">
             <div>
-              <dt>Action</dt>
+              <dt>Mode / speed</dt>
               <dd id="resultActionValue">--</dd>
             </div>
             <div>
@@ -210,6 +225,14 @@
             </div>
           </dl>
           <div class="trace-detail">
+            <span>Mission progress</span>
+            <p id="missionProgressText">Target pending · Return pending</p>
+          </div>
+          <div class="trace-detail">
+            <span>Recovery</span>
+            <p id="recoveryText">No retry pending</p>
+          </div>
+          <div class="trace-detail">
             <span>Feedback</span>
             <p id="feedbackText">--</p>
           </div>
@@ -217,80 +240,99 @@
       </div>
     </aside>
 
-    <dialog id="settingsDialog" class="settings-dialog" aria-labelledby="settingsTitle">
-      <header class="settings-header">
-        <div>
-          <span>Simulation</span>
-          <h2 id="settingsTitle">Settings</h2>
-        </div>
-        <button id="closeSettingsBtn" type="button" class="icon-button" aria-label="Close settings" title="Close settings">
-          <i data-lucide="x" aria-hidden="true"></i>
-        </button>
-      </header>
+    <dialog id="agentDialog" class="control-dialog" aria-labelledby="agentDialogTitle">
+      <form id="agentForm" method="dialog">
+        <header class="control-dialog-header">
+          <div>
+            <span>Agent backend</span>
+            <h2 id="agentDialogTitle">DeepSeek API</h2>
+          </div>
+          <button id="closeAgentBtn" type="button" class="icon-button" aria-label="Close DeepSeek API dialog" title="Close dialog">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </header>
+        <p class="control-dialog-note">The key is sent to Flask over this local page and kept only in the current process memory. It is never returned to the page.</p>
+        <label class="control-dialog-field">
+          <span>API key</span>
+          <input id="deepseekApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Enter a new key, or leave blank to reuse the process key">
+        </label>
+        <label class="control-dialog-field">
+          <span>Model</span>
+          <input id="deepseekModel" value="deepseek-v4-flash" autocomplete="off">
+        </label>
+        <label class="control-dialog-field">
+          <span>Endpoint</span>
+          <input id="deepseekBaseUrl" value="https://api.deepseek.com" autocomplete="off">
+        </label>
+        <p id="agentDialogError" class="control-dialog-error" role="alert" hidden></p>
+        <footer class="control-dialog-footer">
+          <button id="cancelAgentBtn" type="button" class="command-button secondary">Cancel</button>
+          <button id="saveAgentBtn" type="submit" class="command-button primary">Use DeepSeek API</button>
+        </footer>
+      </form>
+    </dialog>
 
-      <section class="settings-section" aria-labelledby="missionSettingsTitle">
-        <h3 id="missionSettingsTitle">Mission Context</h3>
-        <dl class="settings-summary">
+    <dialog id="airsimDialog" class="control-dialog airsim-dialog" aria-labelledby="airsimDialogTitle">
+      <form method="dialog">
+        <header class="control-dialog-header">
           <div>
-            <dt>Agent</dt>
-            <dd><output data-settings-value="agent">--</output></dd>
+            <span>External simulation runtime</span>
+            <h2 id="airsimDialogTitle">AirSim connection</h2>
           </div>
-          <div>
-            <dt>Scenario</dt>
-            <dd><output data-settings-value="scenario">Urban Crossing</output></dd>
-          </div>
-          <div>
-            <dt>Runtime</dt>
-            <dd><output data-settings-value="runtime">HTML / connected</output></dd>
-          </div>
-        </dl>
-      </section>
+          <button id="closeAirSimBtn" type="button" class="icon-button" aria-label="Close AirSim dialog" title="Close dialog">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </header>
 
-      <section id="airsimPanel" class="settings-section simulator-panel is-hidden" aria-label="AirSim connection and wind">
-        <div class="simulator-heading">
-          <h3>AirSim</h3>
-          <span>Cosys-AirSim 3.3</span>
-        </div>
-        <div class="simulator-grid">
-          <label>
-            <span>Vehicle</span>
-            <input id="vehicleName" value="Drone1">
-          </label>
-          <label>
-            <span>Host</span>
-            <input id="airsimHost" value="127.0.0.1">
-          </label>
-          <label>
-            <span>Port</span>
-            <input id="airsimPort" type="number" min="1" max="65535" value="41451">
-          </label>
-        </div>
-        <button id="reconnectAirSimBtn" type="button" class="command-button secondary simulator-command">
-          <i data-lucide="refresh-cw" aria-hidden="true"></i>
-          <span>Reconnect and Reset</span>
-        </button>
-        <fieldset class="wind-settings">
-          <legend>Wind NED</legend>
-          <div class="wind-row">
-            <label>
-              <span>N</span>
-              <input id="windNorth" type="number" step="0.5" value="0">
-            </label>
-            <label>
-              <span>E</span>
-              <input id="windEast" type="number" step="0.5" value="0">
-            </label>
-            <label>
-              <span>D</span>
-              <input id="windDown" type="number" step="0.5" value="0">
-            </label>
-            <button id="applyWindBtn" type="button" class="command-button secondary" title="Apply NED wind vector">
-              <i data-lucide="wind" aria-hidden="true"></i>
-              <span>Apply</span>
-            </button>
+        <section id="airsimPanel" class="simulator-panel" aria-label="AirSim connection and wind">
+          <div class="simulator-heading">
+            <h3>Cosys-AirSim</h3>
+            <span>3.3</span>
           </div>
-        </fieldset>
-      </section>
+          <div class="simulator-grid">
+            <label>
+              <span>Vehicle</span>
+              <input id="vehicleName" value="Drone1">
+            </label>
+            <label>
+              <span>Host</span>
+              <input id="airsimHost" value="127.0.0.1">
+            </label>
+            <label>
+              <span>Port</span>
+              <input id="airsimPort" type="number" min="1" max="65535" value="41451">
+            </label>
+          </div>
+          <button id="reconnectAirSimBtn" type="button" class="command-button secondary simulator-command">
+            <i data-lucide="refresh-cw" aria-hidden="true"></i>
+            <span>Reconnect and Reset</span>
+          </button>
+          <fieldset class="wind-settings">
+            <legend>Wind NED</legend>
+            <div class="wind-row">
+              <label>
+                <span>N</span>
+                <input id="windNorth" type="number" step="0.5" value="0">
+              </label>
+              <label>
+                <span>E</span>
+                <input id="windEast" type="number" step="0.5" value="0">
+              </label>
+              <label>
+                <span>D</span>
+                <input id="windDown" type="number" step="0.5" value="0">
+              </label>
+              <button id="applyWindBtn" type="button" class="command-button secondary" title="Apply NED wind vector">
+                <i data-lucide="wind" aria-hidden="true"></i>
+                <span>Apply</span>
+              </button>
+            </div>
+          </fieldset>
+        </section>
+        <footer class="control-dialog-footer">
+          <button id="closeAirSimFooterBtn" type="button" class="command-button secondary">Close</button>
+        </footer>
+      </form>
     </dialog>
   </main>
 

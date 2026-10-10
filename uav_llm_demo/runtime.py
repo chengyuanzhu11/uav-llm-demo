@@ -1,37 +1,21 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Mapping, Protocol, Sequence, runtime_checkable
+from typing import Protocol
+from .motion import VehicleState
 
 
 class RuntimeCapabilityError(RuntimeError):
-    """Raised when the active runtime does not implement a requested feature."""
+    pass
 
 
 class RuntimeUnavailableError(RuntimeError):
-    """Raised when an external runtime cannot complete an operation."""
+    pass
 
 
-@dataclass(frozen=True)
-class RuntimeExecution:
-    trajectory: tuple[dict[str, float], ...]
-    trajectory_duration: float
-    kinematics: dict[str, object]
-
-
-@runtime_checkable
 class SimulationRuntime(Protocol):
     backend_name: str
 
-    def reset(self, base: tuple[int, int, int]) -> dict[str, object]: ...
-
-    def execute(
-        self,
-        trajectory: Sequence[Mapping[str, float]],
-    ) -> RuntimeExecution: ...
-
+    def reset(self, base: tuple[float, float, float]) -> dict: ...
+    def read_state(self) -> VehicleState: ...
+    def drive(self, velocity: tuple[float, float, float], dt: float) -> VehicleState: ...
     def stop(self) -> None: ...
-
-    def status(self) -> dict[str, object]: ...
-
+    def status(self) -> dict: ...
     def close(self) -> None: ...

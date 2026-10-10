@@ -32,6 +32,14 @@ class StartupContractTest(unittest.TestCase):
         self.assertTrue((ROOT / "scripts/start_airsim.ps1").is_file())
         self.assertTrue((ROOT / "scripts/verify_airsim.py").is_file())
 
+    def test_readme_uses_browser_controls_for_agent_switching(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        self.assertIn("工具栏切换 `Mock / DeepSeek API`", readme)
+        self.assertIn("bash scripts/start_demo.sh", readme)
+        self.assertIn(".\\scripts\\start_demo.ps1", readme)
+        self.assertNotIn("Invoke-RestMethod -Method Post", readme)
+
     def test_airsim_client_is_an_optional_dependency(self):
         default_requirements = (ROOT / "requirements.txt").read_text(
             encoding="utf-8"

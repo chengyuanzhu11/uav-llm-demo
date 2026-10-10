@@ -5,22 +5,16 @@ import importlib
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass
-from math import atan2, asin, copysign, pi, sqrt
+from math import atan2, asin, copysign, pi
 from queue import Queue
-from threading import Event, Thread
+from threading import Thread
 from collections.abc import Callable
-from typing import Any, Iterable
+from typing import Any
 
-from .environment import BASE, minimum_jerk_trajectory, point_to_dict
-from .runtime import RuntimeExecution, RuntimeUnavailableError
-
-SHORT_SEGMENT_DISTANCE_METERS = 6.0
-SHORT_SEGMENT_VELOCITY_CAP_MPS = 1.5
-SETTLED_HORIZONTAL_TOLERANCE_METERS = 0.25
-SETTLED_VERTICAL_TOLERANCE_METERS = 0.5
-SETTLED_VELOCITY_TOLERANCE_MPS = 0.2
-HOVER_COMMAND_MIN_VELOCITY_MPS = 0.3
-
+from .environment import BASE, point_to_dict
+from .runtime import RuntimeUnavailableError
+from .motion import VehicleState
+from .scene_layout import AIRSIM_ORIGIN, scene_layout, color_texture
 
 class AirSimRuntimeError(RuntimeUnavailableError):
     pass
@@ -103,8 +97,47 @@ class AirSimRuntime:
         self.client_package: str | None = None
         self._worker = AirSimRpcWorker()
         self._closed = False
-        self._executing = Event()
-        self._stop_requested = Event()
+        self._scene = None
+        self._origin = (0.0, 0.0, 0.0)
+
+    def configure_scene(self, scenario) -> None:
+        if not self.connected:
+            self.connect()
+        self._worker.call(lambda: self._configure_scene(scenario))
+
+    def _configure_scene(self, scenario) -> None:
+        self._require_connection()
+        if self.config.host not in {"127.0.0.1", "localhost"}:
+            raise AirSimRuntimeError("Shared map textures require local Blocks (127.0.0.1).")
+        if (self.config.meters_per_cell, self.config.meters_per_altitude_level) != (3.0, 5.0):
+            raise AirSimRuntimeError("Shared map uses 3 metres per cell and 5 metres per altitude level.")
+        if "Cube" not in self.client.simListAssets():
+            raise AirSimRuntimeError("Blocks must provide the Cube asset for the shared map.")
+        self._origin = AIRSIM_ORIGIN
+        # Only replace objects owned by this demo; retain the packaged Blocks map.
+        for name in self.client.simListSceneObjects("UAVDemo_.*"):
+            if not self.client.simDestroyObject(name):
+                raise AirSimRuntimeError(f"Cannot replace shared scene object {name}.")
+        for item in scene_layout(scenario):
+            point = as_grid_tuple(item["position"])
+            position = self._grid_to_ned(point)
+            size = item["size"]
+            name = self.client.simSpawnObject(
+                "UAVDemo_" + item["name"], "Cube",
+                self.api.Pose(self.api.Vector3r(*position), self.api.Quaternionr()),
+                self.api.Vector3r(size["y"], size["x"], size["z"]),
+                physics_enabled=False,
+            )
+            if not name:
+                raise AirSimRuntimeError(f"Cannot spawn shared scene object {item['name']}.")
+            if not self.client.simSetObjectMaterialFromTexture(name, color_texture(item["color"])):
+                raise AirSimRuntimeError(f"Cannot apply shared map material to {name}.")
+        self._scene = scenario
+
+    def _grid_to_ned(self, point):
+        local = grid_to_ned(point, self.config.meters_per_cell,
+                            self.config.meters_per_altitude_level)
+        return tuple(local[i] + self._origin[i] for i in range(3))
 
     def connect(self) -> dict[str, object]:
         return self._worker.call(self._connect)
@@ -115,6 +148,7 @@ class AirSimRuntime:
             self.client = self.api.MultirotorClient(
                 ip=self.config.host,
                 port=self.config.port,
+                timeout_value=2,
             )
             if not self.client.ping():
                 raise AirSimRuntimeError("AirSim RPC server did not answer ping().")
@@ -171,6 +205,12 @@ class AirSimRuntime:
         target_grid: tuple[float, float, float],
     ) -> dict[str, object]:
         self._reset()
+        if self._scene is not None:
+            position = self._grid_to_ned(target_grid)
+            self.client.simSetVehiclePose(
+                self.api.Pose(self.api.Vector3r(*position), self.api.Quaternionr()),
+                True, vehicle_name=self.config.vehicle_name,
+            )
         self._ensure_airborne(target_grid)
         self.last_telemetry = self._read_telemetry()
         return self.status()
@@ -200,11 +240,7 @@ class AirSimRuntime:
                 vehicle_name=self.config.vehicle_name,
             ).join()
 
-        target = grid_to_ned(
-            target_grid,
-            self.config.meters_per_cell,
-            self.config.meters_per_altitude_level,
-        )
+        target = self._grid_to_ned(target_grid)
         self.client.moveToPositionAsync(
             target[0],
             target[1],
@@ -230,117 +266,32 @@ class AirSimRuntime:
         self.wind_ned = (float(north), float(east), float(down))
         return self.status()
 
-    def fly_trajectory(
-        self,
-        grid_trajectory: Iterable[dict[str, float] | tuple[float, float, float]],
-    ) -> dict[str, object]:
-        grid_points = [as_grid_tuple(point) for point in grid_trajectory]
-        return self._worker.call(lambda: self._fly_trajectory(grid_points))
+    def read_state(self):
+        return self._worker.call(self._vehicle_state)
 
-    def execute(
-        self,
-        grid_trajectory: Iterable[
-            dict[str, float] | tuple[float, float, float]
-        ],
-    ) -> RuntimeExecution:
-        self._stop_requested.clear()
-        self._executing.set()
-        try:
-            result = self.fly_trajectory(grid_trajectory)
-            return RuntimeExecution(
-                trajectory=tuple(dict(point) for point in result["trajectory"]),
-                trajectory_duration=float(result["trajectory_duration"]),
-                kinematics=dict(result["kinematics"]),
+    def _vehicle_state(self):
+        telemetry = self._read_telemetry()
+        velocity = telemetry["linear_velocity"]
+        acceleration = telemetry["linear_acceleration"]
+        return VehicleState(
+            as_grid_tuple(telemetry["position_grid"]),
+            (velocity["y"], -velocity["x"], -velocity["z"]),
+            (acceleration["y"], -acceleration["x"], -acceleration["z"]),
+            telemetry["orientation"]["yaw"],
+        )
+
+    def drive(self, velocity, dt):
+        def send():
+            self._require_connection()
+            # Grid-axis m/s -> world NED m/s. A short lease limits stale commands.
+            self.client.moveByVelocityAsync(
+                -velocity[1], velocity[0], -velocity[2], 0.3,
+                drivetrain=self.api.DrivetrainType.MaxDegreeOfFreedom,
+                yaw_mode=self.api.YawMode(False, 0.0),
+                vehicle_name=self.config.vehicle_name,
             )
-        finally:
-            self._executing.clear()
-
-    def _fly_trajectory(
-        self,
-        grid_points: list[tuple[float, float, float]],
-    ) -> dict[str, object]:
-        self._require_connection()
-        if len(grid_points) < 2:
-            telemetry = self._read_telemetry()
-            return {
-                "trajectory": [telemetry["position_grid"]],
-                "trajectory_duration": 0.0,
-                "kinematics": telemetry,
-            }
-
-        initial_telemetry = self._read_telemetry()
-        actual_start = as_grid_tuple(initial_telemetry["position_grid"])
-        execution_grid_points = rebase_grid_path(
-            grid_points,
-            actual_start,
-            samples=len(grid_points),
-        )
-        ned_points = [
-            grid_to_ned(
-                point,
-                self.config.meters_per_cell,
-                self.config.meters_per_altitude_level,
-            )
-            for point in execution_grid_points
-        ]
-        path = [self.api.Vector3r(*point) for point in ned_points[1:]]
-        distance_m = path_length(ned_points)
-        segment_velocity = choose_segment_velocity(
-            distance_m,
-            self.config.velocity_mps,
-        )
-        timeout = calculate_path_timeout(
-            distance_m,
-            segment_velocity,
-            self.config.command_timeout,
-        )
-
-        self.client.moveOnPathAsync(
-            path,
-            segment_velocity,
-            timeout_sec=timeout,
-            drivetrain=self.api.DrivetrainType.MaxDegreeOfFreedom,
-            yaw_mode=self.api.YawMode(False, 0.0),
-            lookahead=-1,
-            adaptive_lookahead=0,
-            vehicle_name=self.config.vehicle_name,
-        )
-
-        samples: list[dict[str, float]] = [initial_telemetry["position_grid"]]
-        started = time.monotonic()
-        deadline = started + timeout
-        target_ned = ned_points[-1]
-        settled = False
-        while time.monotonic() < deadline:
-            self._cancel_if_stopped()
-            telemetry = self._read_telemetry()
-            samples.append(telemetry["position_grid"])
-            if telemetry_has_settled(
-                telemetry,
-                target_ned,
-            ):
-                settled = True
-                break
-            time.sleep(0.05)
-
-        if not settled:
-            self.client.cancelLastTask(vehicle_name=self.config.vehicle_name)
-            self.client.hoverAsync(vehicle_name=self.config.vehicle_name).join()
-            final_telemetry = self._read_telemetry()
-            self.last_telemetry = final_telemetry
-            raise AirSimRuntimeError(
-                "AirSim path did not settle before the command timeout; "
-                "the logical mission state was not advanced."
-            )
-
-        final_telemetry = self._read_telemetry()
-        samples.append(final_telemetry["position_grid"])
-        self.last_telemetry = final_telemetry
-        return {
-            "trajectory": deduplicate_points(samples),
-            "trajectory_duration": max(0.05, time.monotonic() - started),
-            "kinematics": final_telemetry,
-        }
+            return self._vehicle_state()
+        return self._worker.call(send)
 
     def read_telemetry(self) -> dict[str, object]:
         return self._worker.call(self._read_telemetry)
@@ -355,7 +306,7 @@ class AirSimRuntime:
             "position_ned": vector_to_dict(position),
             "position_grid": point_to_dict(
                 ned_to_grid(
-                    position,
+                    tuple(position[i] - self._origin[i] for i in range(3)),
                     self.config.meters_per_cell,
                     self.config.meters_per_altitude_level,
                 )
@@ -380,40 +331,21 @@ class AirSimRuntime:
         self.last_telemetry = telemetry
         return telemetry
 
-    def hover(self) -> None:
-        self._worker.call(self._hover)
+    def stop(self):
+        def halt():
+            self._require_connection()
+            self.client.cancelLastTask(vehicle_name=self.config.vehicle_name)
+            self.client.hoverAsync(vehicle_name=self.config.vehicle_name)
+        self._worker.call(halt)
 
-    def stop(self) -> None:
-        self._stop_requested.set()
-        if not self._executing.is_set():
-            self.hover()
-
-    def close(self) -> None:
+    def close(self):
         self.disconnect()
-
-    def _cancel_if_stopped(self) -> None:
-        if not self._stop_requested.is_set():
-            return
-        self.client.cancelLastTask(vehicle_name=self.config.vehicle_name)
-        self.client.hoverAsync(vehicle_name=self.config.vehicle_name).join()
-        self.last_telemetry = self._read_telemetry()
-        raise AirSimRuntimeError(
-            "AirSim trajectory was stopped; the logical mission state was not advanced."
-        )
-
-    def _hover(self) -> None:
-        self._require_connection()
-        telemetry = self._read_telemetry()
-        if euclidean_3d(
-            telemetry["linear_velocity"],
-            (0.0, 0.0, 0.0),
-        ) <= HOVER_COMMAND_MIN_VELOCITY_MPS:
-            return
-        self.client.hoverAsync(vehicle_name=self.config.vehicle_name).join()
 
     def status(self) -> dict[str, object]:
         return {
             "backend": self.backend_name,
+            "scene_id": self._scene.scenario_id if self._scene else None,
+            "scene_origin_ned": vector_to_dict(self._origin),
             "connected": self.connected,
             "supports_wind": True,
             "source": self.backend_name,
@@ -482,14 +414,6 @@ def ned_to_grid(
     return x, y, z
 
 
-def smooth_grid_path(
-    start: tuple[float, float, float],
-    end: tuple[float, float, float],
-    samples: int = 31,
-) -> list[tuple[float, float, float]]:
-    return minimum_jerk_trajectory(start, end, samples)
-
-
 def quaternion_to_euler(quaternion: Any) -> tuple[float, float, float]:
     x = float(quaternion.x_val)
     y = float(quaternion.y_val)
@@ -525,101 +449,3 @@ def as_grid_tuple(
     if isinstance(point, dict):
         return float(point["x"]), float(point["y"]), float(point["z"])
     return float(point[0]), float(point[1]), float(point[2])
-
-
-def euclidean_3d(
-    a: dict[str, float] | tuple[float, float, float],
-    b: dict[str, float] | tuple[float, float, float],
-) -> float:
-    av = (
-        (a["x"], a["y"], a["z"])
-        if isinstance(a, dict)
-        else a
-    )
-    bv = (
-        (b["x"], b["y"], b["z"])
-        if isinstance(b, dict)
-        else b
-    )
-    return sqrt(sum((float(av[index]) - float(bv[index])) ** 2 for index in range(3)))
-
-
-def within_position_tolerance(
-    position: dict[str, float] | tuple[float, float, float],
-    target: dict[str, float] | tuple[float, float, float],
-    tolerance: float = 0.75,
-) -> bool:
-    return euclidean_3d(position, target) <= tolerance
-
-
-def path_length(points: list[tuple[float, float, float]]) -> float:
-    return sum(euclidean_3d(points[index - 1], points[index]) for index in range(1, len(points)))
-
-
-def calculate_path_timeout(
-    distance_m: float,
-    velocity_mps: float,
-    maximum_timeout: float,
-) -> float:
-    expected_duration = max(0.35, distance_m / velocity_mps)
-    return min(maximum_timeout, max(2.0, expected_duration + 5.0))
-
-
-def choose_segment_velocity(
-    distance_m: float,
-    configured_velocity_mps: float,
-) -> float:
-    if distance_m <= SHORT_SEGMENT_DISTANCE_METERS:
-        return min(configured_velocity_mps, SHORT_SEGMENT_VELOCITY_CAP_MPS)
-    return configured_velocity_mps
-
-
-def rebase_grid_path(
-    grid_points: list[tuple[float, float, float]],
-    actual_start: tuple[float, float, float],
-    samples: int | None = None,
-) -> list[tuple[float, float, float]]:
-    if not grid_points:
-        return [actual_start]
-    return minimum_jerk_trajectory(
-        actual_start,
-        grid_points[-1],
-        max(2, samples or len(grid_points)),
-    )
-
-
-def telemetry_has_settled(
-    telemetry: dict[str, object],
-    target_ned: tuple[float, float, float],
-    horizontal_tolerance: float = SETTLED_HORIZONTAL_TOLERANCE_METERS,
-    vertical_tolerance: float = SETTLED_VERTICAL_TOLERANCE_METERS,
-    velocity_tolerance: float = SETTLED_VELOCITY_TOLERANCE_MPS,
-) -> bool:
-    position = telemetry["position_ned"]
-    velocity = telemetry["linear_velocity"]
-    position_tuple = (
-        float(position["x"]),
-        float(position["y"]),
-        float(position["z"]),
-    )
-    horizontal_error = sqrt(
-        (position_tuple[0] - target_ned[0]) ** 2
-        + (position_tuple[1] - target_ned[1]) ** 2
-    )
-    vertical_error = abs(position_tuple[2] - target_ned[2])
-    return (
-        horizontal_error <= horizontal_tolerance
-        and vertical_error <= vertical_tolerance
-        and euclidean_3d(
-        velocity,
-        (0.0, 0.0, 0.0),
-        ) <= velocity_tolerance
-    )
-
-
-def deduplicate_points(points: list[dict[str, float]]) -> list[dict[str, float]]:
-    output = []
-    for point in points:
-        if not output or euclidean_3d(output[-1], point) > 0.01:
-            output.append(point)
-    return output

@@ -1,15 +1,15 @@
 import unittest
 
-from uav_llm_demo.agents import MockLLMAgent, decision_from_json_text
+from uav_llm_demo import create_app
+from uav_llm_demo.agents import MockLLMAgent
+from uav_llm_demo.benchmark import run_scenario
 from uav_llm_demo.environment import UAVEnvironment
 from uav_llm_demo.evaluation import metrics_for_events
-from uav_llm_demo.benchmark import run_scenario
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.scenarios import list_scenarios, load_scenario
-from uav_llm_demo import create_app
 
 
-class PlanBContractTest(unittest.TestCase):
+class PlanContractTest(unittest.TestCase):
     def test_scenarios_are_named_and_data_driven(self):
         scenarios = list_scenarios()
 
@@ -20,6 +20,14 @@ class PlanBContractTest(unittest.TestCase):
         self.assertGreater(len(scenario.buildings), 0)
         self.assertGreater(len(scenario.dynamic_objects), 0)
 
+    def test_urban_buildings_leave_orthogonal_streets_clear(self):
+        scenario = load_scenario("urban_crossing")
+        road_cells = {int(center) + offset for center in scenario.urban_street_centers
+                      for offset in (-1, 0, 1, 2)}
+
+        self.assertTrue(all(x not in road_cells and y not in road_cells
+                            for x, y, _ in scenario.buildings))
+
     def test_environment_can_start_from_named_scenario(self):
         scenario = load_scenario("open_field")
         environment = UAVEnvironment(scenario)
@@ -28,38 +36,37 @@ class PlanBContractTest(unittest.TestCase):
         self.assertEqual(environment.position, scenario.base)
         self.assertEqual(environment.target, scenario.target)
 
-    def test_mock_agent_emits_a_skill_and_waypoint(self):
-        observation = UAVEnvironment().get_observation()
-
-        decision = MockLLMAgent().decide(observation)
-
-        self.assertIn(decision.skill, {"navigate_to", "return_home", "hover"})
-        self.assertIsNotNone(decision.waypoint)
-        self.assertIn("skill", decision.to_dict())
-        self.assertIn("waypoint", decision.to_dict())
-
-    def test_structured_response_accepts_skill_and_waypoint(self):
-        decision = decision_from_json_text(
-            '{"skill":"navigate_to","action":"move_east",'
-            '"waypoint":{"x":2,"y":18,"z":2},'
-            '"reason":"Advance toward the target.","risk":"low",'
-            '"expected_result":"Reach the next waypoint."}'
+    def test_mock_planner_emits_waypoint_sequence_only(self):
+        scenario = load_scenario("urban_crossing")
+        context = scenario.to_dict()
+        context.update(
+            position=context["base"],
+            goal=context["target"],
+            task="Navigate to target",
         )
 
-        self.assertEqual(decision.skill, "navigate_to")
-        self.assertEqual(decision.waypoint, {"x": 2.0, "y": 18.0, "z": 2.0})
+        plan = MockLLMAgent().plan(context)
+        payload = plan.to_dict()
 
-    def test_service_state_exposes_metrics_and_safety_trace(self):
+        self.assertGreaterEqual(len(plan.waypoints), 1)
+        self.assertEqual(set(payload), {"waypoints", "reason", "risk", "expected_result"})
+        self.assertNotIn("action", payload)
+        self.assertEqual(plan.waypoints[-1], scenario.target)
+
+    def test_service_state_exposes_continuous_metrics_and_safety_trace(self):
         service = MissionService(agent=MockLLMAgent())
+        self.addCleanup(service.close)
 
-        state = service.step()
+        state = service.state()
 
         self.assertIn("metrics", state)
         self.assertIn("evaluation", state)
-        self.assertIn("safety_intervened", state["history"][0]["decision"])
+        self.assertIn("max_acceleration_mps2", state["flight"])
+        self.assertEqual(state["metrics"]["planner_calls"], 0)
 
     def test_service_can_switch_named_scenario(self):
         service = MissionService(agent=MockLLMAgent())
+        self.addCleanup(service.close)
 
         state = service.switch_scenario("open_field")
 
@@ -84,7 +91,9 @@ class PlanBContractTest(unittest.TestCase):
         self.assertEqual(metrics["path_length"], 4.5)
 
     def test_scenario_api_lists_and_switches_scenarios(self):
-        client = create_app().test_client()
+        app = create_app()
+        self.addCleanup(app.extensions["mission_service"].close)
+        client = app.test_client()
 
         listed = client.get("/api/scenarios")
         switched = client.post("/api/scenario", json={"scenario_id": "open_field"})
@@ -95,7 +104,9 @@ class PlanBContractTest(unittest.TestCase):
         self.assertEqual(switched.get_json()["scenario_id"], "open_field")
 
     def test_invalid_scenario_api_returns_bad_request(self):
-        response = create_app().test_client().post(
+        app = create_app()
+        self.addCleanup(app.extensions["mission_service"].close)
+        response = app.test_client().post(
             "/api/scenario",
             json={"scenario_id": "does-not-exist"},
         )
@@ -103,11 +114,12 @@ class PlanBContractTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_benchmark_runs_a_named_scenario(self):
-        result = run_scenario("open_field", max_steps=100)
+        result = run_scenario("open_field", max_seconds=120)
 
         self.assertEqual(result["scenario_id"], "open_field")
         self.assertTrue(result["metrics"]["success"])
-        self.assertGreater(result["metrics"]["steps"], 0)
+        self.assertGreater(result["metrics"]["control_ticks"], 0)
+        self.assertGreaterEqual(result["metrics"]["planner_calls"], 2)
 
 
 if __name__ == "__main__":

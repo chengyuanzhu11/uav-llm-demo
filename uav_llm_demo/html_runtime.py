@@ -1,57 +1,35 @@
-from __future__ import annotations
-
-from typing import Mapping, Sequence
-
-from .environment import BASE, TRAJECTORY_DURATION_SECONDS, kinematics_for_motion
-from .runtime import RuntimeExecution
+from math import atan2
+from .environment import BASE
+from .motion import VehicleState, SCALE, norm
 
 
 class HtmlRuntime:
     backend_name = "html"
 
-    def __init__(self) -> None:
-        self._base = BASE
+    def __init__(self):
+        self.vehicle = VehicleState(tuple(float(v) for v in BASE))
 
-    def reset(self, base: tuple[int, int, int] = BASE) -> dict[str, object]:
-        self._base = base
+    def reset(self, base=BASE):
+        self.vehicle = VehicleState(tuple(float(v) for v in base))
         return self.status()
 
-    def execute(
-        self,
-        trajectory: Sequence[Mapping[str, float]],
-    ) -> RuntimeExecution:
-        points = tuple(
-            {
-                "x": float(point["x"]),
-                "y": float(point["y"]),
-                "z": float(point["z"]),
-            }
-            for point in trajectory
-        )
-        if not points:
-            raise ValueError("Runtime trajectory must contain at least one point.")
+    def read_state(self):
+        return self.vehicle
 
-        start = self._point_tuple(points[0])
-        end = self._point_tuple(points[-1])
-        duration = 0.0 if start == end else TRAJECTORY_DURATION_SECONDS
-        kinematics = kinematics_for_motion(start, end, duration)
-        kinematics["source"] = self.backend_name
-        return RuntimeExecution(points, duration, kinematics)
+    def drive(self, velocity, dt):
+        previous = self.vehicle
+        position = tuple(previous.position[i] + (previous.velocity[i] + velocity[i]) * 0.5 * dt / SCALE[i] for i in range(3))
+        acceleration = tuple((velocity[i] - previous.velocity[i]) / dt for i in range(3))
+        yaw = atan2(velocity[0], -velocity[1]) if norm(velocity[:2]) > 0.01 else previous.yaw
+        self.vehicle = VehicleState(position, tuple(velocity), acceleration, yaw)
+        return self.vehicle
 
-    def stop(self) -> None:
-        return None
+    def stop(self):
+        # Normal pauses decelerate through drive(); this is the emergency stop boundary.
+        self.vehicle = VehicleState(self.vehicle.position, yaw=self.vehicle.yaw)
 
-    def status(self) -> dict[str, object]:
-        return {
-            "backend": self.backend_name,
-            "connected": True,
-            "supports_wind": False,
-            "source": self.backend_name,
-        }
+    def close(self):
+        self.stop()
 
-    def close(self) -> None:
-        return None
-
-    @staticmethod
-    def _point_tuple(point: Mapping[str, float]) -> tuple[float, float, float]:
-        return (float(point["x"]), float(point["y"]), float(point["z"]))
+    def status(self):
+        return dict(backend="html", connected=True, supports_wind=False, source="html")

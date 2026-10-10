@@ -17,6 +17,8 @@ function Test-PythonRuntime {
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $flaskPidFile = Join-Path $projectRoot ".flask.pid"
+$bundledPython = Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+$bundledSitePackages = Join-Path $projectRoot ".venv\Lib\site-packages"
 $pythonCandidates = @(
     $env:UAV_DEMO_PYTHON,
     "C:\Users\kyrie\AppData\Local\Programs\Python\Python314\python.exe",
@@ -25,6 +27,17 @@ $pythonCandidates = @(
     (Join-Path $env:USERPROFILE ".cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe")
 ) | Where-Object { Test-PythonRuntime -Candidate $_ }
 $python = $pythonCandidates | Select-Object -First 1
+
+if (-not $python -and (Test-Path -LiteralPath $bundledPython -PathType Leaf) -and
+    (Test-Path -LiteralPath $bundledSitePackages -PathType Container)) {
+    $previousPythonPath = $env:PYTHONPATH
+    $env:PYTHONPATH = $bundledSitePackages
+    if (Test-PythonRuntime -Candidate $bundledPython) {
+        $python = $bundledPython
+    } else {
+        $env:PYTHONPATH = $previousPythonPath
+    }
+}
 
 if (-not $python) {
     throw "No working Python with Flask was found. Set UAV_DEMO_PYTHON to a compatible python.exe."
