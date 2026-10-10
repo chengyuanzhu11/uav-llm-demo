@@ -2,6 +2,10 @@
 
 这个项目展示 LLM 在 UAV 系统中的具体位置：LLM Planner 读取任务和环境观测，一次输出经过安全校验的 waypoint 序列；连续运动控制器负责速度、加速度和 waypoint tracking；选中的 Runtime 负责执行并返回状态。LLM 不直接控制电机、姿态环或飞控频率。
 
+![DeepSeek API 城市飞行演示](docs/images/deepseek-urban-demo.png)
+
+DeepSeek API 模式下的 Urban Crossing 实际飞行画面（HTML Simulation）。
+
 ```text
             Mock / DeepSeek LLM
                     |
