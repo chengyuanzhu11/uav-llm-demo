@@ -4,6 +4,8 @@ from pathlib import Path
 
 from .agents import RoutePlan, PlannerProviderError
 from .scenarios import ScenarioDefinition, DynamicObjectSpec, UrbanParcel
+from .traffic_motion import TRAFFIC_POLICIES
+from .traffic_observation import TrafficObservationConfig
 
 
 def scenario_from_record(data):
@@ -21,7 +23,11 @@ def scenario_from_record(data):
         urban_parcels=tuple(UrbanParcel(p['id'], p['use'], tuple(p['footprint']), p['podium_height'],
                                       p['facade'], tuple(p['tower']) if p['tower'] else None, p.get('profile','slab'))
                            for p in data.get('urban_parcels', [])),
-        urban_street_centers=tuple(data.get('urban_street_centers', [])))
+        urban_street_centers=tuple(data.get('urban_street_centers', [])),
+        mission_mode=data.get('mission_mode', 'navigation'),
+        points_of_interest=tuple(data.get('points_of_interest', [])),
+        recommended_tasks=tuple(data.get('recommended_tasks', [])),
+        semantic_regions=tuple(data.get('semantic_regions', [])))
 
 
 class ReplayAgent:
@@ -55,6 +61,11 @@ def load_run(path, run_id):
     starts = [r for r in records if r['event'] == 'run_started']
     if len(starts) != 1:
         raise ValueError('Run header missing or duplicated; include the journal file containing run_started.')
+    if starts[0]['scenario'].get('mission_mode') == 'semantic':
+        raise ValueError('Semantic task journals contain skill evidence; navigation replay does not execute semantic missions.')
+    if any(r['event'] == 'demo_started' for r in records):
+        raise ValueError('Historical crossing demo journals are unsupported: the retired '
+                         'zero-time planning and departure protocol cannot be reproduced by response replay.')
     if any(r['event'] in {'goal_changed', 'agent_changed', 'mission_paused'} for r in records):
         raise ValueError('This run contains manual changes; replay currently requires one uninterrupted mission.')
     requests = {r['request_id']: r for r in records if r['event'] == 'plan_requested'}
@@ -68,4 +79,22 @@ def load_run(path, run_id):
         attempts.append({**item, 'delivery_delay': max(0, item['simulation_seconds']-request['simulation_seconds'])})
     if not attempts:
         raise ValueError('No completed planning attempts in this run.')
-    return starts[0], ReplayAgent(attempts)
+    header = dict(starts[0])
+    # Published journals predate traffic policies and use the shared RNG model.
+    header.setdefault('traffic_policy', 'route_demo')
+    header.setdefault('traffic_model_version', 'legacy-shared-stream')
+    header.setdefault('traffic_observation', 'legacy_ground_truth')
+    header.setdefault('traffic_prediction', 'legacy_constant_velocity')
+    # Historical public journals remain readable, but their route-dependent
+    # world cannot be executed by the current map-only traffic generator.
+    if header['traffic_policy'] not in (*TRAFFIC_POLICIES, 'route_demo'):
+        raise ValueError('Unsupported recorded traffic policy.')
+    observation = header['traffic_observation']
+    if isinstance(observation, dict):
+        try:
+            TrafficObservationConfig(**observation)
+        except (TypeError, ValueError) as error:
+            raise ValueError('Unsupported recorded traffic observation config.') from error
+    elif observation != 'legacy_ground_truth':
+        raise ValueError('Unsupported recorded traffic observation config.')
+    return header, ReplayAgent(attempts)

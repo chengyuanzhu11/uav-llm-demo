@@ -1614,3 +1614,152 @@ dialog.control-dialog::backdrop {
   pointer-events: none;
 }
 .goal-reward[hidden] { display: none; }
+
+/* Semantic campus uses the same flight view with a task-focused inspector. */
+[hidden] { display: none !important; }
+
+.simulator[data-mission-mode="semantic"] {
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 25%);
+}
+
+.simulator[data-mission-mode="semantic"] .app-toolbar {
+  grid-template-columns: minmax(138px, auto) minmax(120px, 188px)
+    minmax(180px, 1fr) minmax(210px, 1fr) minmax(100px, auto)
+    minmax(0, 1fr) repeat(2, auto);
+}
+
+.simulator[data-mission-mode="semantic"] .agent-selector { grid-template-columns: minmax(100px, 1fr); }
+.simulator[data-mission-mode="semantic"] .agent-option { border-left: 0; }
+
+.semantic-panel { padding: 16px 16px 0; }
+.semantic-message,
+.semantic-summary {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+  margin: 7px 0 0;
+  overflow-wrap: anywhere;
+}
+.semantic-task-form { display: grid; gap: 8px; }
+.semantic-task-form > label {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
+}
+.semantic-task-form textarea {
+  background: #0d1516;
+  border-color: #42575a;
+  line-height: 1.6;
+  min-height: 104px;
+  width: 100%;
+}
+.semantic-task-form textarea::placeholder { color: var(--subtle); }
+.task-form-footer { align-items: center; display: flex; justify-content: space-between; gap: 8px; }
+#instructionCount { color: var(--subtle); font-size: 10px; font-variant-numeric: tabular-nums; }
+.task-submit {
+  background: #26524f;
+  border-color: #367b75;
+  color: #d4ffed;
+  font-size: 12px;
+  font-weight: 650;
+  min-height: 34px;
+  padding: 0 17px;
+}
+.task-submit:not(:disabled):hover { background: #326861; border-color: var(--cyan); }
+.semantic-section { border-top: 1px solid var(--line); margin-top: 18px; padding: 14px 0 0; }
+.semantic-section-heading { align-items: center; display: flex; gap: 8px; justify-content: space-between; margin-bottom: 10px; }
+.semantic-section-heading h2 { font-size: 12px; font-weight: 700; margin: 0; }
+.semantic-section-heading > span { color: var(--subtle); font-size: 10px; flex-shrink: 0; }
+.recommended-tasks { display: grid; gap: 6px; }
+.recommended-task {
+  align-items: flex-start;
+  background: #172123;
+  border-color: #2b3b3d;
+  border-radius: 5px;
+  display: grid;
+  font-size: 11px;
+  gap: 9px;
+  grid-template-columns: 18px minmax(0, 1fr);
+  line-height: 1.6;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+.recommendation-index { color: var(--cyan); font-size: 10px; line-height: 1.9; }
+.semantic-section-heading .semantic-status { border: 1px solid var(--line); border-radius: 4px; color: var(--muted); padding: 2px 6px; }
+.semantic-status[data-status="running"],
+.semantic-status[data-status="interpreting"] { border-color: #4a7472; color: var(--cyan); }
+.semantic-status[data-status="completed"] { border-color: #46684c; color: var(--green); }
+.semantic-status[data-status="error"],
+.semantic-status[data-status="needs_clarification"],
+.semantic-status[data-status="safety_wait"] { border-color: #79633c; color: var(--amber); }
+.semantic-message { color: #c3d3d0; margin: 0; }
+.semantic-message[data-error="true"] { color: var(--red); }
+.semantic-summary { color: var(--text); }
+.semantic-constraints { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.constraint-chip { border: 1px solid #67583b; border-radius: 3px; color: #d7b678; font-size: 10px; padding: 3px 6px; }
+.semantic-program { display: grid; gap: 7px; margin-top: 12px; }
+.task-program-rule { background: #172123; border-left: 2px solid #557b76; border-radius: 3px; display: grid; gap: 5px; line-height: 1.6; padding: 9px 10px; }
+.task-program-rule strong { color: var(--text); font-size: 11px; font-weight: 500; }
+.task-program-rule > span { color: var(--muted); font-size: 10px; }
+.semantic-steps { list-style: none; margin: 12px 0 0; padding: 0; }
+.task-revision-heading { border-bottom: 1px solid var(--line); color: var(--muted); font-size: 10px; list-style: none; margin: 4px 0 12px; padding-bottom: 7px; }
+.semantic-step { display: grid; gap: 10px; grid-template-columns: 23px minmax(0, 1fr); padding: 0 0 15px; position: relative; }
+.semantic-step:not(:last-child)::before { background: var(--line); bottom: 1px; content: ""; left: 11px; position: absolute; top: 26px; width: 1px; }
+.task-step-marker { align-items: center; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 50%; color: var(--muted); display: flex; font-size: 10px; height: 23px; justify-content: center; width: 23px; }
+.task-step-content { display: grid; gap: 4px; padding-top: 2px; }
+.task-step-content strong { color: var(--text); font-size: 12px; font-weight: 500; }
+.task-step-status,
+.task-step-condition,
+.task-step-iteration { color: var(--subtle); font-size: 10px; line-height: 1.5; }
+.task-step-iteration { color: var(--muted); }
+.task-step-condition { color: #baaa87; }
+.semantic-step[data-status="active"] .task-step-marker { background: #24413f; border-color: var(--cyan); color: var(--cyan); }
+.semantic-step[data-status="active"] .task-step-status { color: var(--cyan); }
+.semantic-step[data-status="completed"] .task-step-marker { background: #213c2b; border-color: #467751; color: var(--green); }
+.semantic-step[data-status="completed"] .task-step-status { color: var(--green); }
+.semantic-step[data-status="skipped"] .task-step-content,
+.semantic-step[data-status="cancelled"] .task-step-content { opacity: .65; }
+.semantic-step[data-status="skipped"] .task-step-status { color: var(--amber); }
+.flight-diagnostics > summary { border-top: 1px solid var(--line); color: var(--muted); cursor: pointer; font-size: 11px; padding: 13px 16px; }
+.flight-diagnostics > summary:hover { color: var(--text); }
+.flight-diagnostics > summary:focus-visible { outline: 2px solid var(--cyan); outline-offset: -3px; }
+
+@media (max-width: 1100px) and (min-width: 701px) {
+  .simulator[data-mission-mode="semantic"] { grid-template-columns: minmax(0, 1fr) 320px; }
+  .simulator[data-mission-mode="semantic"] .app-toolbar { overflow-x: auto; }
+}
+@media (max-width: 700px) {
+  .semantic-panel { padding: 16px; }
+  .semantic-task-form textarea { min-height: 92px; }
+}
+
+
+/* Short controller rollouts use the same render clock as the UAV. */
+.legend-executing { background: #80bdff; }
+.avoidance-status {
+  align-items: center;
+  background: var(--surface-overlay);
+  border: 1px solid rgba(255, 150, 62, .6);
+  border-radius: var(--radius);
+  bottom: 58px;
+  color: var(--text);
+  display: grid;
+  gap: 5px 12px;
+  grid-template-columns: auto auto;
+  left: 14px;
+  max-width: calc(100% - 28px);
+  padding: 9px 11px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 4;
+}
+.avoidance-status strong { color: #ffb36f; font-size: 12px; }
+.avoidance-status > span { font-size: 11px; }
+.avoidance-status[data-active="false"] { border-color: var(--line-strong); }
+.avoidance-status[data-violation="true"] > span { color: var(--red); }
+.avoidance-key { display: flex; gap: 12px; grid-column: 1 / -1; }
+.avoidance-key span { align-items: center; color: var(--muted); display: inline-flex; font-size: 10px; gap: 5px; }
+.avoidance-key i { display: inline-block; width: 16px; }
+.nominal-key { border-top: 2px dashed #c8c8a9; }
+.selected-key { border-top: 2px solid #ff963e; }

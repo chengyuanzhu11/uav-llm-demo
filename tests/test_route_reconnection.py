@@ -1,7 +1,7 @@
 import unittest
 import time
 
-from uav_llm_demo.avoidance import LocalAvoidance
+from uav_llm_demo.avoidance import LocalAvoidance, PredictedTraffic
 from uav_llm_demo.evaluation import path_length
 from uav_llm_demo.motion import VehicleState, WaypointManager, TrajectoryController
 from uav_llm_demo.safety import SafetyChecker
@@ -10,6 +10,11 @@ from test_avoidance import encounter_service, StraightTraffic
 
 def checker(buildings=()):
     return SafetyChecker(dict(grid_size=20, altitude_range=dict(min=2, max=10), buildings=list(buildings)))
+
+
+def known_track(radius, positions):
+    """Exact synthetic trajectory; forecasting is tested separately."""
+    return PredictedTraffic(radius, tuple(positions), (0.0,) * len(positions), (0.0,) * len(positions))
 
 
 class RouteReconnectionTest(unittest.TestCase):
@@ -49,7 +54,7 @@ class RouteReconnectionTest(unittest.TestCase):
         control = TrajectoryController()
         state = VehicleState((10, 10, 2))
         bounds = checker(dict(x=x, y=y, height=3) for x in range(6, 17) for y in (9, 11))
-        tracks = [(3.1, [(12, 10, 2)] * 41)]
+        tracks = [known_track(3.1, [(12, 10, 2)] * 41)]
         self.assertGreater(local.rollout(state, (8, 10, 2), control, bounds, tracks).clearance, local.BUFFER)
         target = local.choose(state, (18, 10, 2), control, bounds, tracks, 0)
         self.assertGreater(target[0], state.position[0])
@@ -62,10 +67,10 @@ class RouteReconnectionTest(unittest.TestCase):
         target = (10.2, 10, 2)
         control = TrajectoryController()
         # The threat arrives after the ordinary three-second horizon.
-        tracks = [(1.0, [(10.2, 15 - index * .15, 2) for index in range(41)])]
+        tracks = [known_track(1.0, [(10.2, 15 - index * .15, 2) for index in range(41)])]
         self.assertGreater(local.rollout(state, target, control, checker(), tracks).clearance, local.BUFFER)
         self.assertLess(local.rollout(state, target, control, checker(), tracks, terminal=True).clearance, local.BUFFER)
-        occupied = [(3.1, [target] * 41)]
+        occupied = [known_track(3.1, [target] * 41)]
         selected = local.choose(state, target, control, checker(), occupied, 0, terminal=True)
         self.assertNotEqual(selected, target)
         self.assertTrue(local.active)
@@ -90,9 +95,6 @@ class RouteReconnectionTest(unittest.TestCase):
         service.replanning.accepted(service._context(), 0)
 
         class DepartingTraffic:
-            def focus_route(self, start, waypoints):
-                return 0
-
             def sync(self, environment):
                 bird = environment.dynamic_objects[0]
                 bird.position = (14, 10 + max(0, service._time - 8), 2)

@@ -6,6 +6,7 @@ from math import dist
 from typing import Iterable, Mapping
 
 from .scenarios import DEFAULT_SCENARIO, ScenarioDefinition, load_scenario
+from .dynamic_risk import envelope_fields, physical_radius_m, risk_levels
 
 GRID_SIZE = DEFAULT_SCENARIO.grid_size
 MIN_ALTITUDE = DEFAULT_SCENARIO.min_altitude
@@ -56,8 +57,11 @@ class DynamicFlyingObject:
             "kind": self.kind,
             "position": point_to_dict(self.position),
             "velocity": vector_to_dict(self.velocity),
+            "position_unit": "grid",
+            "velocity_unit": "grid/s",
             "predicted_position": point_to_dict(self.predicted_position()),
             "radius": self.radius,
+            **envelope_fields(self),
         }
 
 
@@ -165,7 +169,7 @@ class UAVEnvironment:
         dynamic_data = tuple(self._dynamic_observation())
         nearest_dynamic = min(
             dynamic_data,
-            key=lambda item: item["predicted_distance"],
+            key=lambda item: item["separation_clearance_m"],
             default=None,
         )
         return Observation(
@@ -222,15 +226,14 @@ class UAVEnvironment:
 
     def _dynamic_observation(self) -> list[dict[str, object]]:
         output = []
+        velocity = self.kinematics.get("linear_velocity") or {}
+        vehicle_velocity = tuple(float(velocity.get(axis, 0.0)) for axis in "xyz")
         for item in self.dynamic_objects:
-            predicted = item.predicted_position()
-            predicted_distance = dist(self.position, predicted)
             output.append(
                 {
                     **item.to_dict(),
-                    "distance": dist(self.position, item.position),
-                    "predicted_distance": predicted_distance,
-                    "threat_level": threat_level(predicted_distance),
+                    **risk_levels(item.position, self.position, item.velocity, vehicle_velocity,
+                                  radius_m=physical_radius_m(item)),
                 }
             )
         return output
@@ -412,16 +415,6 @@ def compass_direction(
     horizontal = "east" if dx > 0 else "west" if dx < 0 else ""
     vertical = "south" if dy > 0 else "north" if dy < 0 else ""
     return "-".join(part for part in (vertical, horizontal) if part) or "same cell"
-
-
-def threat_level(distance: float) -> str:
-    if distance < DYNAMIC_SAFETY_RADIUS:
-        return "critical"
-    if distance < 3.0:
-        return "high"
-    if distance < 5.0:
-        return "medium"
-    return "low"
 
 
 def manhattan_2d(a: tuple[int, int], b: tuple[int, int]) -> int:

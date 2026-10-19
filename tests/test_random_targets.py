@@ -1,3 +1,4 @@
+from tests.scenario_fixtures import empty_airspace
 import random
 import unittest
 from dataclasses import replace
@@ -22,6 +23,8 @@ class RandomTargetTest(unittest.TestCase):
     def test_random_candidates_are_safe_reachable_with_valid_altitudes(self):
         service = self.service(target_seed=0)
         for item in list_scenarios():
+            if item["mission_mode"] != "navigation":
+                continue
             template = load_scenario(item["id"])
             targets = set()
             for seed in range(12):
@@ -123,7 +126,7 @@ class RandomTargetTest(unittest.TestCase):
 
     def test_altitude_does_not_make_a_nearby_target_eligible(self):
         service = self.service(target_seed=0)
-        template = replace(load_scenario("open_field"), grid_size=8, target=(6, 6, 10))
+        template = replace(empty_airspace(), grid_size=8, target=(6, 6, 10))
         with self.assertRaisesRegex(ValueError, "No safe reachable random target"):
             service._random_scenario(template)
 
@@ -150,10 +153,11 @@ class RandomTargetTest(unittest.TestCase):
         reset = client.post("/api/reset")
         self.assertEqual(reset.status_code, 200)
         self.assertNotEqual(reset.get_json()["target"], before["target"])
-        switched = client.post("/api/scenario", json={"scenario_id": "open_field"})
+        switched = client.post("/api/scenario", json={"scenario_id": "urban_crossing"})
         self.assertEqual(switched.status_code, 200)
         payload = switched.get_json()
-        self.assertEqual(payload["target"]["z"], 5)
+        self.assertGreaterEqual(payload["target"]["z"], 2)
+        self.assertNotEqual(payload["target"], reset.get_json()["target"])
         self.assertEqual(payload["target"], payload["scenario"]["target"])
         self.assertEqual(payload["target"], payload["observation"]["goal"])
 

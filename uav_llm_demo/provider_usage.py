@@ -58,14 +58,14 @@ def prefix_metrics(messages, previous):
                 first_changed_message=changed)
 
 
-def record_request(body, *, http_status, elapsed_ms, model, metrics):
+def record_request(body, *, http_status, elapsed_ms, model, metrics, prompt_version=PROMPT_VERSION):
     usage = body.get("usage") if isinstance(body, dict) else None
     usage = usage if isinstance(usage, dict) else {}
     values = {key: value if type(value := usage.get(key)) is int and value >= 0 else None
               for key in USAGE_FIELDS}
     total, hits, misses = (values[key] for key in USAGE_FIELDS[:3])
     consistent = all(value is not None for value in (total, hits, misses)) and total == hits + misses
-    event = dict(timestamp=datetime.now(timezone.utc).isoformat(), prompt_version=PROMPT_VERSION,
+    event = dict(timestamp=datetime.now(timezone.utc).isoformat(), prompt_version=prompt_version,
                  model=model, http_status=http_status, elapsed_ms=elapsed_ms, **metrics, **values,
                  usage_consistent=consistent,
                  cache_hit_rate=hits / total if consistent and total else None)

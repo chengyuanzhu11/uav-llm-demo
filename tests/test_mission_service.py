@@ -1,3 +1,4 @@
+from tests.scenario_fixtures import empty_airspace
 import time
 import unittest
 from threading import Event
@@ -173,7 +174,7 @@ class MissionServiceTest(unittest.TestCase):
 
     def test_authentication_failure_is_specific_and_not_retried(self):
         service = MissionService(agent=DeepSeekAgent(api_key="dummy-test-credential"),
-                                 scenario_id="open_field")
+                                 scenario=empty_airspace())
         self.addCleanup(service.close)
         response = Mock(status_code=401, text="dummy-test-credential")
         with patch("uav_llm_demo.agents._post_deepseek", return_value=response) as post:
@@ -189,7 +190,7 @@ class MissionServiceTest(unittest.TestCase):
 
     def test_transient_provider_failure_retries_with_backoff(self):
         service = MissionService(agent=DeepSeekAgent(api_key="dummy-test-credential"),
-                                 scenario_id="open_field")
+                                 scenario=empty_airspace())
         self.addCleanup(service.close)
         response = Mock(status_code=503, text="dummy-test-credential")
         submitted = []
@@ -229,7 +230,7 @@ class MissionServiceTest(unittest.TestCase):
                         release.wait(5)
                         return super().plan(context, feedback)
 
-                service = MissionService(agent=RetryThenWaitingPlanner(), scenario_id="open_field")
+                service = MissionService(agent=RetryThenWaitingPlanner(), scenario=empty_airspace())
                 self.addCleanup(service.close)
                 self.addCleanup(release.set)
                 service.start(background=False)
@@ -320,24 +321,26 @@ class MissionServiceTest(unittest.TestCase):
         self.assertTrue(waiting["flight"]["planning"])
 
     def test_avoidance_does_not_read_future_traffic_curve(self):
-        service = MissionService(scenario_id="open_field")
+        service = MissionService(scenario=empty_airspace())
         self.addCleanup(service.close)
         service._traffic.clock = lambda: 0
         service._traffic.started = 0
         bird = service._environment.dynamic_objects[0]
         bird.position = (5, 10, 2)
-        bird.velocity = (0, 6, 0)
+        bird.velocity = (0, 1, 0)
         service._environment.realtime_traffic = True
         service._traffic.models[bird.object_id] = dict(segments=[dict(start=0, duration=1,
             controls=[(5, 10, 2), (5, 12, 2), (5, 10, 2), (5, 5, 2)])])
-        tracks = service.avoidance.predictions(VehicleState((5, 8, 2)), [bird])
+        service.avoidance.observe([dict(id=bird.object_id, position=bird.position,
+            velocity=bird.velocity, observed_at=0, radius_m=2.1)], 0)
+        tracks = service.avoidance.predictions(VehicleState((5, 8, 2)), 0)
         from uav_llm_demo.safety import SafetyChecker
         rollout = service.avoidance.rollout(VehicleState((5, 8, 2)), None, service.controller,
                                             SafetyChecker(service._context()), tracks)
         self.assertGreater(rollout.clearance, 0)
-        self.assertEqual(tracks[0][1][10], (5, 19, 2))
+        self.assertEqual(tracks[0].positions[10], (5, 11.5, 2))
         service._traffic.models.clear()
-        self.assertEqual(tracks, service.avoidance.predictions(VehicleState((5, 8, 2)), [bird]))
+        self.assertEqual(tracks, service.avoidance.predictions(VehicleState((5, 8, 2)), 0))
 
     def test_traffic_moves_while_planner_is_waiting(self):
         release = Event()

@@ -7,6 +7,7 @@ import time
 from .agents import build_agent
 from .mission_service import MissionService
 from .scenarios import list_scenarios, load_scenario
+from .traffic_motion import TRAFFIC_POLICIES, TRAFFIC_MODEL_VERSION
 
 
 def _positive(value, name):
@@ -18,12 +19,15 @@ def _positive(value, name):
 def run_scenario(scenario_id, *, backend='mock', max_seconds=120.0,
                  control_dt=MissionService.CONTROL_DT, mode='virtual', seed=None,
                  planner_latency_seconds=0.0, planner_timeout_seconds=30.0,
-                 agent=None, scenario=None, traffic_seed=None, journal=None):
+                 agent=None, scenario=None, traffic_seed=None, traffic_policy="fixed",
+                 observation_config=None, journal=None):
     """Virtual runs await local computation, then inject declared simulated latency.
 
     Real-time runs use the actual service loop and a wall-clock deadline. Remote
     providers are deliberately disallowed in accelerated virtual experiments.
     """
+    if traffic_policy not in TRAFFIC_POLICIES:
+        raise ValueError("Traffic policy must be fixed.")
     max_seconds = _positive(max_seconds, 'max_seconds')
     control_dt = _positive(control_dt, 'control_dt')
     planner_timeout_seconds = _positive(planner_timeout_seconds, 'planner_timeout_seconds')
@@ -38,10 +42,14 @@ def run_scenario(scenario_id, *, backend='mock', max_seconds=120.0,
         raise ValueError('Remote API evaluation requires mode=realtime; use local plans or recorded responses in virtual mode.')
     if mode == 'realtime' and (control_dt != MissionService.CONTROL_DT or planner_latency_seconds):
         raise ValueError('Realtime uses the production control period and actual provider latency.')
-    seed = load_scenario(scenario_id).seed if seed is None else seed
+    template = scenario or load_scenario(scenario_id)
+    if template.mission_mode != 'navigation':
+        raise ValueError('Navigation benchmarks require Urban Crossing; semantic tasks use the task API.')
+    seed = template.seed if seed is None else seed
     traffic_seed = seed + 1 if traffic_seed is None else traffic_seed
     service = MissionService(agent=agent, scenario_id=scenario_id, target_seed=seed,
-                             traffic_seed=traffic_seed, scenario=scenario, journal=journal,
+                             traffic_seed=traffic_seed, traffic_policy=traffic_policy, observation_config=observation_config,
+                             scenario=scenario, journal=journal,
                              planner_latency_seconds=planner_latency_seconds)
     started = time.monotonic()
     status, reason = 'timeout', 'wall_budget' if mode == 'realtime' else 'simulation_budget'
@@ -101,6 +109,9 @@ def run_scenario(scenario_id, *, backend='mock', max_seconds=120.0,
                     protocol=dict(mode=mode, time_budget_seconds=max_seconds, control_dt=control_dt,
                                   planner_latency_seconds=planner_latency_seconds,
                                   planner_timeout_seconds=planner_timeout_seconds, seed=seed, traffic_seed=traffic_seed,
+                                  traffic_policy=traffic_policy, traffic_model_version=TRAFFIC_MODEL_VERSION,
+                                  traffic_observation=state["traffic_observation"],
+                                  traffic_prediction=service.avoidance.snapshot()["prediction"],
                                   source_sha256=service._source_version),
                     initial_scenario=initial, simulation_seconds=service._time, wall_seconds=measured_seconds,
                     metrics=metrics, milestones=state['milestones'], diagnostics=service.trace.snapshot(),
@@ -128,11 +139,13 @@ def summarize(results):
 
 
 def run_benchmark(scenario_ids=None, *, backend='mock', max_seconds=120.0, mode='virtual',
-                  seeds=None, planner_latency_seconds=0.0, planner_timeout_seconds=30.0, journal=None):
-    selected = scenario_ids or [item['id'] for item in list_scenarios()]
+                  seeds=None, planner_latency_seconds=0.0, planner_timeout_seconds=30.0,
+                  traffic_policy="fixed", observation_config=None, journal=None):
+    selected = scenario_ids or [item['id'] for item in list_scenarios() if item['mission_mode'] == 'navigation']
     return [run_scenario(scenario_id, backend=backend, max_seconds=max_seconds, mode=mode, seed=seed,
                          planner_latency_seconds=planner_latency_seconds,
-                         planner_timeout_seconds=planner_timeout_seconds, journal=journal)
+                         planner_timeout_seconds=planner_timeout_seconds, traffic_policy=traffic_policy,
+                         observation_config=observation_config, journal=journal)
             for scenario_id in selected for seed in (seeds if seeds is not None else [None])]
 
 
@@ -174,6 +187,11 @@ def compare_results(before, after):
         left, right = a[key], b[key]
         for field in ('mode', 'time_budget_seconds', 'control_dt', 'planner_latency_seconds', 'planner_timeout_seconds'):
             if left['protocol'][field] != right['protocol'][field]:
+                raise ValueError('Mismatched evaluation protocol: '+field)
+        for field, legacy in (('traffic_policy', 'route_demo'),
+                              ('traffic_model_version', 'legacy-shared-stream'),
+                              ('traffic_observation', 'legacy_ground_truth')):
+            if left['protocol'].get(field, legacy) != right['protocol'].get(field, legacy):
                 raise ValueError('Mismatched evaluation protocol: '+field)
         if left['initial_scenario'] != right['initial_scenario']:
             raise ValueError('Mismatched initial scenario for paired comparison.')

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from math import sqrt, isfinite
 
 SCALE = (3.0, 3.0, 5.0)
+MAX_TRACKING_DEVIATION_M = 3.0
 
 
 def norm(vector):
@@ -11,6 +12,15 @@ def norm(vector):
 
 def distance(a, b):
     return norm(tuple((a[i] - b[i]) * SCALE[i] for i in range(3)))
+
+
+def segment_deviation(position, start, end):
+    """Distance in metres to a closed 3D reference segment."""
+    offset = tuple((position[i] - start[i]) * SCALE[i] for i in range(3))
+    direction = tuple((end[i] - start[i]) * SCALE[i] for i in range(3))
+    fraction = max(0, min(1, sum(a * b for a, b in zip(offset, direction))
+                          / max(norm(direction) ** 2, 1e-12)))
+    return norm(tuple(a - b * fraction for a, b in zip(offset, direction)))
 
 
 @dataclass(frozen=True)
@@ -49,7 +59,22 @@ class WaypointManager:
         if self.current is None:
             return False
         remaining = self.remaining_distance(state.position)
-        for index in range(len(self.points) - 1, self.index, -1):
+        furthest = len(self.points) - 1
+        base = checker.ground_base
+        if base is not None and distance(self.points[-1], base) <= .18:
+            # Reach and decelerate at the entrance to the landing column before
+            # selecting a lower point. Intermediate collinear descents may still
+            # be skipped once that approach waypoint has actually been reached.
+            approach = furthest
+            for index in range(furthest - 1, -1, -1):
+                point, following = self.points[index:index + 2]
+                horizontal = norm(tuple((point[i] - base[i]) * SCALE[i] for i in range(2)))
+                if horizontal > checker.pad_radius_m or point[2] < following[2]:
+                    break
+                approach = index
+            if self.index <= approach:
+                furthest = approach
+        for index in range(furthest, self.index, -1):
             point = self.points[index]
             tail = self.points[index:]
             cost = distance(state.position, point) + sum(distance(a, b) for a, b in zip(tail, tail[1:]))
@@ -122,11 +147,7 @@ class ReplanningManager:
             return "waypoint_unreachable"
         if not checker.segment_safe(state.position, target):
             return "route_blocked"
-        start = manager.segment_start
-        a = tuple((state.position[i] - start[i]) * SCALE[i] for i in range(3))
-        b = tuple((target[i] - start[i]) * SCALE[i] for i in range(3))
-        t = max(0, min(1, sum(a[i] * b[i] for i in range(3)) / max(norm(b) ** 2, 1e-12)))
-        if norm(tuple(a[i] - b[i] * t for i in range(3))) > 3.0:
+        if segment_deviation(state.position, manager.segment_start, target) > MAX_TRACKING_DEVIATION_M:
             return "tracking_deviation_exceeded_3m"
         remaining = distance(state.position, target)
         if manager.index != self.waypoint_index or remaining < self.best_distance - 0.15:

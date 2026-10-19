@@ -45,11 +45,27 @@ def create_app(
             return jsonify(mission_service.start())
         except RuntimeUnavailableError as exc:
             return _runtime_error_response(mission_service, exc, 503)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
 
     @app.post("/api/mission/plan")
     def api_plan():
         try:
             return jsonify(mission_service.plan())
+        except RuntimeUnavailableError as exc:
+            return _runtime_error_response(mission_service, exc, 503)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+
+    @app.post("/api/mission/task")
+    def api_task():
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {"instruction"}:
+            return jsonify(error="请提交包含 instruction 的任务指令。"), 400
+        try:
+            return jsonify(mission_service.submit_task(data["instruction"]))
+        except (TypeError, ValueError) as exc:
+            return jsonify(error=str(exc)), 400
         except RuntimeUnavailableError as exc:
             return _runtime_error_response(mission_service, exc, 503)
 

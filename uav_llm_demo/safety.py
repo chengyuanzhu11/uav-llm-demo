@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from .dynamic_risk import separation_distance_m
 
 Point = tuple[float, float, float]
 SCALE = (3.0, 3.0, 5.0)
 SAFETY_MARGIN = 0.6
 MAX_WAYPOINTS = 64
+# Numeric boundary tolerance, distinct from obstacle clearance and arrival tolerance.
+# The controller stops corrections below 1e-9 m; exact cruise comparisons can deadlock.
+ALTITUDE_EPSILON = 1e-8 / SCALE[2]
 
 
 def _number(value) -> float:
@@ -48,7 +52,9 @@ def _intersects(a, b, lower, upper) -> bool:
         else:
             t0, t1 = sorted(((lo - start) / delta, (hi - start) / delta))
             enter, leave = max(enter, t0), min(leave, t1)
-            if enter > leave:
+            # A tangent at a box corner is still a collision. Division can put
+            # equal slab times on opposite sides of a floating-point ulp.
+            if enter > leave + 1e-12:
                 return False
     return True
 
@@ -86,9 +92,10 @@ class SafetyChecker:
 
     def _inside_bounds(self, point):
         x, y, z = point
-        if not (self.lower[0] <= x <= self.upper[0] and self.lower[1] <= y <= self.upper[1] and z <= self.upper[2]):
+        if not (self.lower[0] <= x <= self.upper[0] and self.lower[1] <= y <= self.upper[1]
+                and z <= self.upper[2] + ALTITUDE_EPSILON):
             return False
-        if z >= self.lower[2]:
+        if z >= self.lower[2] - ALTITUDE_EPSILON:
             return True
         return z >= 0 and self._over_pad(point)
 
@@ -120,7 +127,7 @@ class SafetyChecker:
         if not all(self._inside_bounds(point) for point in (a, b)):
             return False
         # Low flight is confined to the base column; do not cut diagonally out of it.
-        if min(a[2], b[2]) < self.lower[2] and not all(self._over_pad(p) for p in (a, b)):
+        if min(a[2], b[2]) < self.lower[2] - ALTITUDE_EPSILON and not all(self._over_pad(p) for p in (a, b)):
             return False
         lower = tuple(min(x, y) for x, y in zip(a, b))
         upper = tuple(max(x, y) for x, y in zip(a, b))
@@ -161,7 +168,8 @@ class SafetyChecker:
         length2 = sum(d * d for d in delta)
         for item in self.context.get("dynamic_objects", []):
             try:
-                radius = _number(item.get("radius", 0.7))
+                radius = (_number(item["radius_m"]) if "radius_m" in item
+                          else _number(item.get("radius", 0.7)) * SCALE[0])
                 if radius < 0:
                     return True
                 for key in ("position", "predicted_position"):
@@ -170,7 +178,7 @@ class SafetyChecker:
                     center = _point(item[key])
                     offset = tuple((c - x) * s for c, x, s in zip(center, a, SCALE))
                     t = max(0.0, min(1.0, sum(o * d for o, d in zip(offset, delta)) / length2)) if length2 else 0.0
-                    if math.hypot(*(o - t * d for o, d in zip(offset, delta))) <= radius * SCALE[0] + SAFETY_MARGIN:
+                    if math.hypot(*(o - t * d for o, d in zip(offset, delta))) <= separation_distance_m(radius):
                         return True
             except (KeyError, TypeError, ValueError):
                 return True

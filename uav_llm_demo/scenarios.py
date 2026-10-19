@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from copy import deepcopy
+
+from .campus_layout import CAMPUS_LAYOUT, campus_building_cells
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,11 @@ class ScenarioDefinition:
     preferred_altitude: tuple[float, float] | None = None
     urban_parcels: tuple[UrbanParcel, ...] = ()
     urban_street_centers: tuple[float, ...] = ()
+    mission_mode: str = "navigation"
+    points_of_interest: tuple[dict, ...] = ()
+    recommended_tasks: tuple[str, ...] = ()
+    semantic_regions: tuple[dict, ...] = ()
+    campus_layout: dict | None = None
 
     @property
     def building_map(self) -> dict[tuple[int, int], int]:
@@ -86,6 +94,11 @@ class ScenarioDefinition:
                                    if self.preferred_altitude else None),
             "urban_parcels": [parcel.to_dict() for parcel in self.urban_parcels],
             "urban_street_centers": list(self.urban_street_centers),
+            "mission_mode": self.mission_mode,
+            "points_of_interest": deepcopy(list(self.points_of_interest)),
+            "recommended_tasks": list(self.recommended_tasks),
+            "semantic_regions": deepcopy(list(self.semantic_regions)),
+            "campus_layout": deepcopy(self.campus_layout),
         }
 
 
@@ -155,16 +168,52 @@ def _parcel_buildings(parcels: tuple[UrbanParcel, ...]) -> tuple[tuple[int, int,
     return tuple((x, y, height) for (x, y), height in sorted(cells.items()))
 
 
-_NARROW_BUILDINGS = tuple((x, y, 4) for x in (6, 13) for y in range(5, 11))
+def _campus_point(site_id, label, kind, position, actions):
+    return dict(id=site_id, label=label, kind=kind, position=_point_to_dict(position),
+                allowed_actions=list(actions))
+
+
+_CAMPUS_POINTS = (
+    _campus_point("home", "南门起降点", "home", (48, 88, 0), ("return_home",)),
+    _campus_point("conference", "会议中心 C1", "conference", (43, 74, 3),
+                  ("visit", "inspect", "capture")),
+    _campus_point("library", "图书馆 C2", "library", (53, 74, 3),
+                  ("visit", "inspect", "thermal_scan", "capture")),
+    _campus_point("teaching", "教学一号楼 C3", "teaching", (38, 54, 2.8),
+                  ("visit", "inspect", "capture")),
+    _campus_point("exhibition", "科教美育中心 C5", "exhibition", (60, 52, 2.4),
+                  ("visit", "inspect", "capture")),
+    _campus_point("research_one", "科研一号楼 R1", "research", (36, 69, 2.5),
+                  ("visit", "inspect", "capture")),
+    _campus_point("research_two", "科研二号楼 R2", "research", (36, 35, 2.5),
+                  ("visit", "inspect", "capture")),
+    _campus_point("laboratory", "实验一号楼 L1", "laboratory", (62, 84, 3.5),
+                  ("visit", "inspect", "thermal_scan", "capture")),
+    _campus_point("stadium", "田径场 S1", "sports", (26, 84, 2.2),
+                  ("visit", "inspect", "capture")),
+    _campus_point("east_gate", "东门", "gate", (81, 26, 2),
+                  ("visit", "inspect", "capture")),
+    _campus_point("north_teaching", "教学五号楼 C9", "teaching", (53, 27, 3),
+                  ("visit", "inspect", "capture")),
+)
+
+
+_CAMPUS_REGIONS = (
+    dict(id="south_plaza", label="南广场区域", bounds=[40, 57, 78, 86]),
+    dict(id="south_residential", label="南区生活区", bounds=[61, 78, 56, 74]),
+    dict(id="north_residential", label="北区生活区", bounds=[50, 79, 7, 25]),
+)
 
 
 _URBAN_TRAFFIC = (
-    DynamicObjectSpec("bird-1", "bird", (7.5, 15.5, 5.0), (0.7, -0.55, 0.0)),
-    DynamicObjectSpec("bird-2", "bird", (16.5, 8.0, 6.5), (-0.6, 0.35, -0.08)),
-    DynamicObjectSpec("bird-3", "bird", (4.0, 5.5, 4.0), (0.45, 0.65, 0.1)),
-    DynamicObjectSpec("bird-4", "bird", (29.5, 28.0, 2.0), (0.3, 0.2, 0.0)),
-    *(DynamicObjectSpec(f"route-bird-{index}", "route_bird", (29.5, 20.0, 3.0),
-                       (0.0, 0.0, 0.0), radius=0.45) for index in range(1, 5)),
+    DynamicObjectSpec("bird-1", "bird", (2.0, 9.5, 2.0), (0.0, 0.0, 0.0)),
+    DynamicObjectSpec("bird-2", "bird", (9.5, 2.0, 2.4), (0.0, 0.0, 0.0)),
+    DynamicObjectSpec("bird-3", "bird", (2.0, 29.5, 3.2), (0.0, 0.0, 0.0)),
+    DynamicObjectSpec("bird-4", "bird", (29.5, 2.0, 4.0), (0.0, 0.0, 0.0)),
+    DynamicObjectSpec("bird-5", "bird", (3.0, 9.5, 5.2), (0.0, 0.0, 0.0), radius=0.45),
+    DynamicObjectSpec("bird-6", "bird", (9.5, 3.0, 5.6), (0.0, 0.0, 0.0), radius=0.45),
+    DynamicObjectSpec("bird-7", "bird", (3.0, 29.5, 2.0), (0.0, 0.0, 0.0), radius=0.45),
+    DynamicObjectSpec("bird-8", "bird", (29.5, 3.0, 2.8), (0.0, 0.0, 0.0), radius=0.45),
 )
 
 
@@ -183,35 +232,32 @@ SCENARIOS = {
         urban_parcels=_URBAN_PARCELS,
         urban_street_centers=(9.5, 29.5),
     ),
-    "open_field": ScenarioDefinition(
-        scenario_id="open_field",
-        name="Open Field",
-        grid_size=20,
+    "semantic_campus": ScenarioDefinition(
+        scenario_id="semantic_campus",
+        name="北航杭州国际校园",
+        grid_size=96,
         min_altitude=2,
         max_altitude=10,
-        base=(1, 18, 0),
-        target=(18, 2, 5),
-        buildings=(),
+        base=(48, 88, 0),
+        target=(53, 74, 3),
+        buildings=campus_building_cells(),
         dynamic_objects=(
-            DynamicObjectSpec("bird-1", "bird", (9.5, 10.5, 5.0), (0.35, -0.2, 0.0)),
+            DynamicObjectSpec("campus-bird-1", "bird", (38, 10, 2.4), (0.0, 0.0, 0.0)),
+            DynamicObjectSpec("campus-bird-2", "bird", (20, 27, 3.6), (0.0, 0.0, 0.0)),
+            DynamicObjectSpec("campus-bird-3", "bird", (20, 76, 2.0), (0.0, 0.0, 0.0)),
         ),
-        seed=11,
-    ),
-    "narrow_corridor": ScenarioDefinition(
-        scenario_id="narrow_corridor",
-        name="Narrow Corridor",
-        grid_size=20,
-        min_altitude=2,
-        max_altitude=10,
-        base=(1, 18, 0),
-        target=(18, 2, 2),
-        buildings=_NARROW_BUILDINGS,
-        dynamic_objects=(
-            DynamicObjectSpec("bird-1", "bird", (10.0, 12.0, 5.0), (-0.25, -0.35, 0.0)),
-            DynamicObjectSpec("bird-2", "bird", (15.0, 6.0, 6.0), (0.2, 0.25, 0.0)),
+        seed=31,
+        mission_mode="semantic",
+        points_of_interest=_CAMPUS_POINTS,
+        recommended_tasks=(
+            "先巡检图书馆，再巡检教学一号楼，最后返航。",
+            "检查图书馆温度，超过25摄氏度就模拟采样，否则巡检会议中心，最后返航。",
+            "重复巡检图书馆和教学一号楼3次，最后返航。",
+            "反复检查实验一号楼，温度低于40摄氏度或检查满5次后返航。",
+            "避开南区生活区，依次访问科教美育中心和东门，最后返航。",
         ),
-        seed=23,
-        preferred_altitude=(2.0, 2.4),
+        semantic_regions=_CAMPUS_REGIONS,
+        campus_layout=CAMPUS_LAYOUT,
     ),
 }
 

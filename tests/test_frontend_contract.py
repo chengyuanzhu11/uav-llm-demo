@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import re
 import shutil
 import subprocess
@@ -9,6 +10,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FrontendContractTest(unittest.TestCase):
+    def test_scenario_catalog_arriving_after_state_keeps_current_map_selected(self):
+        self.run_frontend_functions(["loadScenarios"], r'''
+let scenariosLoaded = false;
+const state = {scenario_id: "semantic_campus"};
+const document = {createElement: () => ({})};
+const scenarioSelect = {
+  value: "", options: [],
+  replaceChildren() { this.options = []; this.value = ""; },
+  appendChild(option) { this.options.push(option); if (!this.value) this.value = option.value; },
+};
+let requests = 0;
+async function requestJson() {
+  requests += 1;
+  return {scenarios: [{id: "urban_crossing", name: "Urban Crossing"},
+    {id: "semantic_campus", name: "北航杭州国际校园"}]};
+}
+await loadScenarios();
+assert.equal(scenarioSelect.value, "semantic_campus");
+assert.equal(scenarioSelect.options.length, 2);
+await loadScenarios();
+assert.equal(requests, 1);
+''')
+
     def test_runtime_selector_and_conditional_airsim_panel_exist(self):
         html = (ROOT / "uav_llm_demo/templates/index.html").read_text(
             encoding="utf-8"
@@ -191,7 +215,12 @@ class FrontendContractTest(unittest.TestCase):
           updateGoalStar(.05,0,true);
           assert.equal(goalStar.visible,true); assert.equal(goalReward.hidden,true);
           state.milestones.target_reached = true;
-          updateGoalStar(.05,1,true);
+          state.milestones.target_reached_at = 1;
+          // The visual reward waits for the delayed vehicle to reach the goal.
+          updateGoalStar(.05,.8,true,.65);
+          assert.equal(goalStar.userData.reward.collected,false);
+          assert.equal(goalReward.hidden,true);
+          updateGoalStar(.05,1,true,1);
           assert.equal(goalReward.hidden,false);
           assert.match(goalReward.textContent,/\+1/);
           updateGoalStar(2,3,true);
@@ -210,52 +239,68 @@ class FrontendContractTest(unittest.TestCase):
         """)
 
     def test_planned_route_includes_fixed_origin_even_with_one_waypoint(self):
-        self.run_frontend_functions(["updateWaypoints", "disposeRoute"], """
-          let plannedRoute = null, plannedRouteKey = '';
+        vendor = (ROOT / "uav_llm_demo/static/vendor/three.module.js").as_uri()
+        trail = (ROOT / "uav_llm_demo/static/flight_trail.js").as_uri()
+        self.run_frontend_functions(["updateWaypoints", "disposeRoute"],
+            "const THREE = await import(" + json.dumps(vendor) + ");\n"
+            + "const {FlightTrail} = await import(" + json.dumps(trail) + ");\n" + r"""
+          let plannedRoute = null, plannedTrail = null, plannedRouteKey = '';
           const state = {flight:{plan_id:1, plan_start:{x:1,y:2,z:3},
             waypoints:[{x:8,y:9,z:3}]}, uav:{x:1,y:2,z:3}};
-          const toWorld = p => [p.x,p.y,p.z];
+          const toWorld = p => new THREE.Vector3(p.x,p.y,p.z);
           const updateAvoidanceRoute = () => {};
-          const scene = {add() {}, remove() {}};
-          class Geometry {
-            setFromPoints(points) { this.points = points; return this; }
-            dispose() {}
-          }
-          class Material { dispose() {} }
-          const THREE = {
-            Group: class {
-              constructor() { this.children = []; }
-              add(o) { this.children.push(o); }
-              traverse(fn) { this.children.forEach(fn); }
-            },
-            BufferGeometry: Geometry, SphereGeometry: Geometry,
-            LineDashedMaterial: Material, MeshBasicMaterial: Material,
-            Line: class {
-              constructor(geometry, material) { Object.assign(this,{geometry,material}); }
-              computeLineDistances() {}
-            },
-            Mesh: class {
-              constructor(geometry, material) {
-                Object.assign(this,{geometry,material}); this.position = {copy() {}};
-              }
+          const scene = new THREE.Scene();
+          const ringCenter = (mesh, ring) => {
+            const points=mesh.geometry.getAttribute('position');
+            const center=new THREE.Vector3();
+            for(let index=ring*6; index<ring*6+6; index++) {
+              center.add(new THREE.Vector3().fromBufferAttribute(points,index));
             }
+            return center.divideScalar(6);
           };
+          const same = (actual, expected) => assert.ok(actual.distanceTo(new THREE.Vector3(...expected))<1e-6);
           updateWaypoints();
-          assert.deepEqual(plannedRoute.children[0].geometry.points, [[1,2,3],[8,9,3]]);
+          const tube = plannedTrail.object.children[0];
+          same(ringCenter(tube,0), [1,2,3]); same(ringCenter(tube,1), [8,9,3]);
           assert.equal(plannedRoute.children.length, 2); // Only real waypoints get markers.
-          const original = plannedRoute;
+          assert.equal(plannedTrail.stats.segments,1);
+          assert.equal(tube.isMesh,true); // Width comes from geometry, not unsupported WebGL linewidth.
+          const center=ringCenter(tube,0);
+          const vertex=new THREE.Vector3().fromBufferAttribute(tube.geometry.getAttribute('position'),0);
+          assert.ok(Math.abs(vertex.distanceTo(center)-.095)<1e-6);
+          assert.equal(tube.material.opacity,.92);
+          assert.equal(tube.material.color.getHex(),0xffc857);
+          assert.equal(tube.material.depthTest,false);
+          assert.equal(tube.renderOrder,4); // Actual flight history remains above the plan.
+          assert.equal(plannedTrail.object.renderOrder,0); // Group order must not override the mesh order.
+          const hits=[];tube.raycast(null,hits);plannedRoute.children[1].raycast(null,hits);
+          assert.deepEqual(hits,[]); // Diagnostic overlays must not intercept bird hover.
+          const original=plannedRoute, geometry=tube.geometry;
+          const version=geometry.getAttribute('position').version;
           state.uav = {x:4,y:5,z:3};
           updateWaypoints();
-          assert.equal(plannedRoute, original); // Origin must not follow the UAV.
+          assert.equal(plannedRoute,original); assert.equal(plannedTrail.object.children[0].geometry,geometry);
+          assert.equal(geometry.getAttribute('position').version,version);
+          let disposedGeometry=0, disposedMaterial=0, disposedMarker=0;
+          geometry.addEventListener('dispose',()=>disposedGeometry++);
+          tube.material.addEventListener('dispose',()=>disposedMaterial++);
+          plannedRoute.children[1].geometry.addEventListener('dispose',()=>disposedMarker++);
           state.flight = {plan_id:2, plan_start:{x:8,y:9,z:3},
             waypoints:[{x:4,y:4,z:3},{x:1,y:2,z:3}]};
           updateWaypoints();
-          assert.deepEqual(plannedRoute.children[0].geometry.points,
-            [[8,9,3],[4,4,3],[1,2,3]]);
+          assert.equal(disposedGeometry,1);assert.equal(disposedMaterial,1);assert.equal(disposedMarker,1);
+          assert.equal(plannedTrail.stats.segments,2);
+          same(ringCenter(plannedTrail.object.children[0],0), [8,9,3]);
+          same(ringCenter(plannedTrail.object.children[0],3), [1,2,3]);
           disposeRoute(); updateWaypoints(); // Refresh/rebuild preserves the origin.
-          assert.deepEqual(plannedRoute.children[0].geometry.points[0], [8,9,3]);
+          same(ringCenter(plannedTrail.object.children[0],0), [8,9,3]);
           state.flight = {plan_id:0, plan_start:null, waypoints:[]};
-          updateWaypoints(); assert.equal(plannedRoute, null);
+          updateWaypoints();assert.equal(plannedRoute,null);assert.equal(plannedTrail,null);
+          assert.equal(scene.children.length,0);
+          state.flight = {plan_id:3,plan_start:null,waypoints:[{x:1,y:2,z:3}]};
+          updateWaypoints();assert.equal(plannedTrail.stats.segments,0); // No fabricated origin.
+          assert.equal(plannedRoute.children.length,2);
+          disposeRoute();disposeRoute();assert.equal(scene.children.length,0);
         """)
 
     def test_state_rejects_late_poll_and_control_responses_before_scene_updates(self):
@@ -290,8 +335,26 @@ class FrontendContractTest(unittest.TestCase):
           assert.equal(clears, 1); assert.equal(initial, false);
         """)
 
+    def test_semantic_step_target_preserves_scene_but_mission_reset_rebuilds_it(self):
+        self.run_frontend_functions(["acceptState"], """
+          let state = {sequence:1, scenario_id:'semantic_campus', runtime_backend:'html',
+            scenario:{mission_mode:'semantic'}, diagnostics:{run_id:'mission-1'},
+            target:{x:23,y:12,z:3}, flight:{plan_id:2}, path:[{},{}]};
+          let lastSequence = 1, clears = 0, initial = false, commandError = '';
+          const hasOwn = (object, key) => Object.hasOwn(object, key);
+          const clearEnvironment = () => clears++;
+          const syncScene = value => initial = value;
+          const renderUi = () => {};
+          const next = {...state,sequence:2,target:{x:2,y:27,z:0},flight:{plan_id:0}};
+          assert.equal(acceptState(next), true);
+          assert.equal(clears, 0); assert.equal(initial, false);
+          assert.equal(acceptState({...state,sequence:3,
+            diagnostics:{run_id:'mission-2'},path:[{}]}), true);
+          assert.equal(clears, 1); assert.equal(initial, true);
+        """)
+
     def test_trace_title_uses_recorded_planner_after_agent_switch(self):
-        self.run_frontend_functions(["renderToolbarState"], """
+        self.run_frontend_functions(["renderToolbarState", "isSemanticScenario"], """
           let state = {
             status:'active', phase:'returning_home', agent_backend:'deepseek',
             agent_model:'deepseek-v4-flash', flight:{mode:'running'},
@@ -311,6 +374,33 @@ class FrontendContractTest(unittest.TestCase):
           state.history = [];
           renderToolbarState();
           assert.equal(backendValue.textContent, 'deepseek:deepseek-v4-flash');
+          assert.equal(planBtn.hidden, false);
+          assert.equal(agentButtons[0].hidden, false);
+          // Semantic decisions are always attributed to DeepSeek, while the
+          // most recent geometry plan may have come from the local planner.
+          state.scenario = {mission_mode:'semantic'};
+          state.semantic_mission = {status:'interpreting'};
+          state.flight = {running:true, planning:true, mode:'planning'};
+          state.history = [{decision:{agent_backend:'local',agent_model:null}}];
+          const mockButton = button(); mockButton.dataset.agent = 'mock';
+          agentButtons.push(mockButton);
+          renderToolbarState();
+          assert.equal(backendValue.textContent, 'DeepSeek');
+          assert.equal(planBtn.hidden, true);
+          assert.equal(mockButton.hidden, true);
+          assert.equal(startBtn.disabled, false); // Interpretation can pause.
+          state.flight.running = false;
+          renderToolbarState();
+          assert.equal(startBtn.disabled, false); // And resume while a request is pending.
+          state.semantic_mission.status = 'error';
+          state.flight = {running:false, planning:false, mode:'error'};
+          renderToolbarState();
+          assert.equal(startBtn.disabled, false); // Reconfigure a key, then retry.
+          for (const status of ['idle','needs_clarification','completed','safety_wait']) {
+            state.semantic_mission.status = status;
+            renderToolbarState();
+            assert.equal(startBtn.disabled, true);
+          }
         """)
 
     def test_poll_is_serial_read_only_and_retries_without_mutating(self):
@@ -335,7 +425,7 @@ class FrontendContractTest(unittest.TestCase):
 
     def test_mission_commands_follow_backend_state_and_are_serial(self):
         self.run_frontend_functions(
-            ["runCommand", "postState", "toggleMission", "planMission", "switchAgent"], """
+            ["runCommand", "postState", "toggleMission", "planMission", "switchAgent", "isSemanticScenario"], """
           let state = {flight:{running:false}, agent_backend:'mock'}, commandPending = false;
           let commandError = '', release;
           const urls = [], renderUi = () => {}, acceptState = () => {};
@@ -356,6 +446,23 @@ class FrontendContractTest(unittest.TestCase):
           assert.equal(await toggleMission(), false);
           release(); await pending;
           assert.deepEqual(urls, ['/api/mission/start', '/api/runtime/stop', '/api/mission/plan', '/api/config']);
+          // Urban retains its existing planning-is-active pause behavior.
+          state.flight = {running:false, planning:true};
+          pending = toggleMission(); release(); await pending;
+          assert.equal(urls.at(-1), '/api/runtime/stop');
+          // A paused semantic interpretation can resume even if its provider
+          // request is still pending. It cannot issue a route-only Plan or switch to Mock.
+          state.scenario = {mission_mode:'semantic'};
+          state.semantic_mission = {status:'interpreting'};
+          const before = urls.length;
+          assert.equal(await planMission(), false);
+          assert.equal(await switchAgent('mock', true), false);
+          assert.equal(urls.length, before);
+          pending = toggleMission(); release(); await pending;
+          assert.equal(urls.at(-1), '/api/mission/start');
+          state.flight.running = true;
+          pending = toggleMission(); release(); await pending;
+          assert.equal(urls.at(-1), '/api/runtime/stop');
         """)
 
     def test_continuous_contract_has_no_legacy_step_or_replay_loop(self):
@@ -369,7 +476,7 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn('id="plannerProgress"', html)
         self.assertRegex(html, r'id="deepseekApiKey"[^>]*type="password"')
         self.assertIn("void pollState()", javascript)
-        self.assertIn("LineDashedMaterial", javascript)
+        self.assertIn("new FlightTrail(THREE, toWorld)", javascript)
         self.assertIn("disposeRoute()", javascript)
 
     def test_position_telemetry_reserves_space_for_full_coordinates(self):
@@ -392,9 +499,11 @@ class FrontendContractTest(unittest.TestCase):
         )
 
         self.assertNotIn('id="trajectoryBtn"', html)
-        self.assertIn("new THREE.TubeGeometry", javascript)
-        self.assertIn("depthTest: false", javascript)
-        self.assertIn("pathLine.renderOrder = 5", javascript)
+        trail = (ROOT / "uav_llm_demo/static/flight_trail.js").read_text(encoding="utf-8")
+        self.assertIn("new FlightTrail(THREE, toWorld)", javascript)
+        self.assertNotIn("new THREE.TubeGeometry", javascript)
+        self.assertIn("depthTest: false", trail)
+        self.assertIn("mesh.renderOrder = 5", trail)
 
     def test_airsim_runtime_does_not_replay_html_scene_motion(self):
         javascript = (ROOT / "uav_llm_demo/static/app.js").read_text(
@@ -408,7 +517,8 @@ class FrontendContractTest(unittest.TestCase):
         self.assertIn("uavGroup.visible = htmlRuntimeActive", javascript)
         self.assertIn("bird.visible = htmlRuntimeActive", javascript)
         self.assertIn('if (state.runtime_backend !== "html")', javascript)
-        self.assertIn("if (uavGroup && htmlRuntimeActive)", javascript)
+        self.assertIn('const frame = htmlRuntimeActive ? motionTimeline.sample(', javascript)
+        self.assertIn("if (uavGroup && frame)", javascript)
 
 
 if __name__ == "__main__":

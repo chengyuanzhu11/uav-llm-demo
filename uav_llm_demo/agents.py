@@ -12,9 +12,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 import requests
+from urllib3.exceptions import ReadTimeoutError
 
-from .safety import MAX_WAYPOINTS, Point, SafetyChecker, _point, metric_distance
-from .provider_usage import prefix_metrics, record_request
+from .safety import MAX_WAYPOINTS, SAFETY_MARGIN, SCALE, Point, SafetyChecker, _point, metric_distance
+from .provider_usage import PROMPT_VERSION, prefix_metrics, record_request
+from .semantic_tasks import SEMANTIC_SYSTEM_PROMPT, SemanticConstraintError, SemanticPlan, semantic_plan_from_json_text
 
 
 PLANNER_SYSTEM_PROMPT = (
@@ -30,7 +32,9 @@ PLANNER_SYSTEM_PROMPT = (
     "vertically to base.z=0. Never fly diagonally from ground across the map. "
     "Without preferred_altitude, choose a collision-free 3D route using horizontal detours "
     "and climbs/descents as needed; do not force a constant altitude. "
-    "building_volumes are closed axis-aligned GRID boxes from min to max. "
+    "building_volumes are closed axis-aligned GRID boxes from min to max; max.z is GRID "
+    "levels and roof_height_m is its physical altitude. For example height=4 or max.z=4 "
+    "means a 20-metre building, NOT a 4-metre building. "
     "When buildings are provided instead, they are centered at x,y, footprint 0.78 cells "
     "square, from z=0 to height. Keep 0.6 metres clearance from building and no-fly AABBs "
     "on EVERY continuous segment, including the segment from position to first waypoint. "
@@ -41,12 +45,38 @@ PLANNER_SYSTEM_PROMPT = (
     "buildings. Only climb above it if a low route is unreachable. For endpoints outside "
     "the band use safe vertical entry/exit transitions where possible. "
     "Scene contains map constraints, Mission contains task goals, State contains the current "
-    "observation. Feedback describes a rejected plan; correct it without hiding uncertainty."
+    "observation. nearest_static_obstacle.height_grid_levels and roof_height_m use the "
+    "same explicit units. descent_column lists the safety-expanded static envelopes "
+    "intersecting the vertical column at the current position, using ALL map obstacles, "
+    "not just the nearest building. Before descending, check the ENTIRE vertical segment "
+    "against these envelopes and the map. If a roof blocks descent, first move horizontally "
+    "along a safe segment to a clear column at a safe altitude, then descend. A clear current "
+    "column does not certify any horizontal segment or another descent column. "
+    "Feedback describes a rejected plan; replace unsafe segments rather than repeating "
+    "the same in-place descent. Keep all returned waypoint coordinates in GRID units."
 )
 
 
 def _canonical_json(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"))
+
+
+def _descent_column(context):
+    """Expose the executor's existing static envelopes without approving a route."""
+    checker = SafetyChecker(context)
+    position = _point(context["position"])
+    envelopes = [dict(kind=kind, min_z_grid=lower[2], max_z_grid=upper[2],
+                      max_altitude_m=upper[2] * SCALE[2])
+                 for lower, upper, kind in checker.boxes
+                 if lower[0] <= position[0] <= upper[0]
+                 and lower[1] <= position[1] <= upper[1]
+                 and lower[2] <= position[2] and upper[2] >= 0]
+    # Adjacent occupied cells may share a roof; do not repeat identical intervals.
+    envelopes = sorted({_canonical_json(item): item for item in envelopes}.values(),
+                       key=_canonical_json)
+    return dict(position=dict(zip("xyz", position)), position_unit="grid",
+                safety_expanded_envelopes=envelopes,
+                clearance_m=checker.clearance)
 
 
 @dataclass(frozen=True)
@@ -83,7 +113,9 @@ class PlannerProviderError(RuntimeError):
 
 def _post_deepseek(url, *, headers, json: dict, timeout):
     if os.name != "nt":
-        return requests.post(url, headers=headers, json=json, timeout=timeout)
+        # Read status before a potentially slow error body; JSON is consumed by
+        # the caller so body timeouts share its sanitized transport handling.
+        return requests.post(url, headers=headers, json=json, timeout=timeout, stream=True)
 
     script = Path(__file__).resolve().parents[1] / "scripts" / "deepseek_request.ps1"
     payload = {"url": url, "api_key": headers["Authorization"].removeprefix("Bearer "),
@@ -106,6 +138,7 @@ def _post_deepseek(url, *, headers, json: dict, timeout):
         response = requests.Response()
         response.status_code = reply["status"]
         response._content = reply.get("body", "").encode("utf-8")
+        response._content_consumed = True
         return response
     except subprocess.TimeoutExpired:
         raise requests.Timeout() from None
@@ -113,6 +146,27 @@ def _post_deepseek(url, *, headers, json: dict, timeout):
         raise
     except (OSError, ValueError, KeyError, AttributeError):
         raise requests.ConnectionError() from None
+
+
+def _network_error_kind(error):
+    """Classify wrapped transport errors without rendering private diagnostics."""
+    pending, seen, errors = [error], set(), []
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        errors.append(current)
+        pending.extend((current.__cause__, current.__context__, *current.args,
+                        getattr(current, "reason", None)))
+    if any(isinstance(item, (requests.exceptions.Timeout, TimeoutError, ReadTimeoutError))
+           for item in errors):
+        return "timeout"
+    if any(isinstance(item, requests.exceptions.SSLError) for item in errors):
+        return "TLS"
+    if any(isinstance(item, requests.exceptions.ProxyError) for item in errors):
+        return "proxy"
+    return "connection"
 
 
 def plan_from_json_text(content: str) -> RoutePlan:
@@ -172,11 +226,24 @@ class BaseLLMAgent:
         scene = {key: prompt_context.pop(key) for key in (
             "scenario_id", "grid_size", "altitude_range", "preferred_altitude",
             "buildings", "building_volumes", "no_fly_zones") if key in prompt_context}
+        scene["units"] = dict(coordinates="grid", building_height="grid_z_levels",
+                              metres_per_grid=dict(zip("xyz", SCALE)), clearance_m=SAFETY_MARGIN)
+        for key, height in (("buildings", "height"), ("building_volumes", None)):
+            if key in scene:
+                scene[key] = [dict(item, roof_height_m=(item[height] if height else item["max"]["z"]) * SCALE[2])
+                              for item in scene[key]]
         for key in ("buildings", "building_volumes", "no_fly_zones"):
             if key in scene:
                 scene[key] = sorted(scene[key], key=_canonical_json)
         mission = {key: prompt_context.pop(key) for key in (
             "task", "base", "target", "goal", "goal_label") if key in prompt_context}
+        nearest = prompt_context.get("nearest_static_obstacle")
+        if nearest is not None:
+            nearest = dict(nearest)
+            height = nearest.pop("height")
+            nearest.update(height_grid_levels=height, roof_height_m=height * SCALE[2])
+            prompt_context["nearest_static_obstacle"] = nearest
+        prompt_context["descent_column"] = _descent_column(context)
         # Keep changing observations and retry feedback after every reusable prefix.
         return ("Scene:\n" + _canonical_json(scene) + "\nMission:\n" + _canonical_json(mission)
                 + "\nState:\n" + _canonical_json(prompt_context) + "\nFeedback:\n" + feedback)
@@ -186,14 +253,17 @@ class BaseLLMAgent:
                 {"role": "user", "content": self.build_prompt(context, feedback)}]
 
 
-class MockLLMAgent(BaseLLMAgent):
-    backend_name = "mock"
+class GeometricPlanner(BaseLLMAgent):
+    backend_name = "local"
 
     def plan(self, context: dict, feedback: str = "") -> RoutePlan:
         checker = SafetyChecker(context)
         start, goal = _point(context["position"]), _point(context["goal"])
         if checker.validate_waypoint(start) or checker.validate_waypoint(goal):
             raise ValueError("Start or goal is unsafe.")
+        if metric_distance(start, goal) <= .18 and checker.segment_safe(start, goal):
+            return RoutePlan((goal,), "Already at the goal; verify stationary arrival.", "low",
+                             "Confirm arrival using execution telemetry.")
         # Ground transitions are real waypoints and pass the same segment checks.
         if min(start[2], goal[2]) < checker.lower[2]:
             height = min(checker.upper[2], checker.lower[2] + 0.2)
@@ -201,7 +271,7 @@ class MockLLMAgent(BaseLLMAgent):
             exit_point = (*goal[:2], height) if goal[2] < checker.lower[2] else goal
             airborne = deepcopy(context)
             airborne.update(position=dict(zip("xyz", entry)), goal=dict(zip("xyz", exit_point)))
-            middle = MockLLMAgent.plan(self, airborne, feedback)
+            middle = GeometricPlanner.plan(self, airborne, feedback)
             route = ((entry,) if entry != start else ()) + middle.waypoints + ((goal,) if exit_point != goal else ())
             errors = checker.validate_path(start, route)
             if errors:
@@ -270,6 +340,10 @@ class MockLLMAgent(BaseLLMAgent):
         raise ValueError("No safe route found on the planning lattice.")
 
 
+class MockLLMAgent(GeometricPlanner):
+    backend_name = "mock"
+
+
 def preferred_route(context):
     band = context.get("preferred_altitude")
     if not band:
@@ -286,7 +360,7 @@ def preferred_route(context):
     low_checker = SafetyChecker(low_context)
     try:
         middle = ([exit_point] if low_checker.segment_safe(entry, exit_point)
-                  else MockLLMAgent._search(low_checker, entry, exit_point))
+                  else GeometricPlanner._search(low_checker, entry, exit_point))
     except ValueError:
         return None
     return ([entry] if entry != start else []) + middle + ([goal] if exit_point != goal else [])
@@ -321,7 +395,7 @@ def checked_plan(planner, context, feedback):
     if errors:
         raise PlanValidationError(plan, errors)
     band = context.get("preferred_altitude")
-    if band and planner.backend_name != "mock":
+    if band and planner.backend_name not in {"mock", "local"}:
         policy = ("Low-altitude route with safe endpoint transitions." if preferred_route(context) is not None
                   else "Overflight permitted: no safe low-altitude route or endpoint transition on the planning lattice.")
         plan = replace(plan, reason=plan.reason + " " + policy)
@@ -340,66 +414,102 @@ class DeepSeekAgent(BaseLLMAgent):
         self._previous_messages = None
 
     def plan(self, context: dict, feedback: str = "") -> RoutePlan:
+        content = self._request_json_content(self.build_messages(context, feedback), "route plan")
+        try:
+            return plan_from_json_text(content)
+        except (TypeError, ValueError, RecursionError):
+            raise PlannerProviderError("DeepSeek returned an invalid route plan.", retryable=True) from None
+
+    def interpret_task(self, catalog: dict, instruction: str, feedback: str = "") -> SemanticPlan:
+        if not isinstance(instruction, str) or not instruction.strip() or len(instruction) > 2000:
+            raise ValueError("Task instruction must contain 1 to 2000 characters.")
+        messages = [{"role": "system", "content": SEMANTIC_SYSTEM_PROMPT},
+                    {"role": "user", "content": "Catalog:\n" + _canonical_json(catalog)
+                     + "\nInstruction:\n" + instruction.strip() + "\nFeedback:\n" + feedback}]
+        content = self._request_json_content(messages, "semantic task plan", max_tokens=12000,
+                                             prompt_version="semantic-tasks-v2")
+        try:
+            return semantic_plan_from_json_text(content, catalog)
+        except SemanticConstraintError:
+            raise
+        except (TypeError, ValueError, RecursionError):
+            raise PlannerProviderError("DeepSeek returned an invalid semantic task plan.", retryable=True) from None
+
+    def _request_json_content(self, messages, result_kind, *, max_tokens=2000, prompt_version=PROMPT_VERSION):
         if not self.api_key:
             raise PlannerProviderError("DeepSeek API key is missing; set it in Agent settings.", retryable=False)
-        messages = self.build_messages(context, feedback)
         metrics = prefix_metrics(messages, self._previous_messages)
         self._previous_messages = messages
         started = time.monotonic()
 
         def log_usage(body=None, status=None):
             record_request(body, http_status=status, elapsed_ms=round((time.monotonic() - started) * 1000),
-                           model=self.model.replace(self.api_key, "[redacted]"), metrics=metrics)
+                           model=self.model.replace(self.api_key, "[redacted]"), metrics=metrics,
+                           prompt_version=prompt_version)
 
+        response, status = None, None
         try:
-            response = _post_deepseek(
-                f"{self.base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                json={"model": self.model,
-                      "messages": messages,
-                      "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
-                      "temperature": 0.1, "max_tokens": 2000, "stream": False},
-                timeout=self.timeout_seconds,
-            )
-        except requests.RequestException as exc:
-            log_usage()
-            if isinstance(exc, requests.exceptions.Timeout):
-                kind = "timeout"
-            elif isinstance(exc, requests.exceptions.SSLError):
-                kind = "TLS"
-            elif isinstance(exc, requests.exceptions.ProxyError):
-                kind = "proxy"
-            else:
-                kind = "connection"
-            raise PlannerProviderError(f"DeepSeek network request failed ({kind}).", retryable=True) from None
-        if not 200 <= response.status_code < 300:
-            log_usage(status=response.status_code)
+            try:
+                response = _post_deepseek(
+                    f"{self.base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                    json={"model": self.model,
+                          "messages": messages,
+                          "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
+                          "temperature": 0.1, "max_tokens": max_tokens, "stream": False},
+                    timeout=self.timeout_seconds,
+                )
+            except ValueError as exc:
+                # InvalidHeader/InvalidURL also inherit RequestException. Keep
+                # request configuration errors separate from body JSON errors.
+                log_usage()
+                cause = "请求字符编码失败" if isinstance(exc, UnicodeError) else "请求配置无效"
+                raise PlannerProviderError(
+                    f"DeepSeek {cause}，请检查顶部 Key 设置中的密钥、模型和地址。",
+                    retryable=False,
+                ) from None
             status = int(response.status_code)
-            causes = {
-                400: "invalid request format", 401: "API key rejected; replace it in Agent settings",
-                402: "insufficient account balance", 403: "access denied",
-                404: "model or endpoint unavailable", 422: "invalid request parameters",
-                429: "rate limited",
-            }
-            cause = causes.get(status, "provider unavailable" if status >= 500 else "request rejected")
-            raise PlannerProviderError(f"DeepSeek request failed with HTTP {status} ({cause}).",
-                                       retryable=status == 429 or status >= 500)
+            if not 200 <= status < 300:
+                log_usage(status=status)
+                causes = {
+                    400: "invalid request format", 401: "API key rejected; replace it in Agent settings",
+                    402: "insufficient account balance", 403: "access denied",
+                    404: "model or endpoint unavailable", 422: "invalid request parameters",
+                    429: "rate limited", 503: "service overloaded or temporarily unavailable",
+                }
+                cause = causes.get(status, "provider unavailable" if status >= 500 else "request rejected")
+                raise PlannerProviderError(f"DeepSeek request failed with HTTP {status} ({cause}).",
+                                           retryable=status == 429 or status >= 500)
+            try:
+                body = response.json()
+            except (ValueError, RecursionError):
+                log_usage(status=status)
+                raise PlannerProviderError(f"DeepSeek returned an invalid {result_kind}.", retryable=True) from None
+        except requests.RequestException as exc:
+            log_usage(status=status)
+            kind = _network_error_kind(exc)
+            raise PlannerProviderError(f"DeepSeek network request failed ({kind}).", retryable=True) from None
+        finally:
+            if response is not None:
+                response.close()
+        log_usage(body, status)
         try:
-            body = response.json()
-        except (ValueError, RecursionError):
-            log_usage(status=response.status_code)
-            raise PlannerProviderError("DeepSeek returned an invalid route plan.", retryable=True) from None
-        log_usage(body, response.status_code)
-        try:
-            content = body["choices"][0]["message"]["content"]
+            choice = body["choices"][0]
+            if not isinstance(choice, dict):
+                raise TypeError
+            if result_kind == "semantic task plan" and choice.get("finish_reason") == "length":
+                raise PlannerProviderError(
+                    "DeepSeek returned an invalid semantic task plan (response length limit). "
+                    "Use compact repeat/branch nodes and a shorter summary.", retryable=True)
+            content = choice["message"]["content"]
             if not isinstance(content, str) or self.api_key in content:
                 raise ValueError
-            result = plan_from_json_text(content)
-            if self.api_key in json.dumps(result.to_dict(), ensure_ascii=False):
+            # Decode before the secret check as JSON may encode a key using Unicode escapes.
+            if self.api_key in json.dumps(json.loads(content), ensure_ascii=False):
                 raise ValueError
-            return result
+            return content
         except (KeyError, IndexError, TypeError, ValueError, RecursionError):
-            raise PlannerProviderError("DeepSeek returned an invalid route plan.", retryable=True) from None
+            raise PlannerProviderError(f"DeepSeek returned an invalid {result_kind}.", retryable=True) from None
 
 
 def build_agent(backend: str) -> BaseLLMAgent:

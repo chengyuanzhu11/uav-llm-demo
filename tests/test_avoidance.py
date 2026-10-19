@@ -1,9 +1,10 @@
+from tests.scenario_fixtures import empty_airspace
 import time
 import unittest
 from threading import Event
 
 from uav_llm_demo.agents import MockLLMAgent
-from uav_llm_demo.avoidance import LocalAvoidance
+from uav_llm_demo.avoidance import LocalAvoidance, PredictedTraffic
 from uav_llm_demo.environment import DynamicFlyingObject
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import SCALE, VehicleState, distance, norm
@@ -11,14 +12,16 @@ from uav_llm_demo.safety import SafetyChecker
 from uav_llm_demo.traffic_motion import sample_motion
 
 
+def known_track(radius, positions):
+    """Exact synthetic trajectory; forecasting is tested separately."""
+    return PredictedTraffic(radius, tuple(positions), (0.0,) * len(positions), (0.0,) * len(positions))
+
+
 class StraightTraffic:
     def __init__(self, clock, start=(16, 10, 2), velocity=(-1, 0, 0)):
         self.clock, self.started = clock, clock()
         self.models = {"incoming": dict(phase=0, segments=[dict(start=0, duration=30,
             controls=[tuple(start[i] + velocity[i] * t for i in range(3)) for t in (0, 10, 20, 30)])])}
-
-    def focus_route(self, start, waypoints):
-        return 0
 
     def sync(self, env):
         elapsed = self.clock() - self.started
@@ -29,7 +32,7 @@ class StraightTraffic:
 
 
 def encounter_service(velocity=(3, 0, 0), agent=None):
-    service = MissionService(scenario_id="open_field", agent=agent)
+    service = MissionService(scenario=empty_airspace(), agent=agent)
     service.runtime.vehicle = VehicleState((10, 10, 2), velocity)
     service._commit_vehicle(service.runtime.vehicle, 0)
     service._environment.dynamic_objects = [DynamicFlyingObject("incoming", "bird", (16, 10, 2), (-1, 0, 0))]
@@ -161,8 +164,8 @@ class AvoidanceTest(unittest.TestCase):
         self.addCleanup(service.close)
         checker = SafetyChecker(service._context())
         # Orthogonal incoming traffic, in metres converted to grid units.
-        tracks = [(3.1, [(14 - i * .15, 10, 2) for i in range(21)]),
-                  (3.1, [(10, 14 - i * .15, 2) for i in range(21)])]
+        tracks = [known_track(3.1, [(14 - i * .15, 10, 2) for i in range(21)]),
+                  known_track(3.1, [(10, 14 - i * .15, 2) for i in range(21)])]
         target = service.avoidance.choose(service._vehicle, None, service.controller, checker, tracks, 0)
         self.assertIsNotNone(target)
         result = service.avoidance.rollout(service._vehicle, target, service.controller, checker, tracks)
@@ -178,12 +181,12 @@ class AvoidanceTest(unittest.TestCase):
         self.assertEqual(service.waypoints.current, (18, 10, 2))
 
     def test_no_escape_is_reported_and_static_bounds_are_not_violated(self):
-        controller = MissionService(scenario_id="open_field")
+        controller = MissionService(scenario=empty_airspace())
         self.addCleanup(controller.close)
         checker = SafetyChecker(dict(grid_size=2, altitude_range=dict(min=2, max=2), buildings=[]))
         local = LocalAvoidance()
         state = VehicleState((.5, .5, 2))
-        tracks = [(3.1, [state.position] * 21)]
+        tracks = [known_track(3.1, [state.position] * 21)]
         target = local.choose(state, None, controller.controller, checker, tracks, 0)
         self.assertIsNone(target)
         self.assertTrue(local.limited)

@@ -6,13 +6,15 @@ import secrets
 import os
 import random
 import time
+from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
+from types import SimpleNamespace
 from threading import Event, RLock, Thread
 
-from .agents import DeepSeekAgent, MockLLMAgent, PlannerProviderError, PlanValidationError, build_agent, checked_plan
+from .agents import DeepSeekAgent, GeometricPlanner, MockLLMAgent, PlannerProviderError, PlanValidationError, build_agent, checked_plan
 from .avoidance import LocalAvoidance
 from .environment import UAVEnvironment, point_to_dict
 from .evaluation import EvaluationLog, MissionEvidence
@@ -20,12 +22,17 @@ from .recovery import RecoveryMemory
 from .run_log import RunTrace, source_fingerprint
 from .provider_usage import request_trace
 from .html_runtime import HtmlRuntime
-from .motion import TrajectoryController, WaypointManager, ReplanningManager, SCALE, norm, distance
+from .motion import (TrajectoryController, WaypointManager, ReplanningManager, SCALE, norm, distance,
+                     MAX_TRACKING_DEVIATION_M, segment_deviation)
 from .runtime import RuntimeCapabilityError, RuntimeUnavailableError, SimulationRuntime
-from .safety import SafetyChecker
+from .safety import ALTITUDE_EPSILON, SafetyChecker
 from .scenarios import load_scenario
 from .scene_layout import scene_layout
-from .traffic_motion import ContinuousTraffic
+from .traffic_motion import ContinuousTraffic, TRAFFIC_POLICIES, TRAFFIC_MODEL_VERSION
+from .traffic_observation import TrafficObserver, TrafficObservationConfig
+from .dynamic_risk import envelope_fields, risk_levels
+from .semantic_tasks import SemanticConstraintError, SemanticExecutionError, SemanticMission, task_catalog
+from .semantic_navigation import apply_task_constraints, validate_task_routes
 
 
 class MissionService:
@@ -33,7 +40,11 @@ class MissionService:
     MIN_TARGET_HORIZONTAL_DISTANCE_M = 30.0
     MIN_URBAN_TARGET_HORIZONTAL_DISTANCE_M = 75.0
 
-    def __init__(self, *, agent=None, runtime=None, runtime_factory=None, scenario_id="urban_crossing", target_seed=None, traffic_seed=None, journal=None, scenario=None, planner_latency_seconds=0.0):
+    def __init__(self, *, agent=None, runtime=None, runtime_factory=None, scenario_id="urban_crossing", target_seed=None, traffic_seed=None, journal=None, scenario=None, planner_latency_seconds=0.0, traffic_policy="fixed", observation_config=None):
+        if traffic_policy not in TRAFFIC_POLICIES:
+            raise ValueError("Traffic policy must be fixed.")
+        self._traffic_policy = traffic_policy
+        self._observation_config = (TrafficObservationConfig() if observation_config is None else observation_config)
         self._target_seed = target_seed if target_seed is not None else secrets.randbits(32)
         self._traffic_seed = traffic_seed if traffic_seed is not None else secrets.randbits(32)
         self._target_rng = random.Random(self._target_seed)
@@ -42,12 +53,18 @@ class MissionService:
         self._future_ready_at = 0.0
         self._journal = journal
         self._source_version = source_fingerprint()
-        self._environment = UAVEnvironment(scenario or self._random_scenario(load_scenario(scenario_id)))
+        self._scenario_template = scenario or load_scenario(scenario_id)
+        self._environment = UAVEnvironment(scenario or self._random_scenario(self._scenario_template))
         # Backend selection is a browser action; environment variables only seed
         # the in-memory DeepSeek configuration and never select the active agent.
-        self.agent = agent or build_agent("mock")
+        semantic = self._environment.scenario.mission_mode == "semantic"
+        self.agent = agent or build_agent("deepseek" if semantic else "mock")
+        if semantic and self.agent.backend_name != "deepseek":
+            raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
         self._deepseek_config = self._capture_deepseek_config(self.agent)
         self.runtime = runtime or HtmlRuntime()
+        if semantic and self.runtime.backend_name != "html":
+            raise ValueError("园区任务的观测技能目前仅支持 HTML 仿真。")
         if runtime is None:
             self.runtime.reset(self._environment.base)
         self._runtime_factory = runtime_factory
@@ -57,12 +74,14 @@ class MissionService:
         self.controller = TrajectoryController()
         self.waypoints = WaypointManager()
         self.replanning = ReplanningManager()
-        self.avoidance = LocalAvoidance()
+        self.avoidance = LocalAvoidance(calibration_profile=self._environment.scenario_id)
+        self._traffic_observer = TrafficObserver(self._observation_config, seed=self._traffic_seed)
         self._safety_armed = False
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uav-planner")
         self._shutdown = Event()
         self._thread = None
         self._future = None
+        self._future_kind = "route"
         self._generation = 0
         self._future_generation = 0
         self._sequence = 0
@@ -83,21 +102,33 @@ class MissionService:
         self._scene_layout = scene_layout(self._environment.scenario)
         self._traffic_snapshot = None
         self._closed = False
+        self.semantic = SemanticMission(self._environment.scenario) if semantic else None
+        self._semantic_calls = 0
+        self._semantic_interpretation_pending = False
+        self._semantic_revision_started_at = None
         self._new_run()
+        if self.semantic is not None:
+            self.semantic.mission_id = self.trace.run_id
         self._sync_traffic()
         self._publish_state()
 
     def _make_traffic(self, scenario):
-        return ContinuousTraffic(scenario, seed=self._traffic_seed, clock=lambda: self._time)
+        return ContinuousTraffic(scenario, seed=self._traffic_seed, clock=lambda: self._time,
+                                 policy=self._traffic_policy)
 
     def _new_run(self):
         self._terminal_wall = None
+        self._motion_samples = deque(maxlen=32)
+        self._path_start_index = 0
         self.recovery = RecoveryMemory()
         self.evidence = MissionEvidence()
         self.trace = RunTrace(self._journal, secrets=(self._deepseek_config.get("api_key"),))
         self._last_telemetry_at = self._time
         self.trace.event("run_started", self._time, scenario=self._environment.scenario.to_dict(),
                          target_seed=self._target_seed, traffic_seed=self._traffic_seed,
+                         traffic_policy=self._traffic_policy, traffic_model_version=TRAFFIC_MODEL_VERSION,
+                         traffic_observation=asdict(self._observation_config),
+                         traffic_prediction=self.avoidance.snapshot()["prediction"],
                          source_sha256=self._source_version, runtime=self.runtime.backend_name,
                          planner=dict(backend=self.agent.backend_name, model=getattr(self.agent, "model", None),
                                       timeout_seconds=getattr(self.agent, "timeout_seconds", None),
@@ -108,10 +139,32 @@ class MissionService:
                          max_descent_speed_mps=self.controller.max_descent_speed)
 
     def _milestones(self):
+        if self.semantic is not None:
+            snapshot = self.semantic.to_dict()
+            steps = [step for step in snapshot["steps"]
+                     if step.get("revision") == snapshot["revision"] and step["status"] != "cancelled"]
+            visits = [step for step in steps if step["action"] != "return_home"]
+            completed = self.semantic.status == "completed"
+            current = self.semantic.current_step
+            reached = bool(visits) and bool(completed or (self.semantic.status == "running" and current
+                                                         and current["action"] == "return_home"))
+            events = snapshot["evidence"]
+            dynamic_safe = self._evaluation.dynamic_event_count == 0
+            return dict(target_reached=reached, base_returned=completed,
+                        target_reached_at=next((e["simulation_time"] for e in reversed(events)
+                                               if e["action"] != "return_home"), None) if reached else None,
+                        base_returned_at=events[-1]["simulation_time"] if completed else None,
+                        stationary=bool(self._vehicle and norm(self._vehicle.velocity) <= .02),
+                        task_completed=completed, static_path_unblocked=not self.evidence.static_blocked,
+                        dynamic_separation_safe=dynamic_safe,
+                        safe_success=completed and not self.evidence.static_blocked and dynamic_safe,
+                        remaining=[step["id"] for step in steps if step["status"] not in {"completed", "skipped"}])
         return self.evidence.snapshot(dynamic_events=self._evaluation.dynamic_event_count,
                                       dynamic_measured=self.runtime.backend_name == "html")
 
     def _random_scenario(self, scenario, previous=None):
+        if scenario.mission_mode == "semantic":
+            return scenario
         context = scenario.to_dict()
         context["position"] = point_to_dict(scenario.base)
         checker = SafetyChecker(context)
@@ -152,9 +205,34 @@ class MissionService:
             self._traffic_snapshot = None
         return self._traffic_snapshot
 
-    def _context(self):
+    def _observation(self):
+        """Planner input uses delivered observations; renderer keeps world truth."""
+        observation = self._environment.get_observation()
+        dynamic = []
+        for item in self._traffic_observer.latest(self._time):
+            forecast = self.avoidance.predictor.forecast(item["id"], self._time, horizon=1, dt=1)
+            if forecast is None:
+                continue
+            position = forecast.positions[0]
+            dynamic.append(dict(
+                id=item["id"], kind=item["kind"], radius=item["radius"],
+                position=point_to_dict(position), velocity=point_to_dict(item["velocity"]),
+                position_unit="grid", velocity_unit="grid/s",
+                predicted_position=point_to_dict(forecast.positions[-1]),
+                prediction_model=forecast.model, prediction_uncertainty_m=forecast.uncertainty_m[-1],
+                prediction_uncertainty_horizontal_m=forecast.uncertainty_horizontal_m[-1],
+                prediction_uncertainty_vertical_m=forecast.uncertainty_vertical_m[-1],
+                observed_at=item["observed_at"], observation_age_seconds=forecast.age_seconds,
+                **envelope_fields(SimpleNamespace(radius=item["radius"], radius_m=item["radius_m"])),
+                **risk_levels(position, self._environment.position, item["velocity"],
+                              self._vehicle.velocity if self._vehicle else (0, 0, 0), radius_m=item["radius_m"])))
+        return replace(observation, dynamic_objects=tuple(dynamic),
+                       nearest_dynamic_obstacle=min(dynamic, key=lambda item: item["separation_clearance_m"], default=None))
+
+    def _context(self, *, semantic_constraints=True):
         env = self._environment
-        context = env.get_observation().to_dict()
+        preferred = env.scenario.preferred_altitude
+        context = self._observation().to_dict()
         context.update(
             grid_size=env.grid_size, buildings=[
                 dict(x=x, y=y, height=h) for (x, y), h in env.buildings.items()
@@ -163,10 +241,12 @@ class MissionService:
             orientation=dict(env.kinematics["orientation"]),
             task=(self._task + " Outbound target reached. Now return safely to base; goal is the base position."
                   if env.phase == "returning_home" else self._task),
-            preferred_altitude=env.scenario.to_dict()["preferred_altitude"],
+            preferred_altitude=(dict(min=preferred[0], max=preferred[1]) if preferred else None),
             urban_parcels=[parcel.to_dict() for parcel in env.scenario.urban_parcels],
             local_avoidance=self.avoidance.snapshot(), simulation_time=self._time,
         )
+        if semantic_constraints and self.semantic is not None and self.semantic.plan is not None:
+            apply_task_constraints(context, env.scenario, self.semantic.plan.constraints)
         return context
 
     def state(self, feedback=None):
@@ -178,11 +258,40 @@ class MissionService:
             payload["feedback"] = feedback
         return payload
 
+    def _sample_motion(self):
+        """Publish measured HTML motion; never feed display history into control.
+
+        Each sample owns its vectors and is immutable after insertion. Publishing
+        at the same simulation time replaces the last sample, so API actions do
+        not consume the bounded history needed between browser state updates.
+        """
+        if self.runtime.backend_name != "html" or self._vehicle is None:
+            return []
+        vehicle = self._vehicle
+        sample = dict(
+            t=self._time, position=list(vehicle.position), velocity=list(vehicle.velocity),
+            path_index=self._path_start_index + len(self._environment.continuous_path) - 1,
+            yaw=vehicle.yaw,
+            landed=vehicle.position[2] * SCALE[2] <= 0.18 and norm(vehicle.velocity) <= 0.02,
+            # Traffic position and velocity both use grid units, unlike the
+            # vehicle velocity, which is measured in metres per second.
+            traffic={bird.object_id: [*bird.position, *bird.velocity]
+                     for bird in self._environment.dynamic_objects},
+        )
+        if self._motion_samples and self._motion_samples[-1]["t"] == self._time:
+            self._motion_samples[-1] = sample
+        else:
+            self._motion_samples.append(sample)
+        return list(self._motion_samples)
+
     def _publish_state(self):
         with self._lock:
             traffic = self._traffic_snapshot
             payload = self._environment.snapshot()
+            payload["observation"] = self._observation().to_dict()
             payload["continuous_path"] = list(self._environment.continuous_path)
+            payload["path_start_index"] = self._path_start_index
+            payload["motion_samples"] = self._sample_motion()
             runtime_status = self._runtime_status
             self._sequence += 1
             speed = norm(self._vehicle.velocity) if self._vehicle else 0.0
@@ -192,13 +301,15 @@ class MissionService:
                     else "running" if self._running else "paused" if self._plan_id else "idle")
             payload.update(
                 sequence=self._sequence, traffic_motion=traffic,
+                traffic_policy=self._traffic_policy, traffic_model_version=TRAFFIC_MODEL_VERSION,
+                traffic_observation=asdict(self._observation_config),
                 scene_layout=self._scene_layout,
                 agent_backend=self.agent.backend_name, agent_model=getattr(self.agent, "model", None),
                 deepseek_key_configured=bool(self._deepseek_config.get("api_key")),
                 runtime_backend=self.runtime.backend_name, runtime=runtime_status,
                 flight=dict(stage=("landed" if self._environment.position[2] * SCALE[2] <= 0.18 and speed <= 0.02
-                                   else "landing" if self._environment.phase == "returning_home" and self._environment.position[2] < self._environment.min_altitude
-                                   else "taking_off" if self._environment.position[2] < self._environment.min_altitude
+                                   else "landing" if self._environment.phase == "returning_home" and self._environment.position[2] < self._environment.min_altitude - ALTITUDE_EPSILON
+                                   else "taking_off" if self._environment.position[2] < self._environment.min_altitude - ALTITUDE_EPSILON
                                    else "cruise"), mode=mode, running=self._running, planning=self._plan_requested,
                             planner_calls=self._planner_calls, plan_id=self._plan_id,
                             waypoint_index=self.waypoints.index,
@@ -207,7 +318,7 @@ class MissionService:
                                         if self.waypoints.plan_start is not None else None),
                             waypoints=[point_to_dict(p) for p in self.waypoints.points],
                             last_replan_reason=self._reason, error=self._error,
-                            avoidance=self.avoidance.snapshot(), safety_armed=self._safety_armed,
+                            avoidance=self.avoidance.snapshot(include_visualization=True), safety_armed=self._safety_armed,
                             recovery=self.recovery.snapshot(),
                             retry_in_seconds=max(0.0, self._retry_at-self._time) if self._plan_requested else 0.0,
                             speed_mps=speed, max_speed_mps=self.controller.max_speed,
@@ -224,6 +335,9 @@ class MissionService:
             payload["milestones"] = self._milestones()
             payload["diagnostics"] = self.trace.snapshot()
             payload["simulation_time"] = self._time
+            payload["semantic_mission"] = self.semantic.to_dict() if self.semantic is not None else None
+            if payload["semantic_mission"] is not None:
+                payload["semantic_mission"]["provider_calls"] = self._semantic_calls
             payload["metrics"].update(success=self._environment.status == "completed" and payload["milestones"]["task_completed"],
                                       task_completed=payload["milestones"]["task_completed"],
                                       safe_success=payload["milestones"]["safe_success"])
@@ -268,6 +382,11 @@ class MissionService:
 
     def start(self, *, background=True):
         with self._lock:
+            if self.semantic is not None:
+                if self.semantic.status in {"idle", "needs_clarification", "safety_wait"}:
+                    raise ValueError("请先在任务输入框提交园区任务。")
+                if self.semantic.status == "error":
+                    self.semantic.status = "interpreting" if self._semantic_interpretation_pending else "running"
             if self._environment.status == "completed":
                 return self.state()
             self._running = True
@@ -284,6 +403,8 @@ class MissionService:
 
     def plan(self, *, background=True):
         with self._lock:
+            if self.semantic is not None:
+                raise ValueError("园区通过自然语言安排任务，飞行路线由本地规划器自动生成。")
             self._running = False
             self._invalidate_planning()
             self._request_replan("manual_plan")
@@ -291,6 +412,193 @@ class MissionService:
                 self._ensure_loop()
             self.advance(self.CONTROL_DT)
             return self.state()
+
+    def submit_task(self, instruction, *, background=True):
+        """Submit language for interpretation; no provider call runs under the control lock."""
+        with self._lock:
+            if self.semantic is None:
+                raise ValueError("请切换到园区任务地图后输入自然语言任务。")
+            if not isinstance(instruction, str) or not 1 <= len(instruction.strip()) <= 2000:
+                raise ValueError("请输入 1–2000 字的任务指令。")
+            key = self._deepseek_config.get("api_key")
+            if not key:
+                raise ValueError("请先在 Key 设置中配置 DeepSeek API key。")
+            if key in instruction:
+                raise ValueError("请勿在任务指令中填写 API key。")
+            updating = self.semantic.status != "idle"
+            self._invalidate_planning()
+            if self._future is not None:
+                self._future.cancel()
+            self.semantic.observe(self._vehicle.position, norm(self._vehicle.velocity), 0, self._time,
+                                  enabled=False)
+            self.semantic.instruction = instruction.strip()
+            self.semantic.status = "interpreting"
+            self.semantic.message = "正在理解任务调整，保持安全等待。" if updating else "DeepSeek 正在理解任务及约束。"
+            self._semantic_interpretation_pending = True
+            self._environment.status = "active"
+            self._terminal_wall = None
+            self._feedback = ""
+            self.recovery = RecoveryMemory()
+            self.waypoints = WaypointManager()
+            self.replanning = ReplanningManager()
+            self._running = self._safety_armed = True
+            self._request_replan("semantic_instruction")
+            self.trace.event("semantic_update_submitted" if updating else "semantic_submitted", self._time,
+                             revision=self.semantic.revision, generation=self._generation)
+            self._environment.last_feedback = self.semantic.message
+            if background:
+                self._ensure_loop()
+            self.advance(self.CONTROL_DT)
+            return self.state()
+
+    def _submit_semantic_plan(self):
+        scenario = self._environment.scenario
+        catalog = task_catalog(scenario)
+        catalog["mission_context"] = self.semantic.catalog_context()
+        catalog["mission_context"]["telemetry"] = self._semantic_telemetry()
+        catalog["mission_context"]["position"] = point_to_dict(self._vehicle.position)
+        context = deepcopy(self._context(semantic_constraints=False))
+        agent, instruction, feedback = self.agent, self.semantic.instruction, self._feedback
+        self._future_kind = "semantic"
+        self._future_context = context
+        self._future_backend, self._future_model = "deepseek", getattr(agent, "model", None)
+        self._future_generation = self._generation
+        self._future_ready_at = self._time + self._planner_latency
+        self._semantic_calls += 1
+        trace, request_id = self.trace, f"task-{self._semantic_calls}"
+        self._future_trace = trace
+        trace.provider_started()
+        trace.event("semantic_requested", self._time, request_id=request_id, generation=self._generation)
+        def execute():
+            with request_trace(trace.run_id, request_id, trace.usage_event), trace.stage("semantic_interpretation"):
+                plan = agent.interpret_task(catalog, instruction, feedback)
+                return validate_task_routes(plan, scenario, context)
+        self._future = self._executor.submit(execute)
+
+    def _collect_semantic_plan(self, future):
+        request_id = f"task-{self._semantic_calls}"
+        try:
+            plan = future.result()
+            if plan.status == "ready":
+                # Local avoidance can move the aircraft while interpretation is
+                # pending. Never switch to constraints excluding its latest pose.
+                candidate = self._context(semantic_constraints=False)
+                apply_task_constraints(candidate, self._environment.scenario, plan.constraints)
+                checker = SafetyChecker(candidate)
+                if checker.validate_waypoint(self._vehicle.position):
+                    raise SemanticConstraintError("current_position_outside_constraints")
+                origin = tuple(self._future_context["position"][axis] for axis in "xyz")
+                if not checker.segment_safe(self._vehicle.position, origin):
+                    # Recheck a moved departure point in the worker, keeping the
+                    # already interpreted plan and avoiding another paid request.
+                    context = deepcopy(self._context(semantic_constraints=False))
+                    self._future_context = context
+                    self._future = self._executor.submit(validate_task_routes, plan, self._environment.scenario, context)
+                    self._future_ready_at = self._time
+                    self.trace.event("semantic_routes_rechecking", self._time, request_id=request_id,
+                                     position=point_to_dict(self._vehicle.position))
+                    return
+            telemetry = self._semantic_telemetry()
+            if plan.status == "ready":
+                telemetry["elapsed_seconds"] = 0.0
+            self.semantic.accept(plan, preserve_evidence=self.semantic.plan is not None, telemetry=telemetry)
+        except PlannerProviderError as exc:
+            self._feedback = str(exc)
+            self.semantic.message = self._feedback
+            self.trace.event("semantic_provider_failed", self._time, request_id=request_id,
+                             feedback=self._feedback, retryable=exc.retryable)
+            if not exc.retryable:
+                self._fail(self._feedback, planning=True)
+            else:
+                self._retry_at = self._time + self.recovery.provider_failed(
+                    self._feedback, self._environment.position, self._time,
+                    invalid_response="invalid" in self._feedback)
+                self.trace.event("retry_scheduled", self._time, recovery=self.recovery.snapshot())
+            return
+        except SemanticConstraintError as exc:
+            # Only known scene conflicts are user constraints; never expose raw exceptions.
+            self._hold_semantic_task(exc.user_message)
+            self.trace.event("semantic_rejected", self._time, request_id=request_id, reason=exc.code)
+            return
+        except SemanticExecutionError as exc:
+            self._hold_semantic_task(exc.user_message, status="safety_wait")
+            return
+        except Exception as exc:
+            self.trace.event("semantic_rejected", self._time, request_id=request_id,
+                             reason="internal_task_error", error_type=type(exc).__name__)
+            self._fail("任务解析或路径预检发生内部错误，请调整指令后重试。", planning=True)
+            return
+        self._plan_requested = False
+        self._feedback = ""
+        self.recovery.accepted()
+        self.trace.event("semantic_accepted", self._time, request_id=request_id, status=plan.status,
+                         steps=plan.to_dict()["steps"], constraints=plan.constraints,
+                         revision=self.semantic.revision)
+        if plan.status != "ready":
+            self._hold_semantic_task(self.semantic.message)
+            return
+        self._semantic_interpretation_pending = False
+        self._semantic_revision_started_at = self._time
+        self._activate_semantic_step()
+
+    def _semantic_telemetry(self):
+        elapsed = 0.0 if self._semantic_revision_started_at is None else self._time - self._semantic_revision_started_at
+        return {"battery_percent": self._environment.battery, "elapsed_seconds": max(0.0, elapsed)}
+
+    def _hold_semantic_task(self, message, *, status="needs_clarification"):
+        """Stop task progress without disabling collision protection in flight."""
+        self._running = self._plan_requested = False
+        self.semantic.status = status
+        self.semantic.message = message
+        self.waypoints = WaypointManager()
+        self._environment.last_feedback = message
+
+    def _activate_semantic_step(self):
+        step, goal = self.semantic.current_step, self.semantic.current_goal
+        if step is None or goal is None:
+            return
+        self._environment.target = tuple(goal)
+        self._environment.phase = "returning_home" if step["action"] == "return_home" else "fly_to_target"
+        self._task = f"Execute {step['action']} at {step['target_id']} for uav-1."
+        self.waypoints = WaypointManager()
+        self.replanning = ReplanningManager()
+        self.recovery = RecoveryMemory()
+        self._request_replan("semantic_step:" + step["id"])
+
+    def _advance_semantic_task(self, dt):
+        if self.semantic.status != "running" or self.semantic.current_step is None:
+            return
+        ready = (self._running and not self._plan_requested and not self._error
+                 and not self.avoidance.active and bool(self.waypoints.points)
+                 and self.waypoints.current is None)
+        goal = self.semantic.current_goal
+        if ready and distance(self._vehicle.position, goal) > .18:
+            self._request_replan("semantic_observation_position_lost")
+            ready = False
+        before = len(self.semantic.evidence)
+        execution_error = None
+        try:
+            changed = self.semantic.observe(self._vehicle.position, norm(self._vehicle.velocity), dt,
+                                            self._time, enabled=ready, telemetry=self._semantic_telemetry())
+        except SemanticExecutionError as exc:
+            execution_error = exc
+            changed = False
+        for evidence in self.semantic.evidence[before:]:
+            self.trace.event("semantic_evidence", self._time, evidence=evidence)
+        if execution_error is not None:
+            self._hold_semantic_task(execution_error.user_message, status="safety_wait")
+            self.trace.event("semantic_execution_waiting", self._time, reason=execution_error.code)
+            return
+        if not changed:
+            return
+        if self.semantic.status == "completed":
+            self._running = self._safety_armed = False
+            self._environment.phase = self._environment.status = "completed"
+            self._terminal_wall = time.monotonic()
+            self._environment.last_feedback = "全部任务已有执行证据，无人机已返航落地。"
+            self.trace.event("mission_completed", self._time, milestones=self._milestones())
+        else:
+            self._activate_semantic_step()
 
     def _invalidate_planning(self):
         self._generation += 1
@@ -312,8 +620,12 @@ class MissionService:
                          position=self._environment.position, milestones=self._milestones())
 
     def _submit_plan(self):
+        if self.semantic is not None and self.semantic.status == "interpreting":
+            self._submit_semantic_plan()
+            return
         context = deepcopy(self._context())
-        planner = self.agent
+        planner = GeometricPlanner() if self.semantic is not None else self.agent
+        self._future_kind = "route"
         self._future_context = context
         self._future_backend = planner.backend_name
         self._future_model = getattr(planner, "model", None)
@@ -345,6 +657,9 @@ class MissionService:
         if self._time < self._future_ready_at:
             return
         future, self._future = self._future, None
+        if self._future_kind == "semantic":
+            self._collect_semantic_plan(future)
+            return
         plan = None
         try:
             plan = future.result()
@@ -384,10 +699,6 @@ class MissionService:
         self._plan_id += 1
         self.recovery.accepted()
         self._record_plan(plan, feedback)
-        if self._environment.realtime_traffic:
-            assigned = self._traffic.focus_route(self._environment.position, plan.waypoints)
-            if assigned:
-                self.trace.event("traffic_route_focus", self._time, assigned=assigned, plan_id=self._plan_id)
         self._environment.last_feedback = (
             "Route validated; tracking waypoints." if self._running else "Route validated; paused.")
 
@@ -418,7 +729,11 @@ class MissionService:
             try:
                 self._advance(dt)
             finally:
-                if self._vehicle is not None:
+                if self._vehicle is not None and self._environment.realtime_traffic:
+                    self.avoidance.evidence.measure(self._vehicle.position, self._environment.dynamic_objects, self._time)
+                for kind, episode in self.avoidance.evidence.events():
+                    self.trace.event(kind, self._time, episode=episode)
+                if self._vehicle is not None and self.semantic is None:
                     self.evidence.observe(self._vehicle, self._environment.target, self._environment.base, self._time)
                 if self._time - self._last_telemetry_at >= 1.0:
                     self._last_telemetry_at = self._time
@@ -438,24 +753,31 @@ class MissionService:
             if self._vehicle is None:
                 self._vehicle = self.runtime.read_state()
                 self._commit_vehicle(self._vehicle, 0)
+            with self.trace.stage("traffic_observation"):
+                checker = SafetyChecker(self._context())
+                observations = self._traffic_observer.sample(
+                    self._environment.dynamic_objects if self._environment.realtime_traffic else [],
+                    self._vehicle.position, checker, self._time)
+                self.avoidance.observe(observations, self._time)
             measure_dynamic = self._safety_armed and self._environment.realtime_traffic
             speed = norm(self._vehicle.velocity)
             if (self._plan_requested and self._future is None and (speed <= 0.02 or self.avoidance.active)
                     and self._time >= self._retry_at and not self._error):
                 self._submit_plan()
             target = self.waypoints.current if self._running and not self._plan_requested and not self._error else None
-            with self.trace.stage("safety_context"):
-                checker = SafetyChecker(self._context())
-            tracks = self.avoidance.predictions(
-                self._vehicle, self._environment.dynamic_objects if self._environment.realtime_traffic else [],
-                self.controller.max_speed) if self._safety_armed else []
+            with self.trace.stage("traffic_prediction"):
+                tracks = self.avoidance.predictions(
+                    self._vehicle, self._time,
+                    self.controller.max_speed) if self._safety_armed else []
             with self.trace.stage("route_reconnection"):
                 if target is not None and self._time >= self._next_reconnect_at:
                     self._next_reconnect_at = self._time + 0.25
                     def reachable(point, final):
                         result = self.avoidance.rollout(self._vehicle, point, self.controller, checker, tracks,
-                            terminal=final and distance(self._vehicle.position, point) <= 6)
-                        return result is not None and result.clearance >= self.avoidance.BUFFER
+                            terminal=final and distance(self._vehicle.position, point) <= 6, capture=True)
+                        return (result is not None and result.clearance >= self.avoidance.BUFFER
+                                and all(segment_deviation(position, self._vehicle.position, point)
+                                        <= MAX_TRACKING_DEVIATION_M for position in result.path))
                     if self.waypoints.reconnect(self._vehicle, checker, reachable):
                         self.replanning.accepted(self._context(), self._time)
                         self._environment.last_feedback = "Safe forward route connection; obsolete transit waypoints skipped."
@@ -507,6 +829,9 @@ class MissionService:
                         self._request_replan("goal_arrival_not_verified")
                         self._feedback = "Route endpoint reached but mission goal not verified. End exactly at the current goal coordinates."
                         self.recovery.stalled(vehicle.position, distance(vehicle.position, mission_goal), self._time)
+                    elif self.semantic is not None:
+                        # Skill observation/dwell below owns completion and the next subgoal.
+                        pass
                     elif self._environment.phase == "fly_to_target":
                         self.evidence.observe(vehicle, self._environment.target, self._environment.base, self._time)
                         self.trace.event("target_reached", self._time, position=vehicle.position)
@@ -524,13 +849,13 @@ class MissionService:
                         self._environment.last_feedback = "Base reached. Round-trip mission completed."
                         self.evidence.observe(vehicle, self._environment.target, self._environment.base, self._time)
                         self.trace.event("mission_completed", self._time, milestones=self._milestones())
+            if self.semantic is not None:
+                self._advance_semantic_task(dt)
             if measure_dynamic:
-                previous_count = self._evaluation.dynamic_event_count
-                self._evaluation.observe_dynamic(self._vehicle.position, self._environment.dynamic_objects, self._time)
-                added = self._evaluation.dynamic_event_count - previous_count
-                if added:
-                    self.trace.event("separation_violation", self._time,
-                                     incidents=self._evaluation.dynamic_incidents[-added:])
+                incidents = self._evaluation.observe_dynamic(
+                    self._vehicle.position, self._environment.dynamic_objects, self._time)
+                for incident in incidents:
+                    self.trace.event(incident["kind"], self._time, incident=incident)
             if norm(self._vehicle.velocity) <= 0.0001 and target is None and self.runtime.backend_name == "airsim":
                 # The short velocity lease handles loss of the controller; hold when intentionally idle.
                 if getattr(self, "_holding", False) is False:
@@ -553,6 +878,7 @@ class MissionService:
         if moved > 0.001:
             env.path.append(vehicle.position)
             env.continuous_path.append(point)
+            self._path_start_index += max(0, len(env.continuous_path) - 10000)
             env.path = env.path[-10000:]
             env.continuous_path = env.continuous_path[-10000:]
         env.kinematics = dict(
@@ -573,12 +899,18 @@ class MissionService:
         self._error = message
         self._terminal_wall = time.monotonic()
         self._environment.last_feedback = message
+        if self.semantic is not None:
+            self.semantic.status = "error"
+            self.semantic.message = message
         self.trace.event("mission_error", self._time, reason=message, phase=self._environment.phase)
         if planning:
             # A failed remote plan must not disable local collision protection.
             return
         self._safety_armed = False
-        self.avoidance = LocalAvoidance()
+        evidence = self.avoidance.evidence
+        evidence.interrupt(self._time)
+        self.avoidance = LocalAvoidance(calibration_profile=self._environment.scenario_id)
+        self.avoidance.evidence = evidence
         try:
             self.runtime.stop()
             self._vehicle = self.runtime.read_state()
@@ -588,6 +920,8 @@ class MissionService:
 
     def stop_runtime(self):
         with self._lock:
+            if self.semantic is not None:
+                self.semantic.observe(self._environment.position, 0, 0, self._time, enabled=False)
             self._running = False
             self._invalidate_planning()
             self._plan_requested = False
@@ -597,7 +931,12 @@ class MissionService:
             return self.state()
 
     def _reset_control(self, *, traffic=None):
+        self.avoidance.evidence.interrupt(self._time)
+        for kind, episode in self.avoidance.evidence.events():
+            self.trace.event(kind, self._time, episode=episode)
         self._generation += 1
+        self._semantic_interpretation_pending = False
+        self._semantic_revision_started_at = None
         self._running = False
         self._plan_requested = False
         self._error = None
@@ -606,7 +945,8 @@ class MissionService:
         self._last_dynamic_plan_at = self._time - 10.0
         self.waypoints = WaypointManager()
         self.replanning = ReplanningManager()
-        self.avoidance = LocalAvoidance()
+        self.avoidance = LocalAvoidance(calibration_profile=self._environment.scenario_id)
+        self._traffic_observer = TrafficObserver(self._observation_config, seed=self._traffic_seed)
         self._safety_armed = False
         self.trace.event("run_reset", self._time, milestones=self._milestones())
         self._time = 0.0
@@ -621,12 +961,20 @@ class MissionService:
         self._sync_traffic()
         self._vehicle = self.runtime.read_state()
         self._commit_vehicle(self._vehicle, 0)
+        # A new run begins at measured telemetry, including landing tolerance;
+        # do not count a synthetic base-to-current-position segment as flight.
+        self._environment.path = [self._vehicle.position]
+        self._environment.continuous_path = [point_to_dict(self._vehicle.position)]
+        self._path_start_index = 0
         self._evaluation.reset()
+        self.semantic = (SemanticMission(self._environment.scenario, mission_id=self.trace.run_id)
+                         if self._environment.scenario.mission_mode == "semantic" else None)
+        self._semantic_calls = 0
         self._publish_state()
 
     def reset(self):
         with self._lock:
-            scenario = self._random_scenario(load_scenario(self._environment.scenario_id),
+            scenario = self._random_scenario(self._scenario_template,
                                              previous=self._environment.target)
             self._traffic_seed = secrets.randbits(32)
             traffic = self._make_traffic(scenario)
@@ -640,7 +988,10 @@ class MissionService:
 
     def switch_scenario(self, scenario_id):
         with self._lock:
-            scenario = self._random_scenario(load_scenario(scenario_id), previous=self._environment.target)
+            template = load_scenario(scenario_id)
+            scenario = self._random_scenario(template, previous=self._environment.target)
+            if scenario.mission_mode == "semantic" and self.runtime.backend_name != "html":
+                raise ValueError("请先切换到 HTML；园区观测技能目前仅支持仿真。")
             self._traffic_seed = secrets.randbits(32)
             traffic = self._make_traffic(scenario)
             self.runtime.stop()
@@ -649,6 +1000,9 @@ class MissionService:
                 self.runtime.configure_scene(scenario)
             self.runtime.reset(scenario.base)
             self._environment = UAVEnvironment(scenario)
+            self._scenario_template = template
+            if scenario.mission_mode == "semantic":
+                self.agent = DeepSeekAgent(**self._deepseek_config)
             self._reset_control(traffic=traffic)
             return self.state()
 
@@ -656,6 +1010,8 @@ class MissionService:
         if backend not in {"html", "airsim"}:
             raise ValueError("Runtime backend must be 'html' or 'airsim'.")
         with self._lock:
+            if self.semantic is not None and backend != "html":
+                raise ValueError("园区任务的观测技能目前仅支持 HTML 仿真。")
             self.runtime.stop()
             self._running = False
             candidate = None
@@ -686,6 +1042,8 @@ class MissionService:
 
     def update_goal(self, target, task=None):
         with self._lock:
+            if self.semantic is not None:
+                raise ValueError("园区的目标由任务步骤确定，请通过任务输入框安排任务。")
             checker = SafetyChecker(self._context())
             errors = checker.validate_waypoint(target)
             if errors:
@@ -721,6 +1079,9 @@ class MissionService:
         self._closed = True
         self._shutdown.set()
         with self._lock:
+            self.avoidance.evidence.interrupt(self._time)
+            for kind, episode in self.avoidance.evidence.events():
+                self.trace.event(kind, self._time, episode=episode)
             self._generation += 1
             self._running = False
             self._safety_armed = False
@@ -728,7 +1089,8 @@ class MissionService:
         if self._thread is not None:
             self._thread.join(timeout=3)
         self._executor.shutdown(wait=False, cancel_futures=True)
-        self.trace.event("run_closed", self._time, milestones=self._milestones(), diagnostics=self.trace.snapshot())
+        self.trace.event("run_closed", self._time, milestones=self._milestones(), diagnostics=self.trace.snapshot(),
+                         dynamic_incidents=self._evaluation.dynamic_incidents)
         self._close_quietly(self.runtime)
 
     def configure_agent(self, config: Mapping[str, object]) -> dict[str, object]:
@@ -742,6 +1104,9 @@ class MissionService:
             )
 
         with self._lock:
+            was_requested = self._plan_requested
+            if self.semantic is not None and backend != "deepseek":
+                raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
             if backend == "deepseek":
                 next_config = dict(self._deepseek_config)
                 provided_key = self._optional_text(config.get("api_key"), "api_key")
@@ -771,6 +1136,9 @@ class MissionService:
             else:
                 self.agent = build_agent(backend)
             self._invalidate_planning()
+            if self.semantic is not None:
+                # Editing a key must not resume an explicitly paused paid request.
+                self._plan_requested = was_requested
             self.recovery = RecoveryMemory()
             key = self._deepseek_config.get("api_key")
             if key and key not in self.trace.secrets:

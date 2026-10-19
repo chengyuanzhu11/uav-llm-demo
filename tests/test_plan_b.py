@@ -1,3 +1,4 @@
+from tests.scenario_fixtures import empty_airspace
 import unittest
 
 from uav_llm_demo import create_app
@@ -13,7 +14,7 @@ class PlanContractTest(unittest.TestCase):
     def test_scenarios_are_named_and_data_driven(self):
         scenarios = list_scenarios()
 
-        self.assertGreaterEqual(len(scenarios), 3)
+        self.assertEqual({item["id"] for item in scenarios}, {"urban_crossing", "semantic_campus"})
         self.assertIn("urban_crossing", {item["id"] for item in scenarios})
         scenario = load_scenario("urban_crossing")
         self.assertEqual(scenario.base, (1, 18, 0))
@@ -29,10 +30,10 @@ class PlanContractTest(unittest.TestCase):
                             for x, y, _ in scenario.buildings))
 
     def test_environment_can_start_from_named_scenario(self):
-        scenario = load_scenario("open_field")
+        scenario = load_scenario("semantic_campus")
         environment = UAVEnvironment(scenario)
 
-        self.assertEqual(environment.scenario_id, "open_field")
+        self.assertEqual(environment.scenario_id, "semantic_campus")
         self.assertEqual(environment.position, scenario.base)
         self.assertEqual(environment.target, scenario.target)
 
@@ -68,9 +69,9 @@ class PlanContractTest(unittest.TestCase):
         service = MissionService(agent=MockLLMAgent())
         self.addCleanup(service.close)
 
-        state = service.switch_scenario("open_field")
+        state = service.switch_scenario("semantic_campus")
 
-        self.assertEqual(state["scenario_id"], "open_field")
+        self.assertEqual(state["scenario_id"], "semantic_campus")
         self.assertEqual(state["uav"], state["base"])
         self.assertEqual(state["step_count"], 0)
 
@@ -96,12 +97,12 @@ class PlanContractTest(unittest.TestCase):
         client = app.test_client()
 
         listed = client.get("/api/scenarios")
-        switched = client.post("/api/scenario", json={"scenario_id": "open_field"})
+        switched = client.post("/api/scenario", json={"scenario_id": "semantic_campus"})
 
         self.assertEqual(listed.status_code, 200)
-        self.assertIn("open_field", {item["id"] for item in listed.get_json()["scenarios"]})
+        self.assertIn("semantic_campus", {item["id"] for item in listed.get_json()["scenarios"]})
         self.assertEqual(switched.status_code, 200)
-        self.assertEqual(switched.get_json()["scenario_id"], "open_field")
+        self.assertEqual(switched.get_json()["scenario_id"], "semantic_campus")
 
     def test_invalid_scenario_api_returns_bad_request(self):
         app = create_app()
@@ -114,9 +115,9 @@ class PlanContractTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_benchmark_runs_a_named_scenario(self):
-        result = run_scenario("open_field", max_seconds=120)
+        result = run_scenario("test_airspace", scenario=empty_airspace(), max_seconds=120)
 
-        self.assertEqual(result["scenario_id"], "open_field")
+        self.assertEqual(result["scenario_id"], "test_airspace")
         self.assertTrue(result["metrics"]["success"])
         self.assertGreater(result["metrics"]["control_ticks"], 0)
         self.assertGreaterEqual(result["metrics"]["planner_calls"], 2)

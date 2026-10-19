@@ -1,13 +1,18 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/OrbitControls.js";
-import { sampleTraffic } from "./traffic.js";
 import { buildUrbanCity, urbanSurfaceTexture } from "./urban_city.js";
+import { buildSemanticCampus } from "./semantic_campus.js";
+import { MotionTimeline } from "./render_motion.js";
+import { FlightTrail } from "./flight_trail.js";
+import { FollowCameraRig } from "./follow_camera.js";
+import { AvoidanceView } from "./avoidance_view.js";
 
 
 const sceneContainer = document.getElementById("sceneContainer");
 const planBtn = document.getElementById("planBtn");
 const startBtn = document.getElementById("startBtn");
 const resetBtn = document.getElementById("resetBtn");
+const avoidanceStatus = document.getElementById("avoidanceStatus");
 const overviewBtn = document.getElementById("overviewBtn");
 const followBtn = document.getElementById("followBtn");
 const agentButtons = [...document.querySelectorAll("[data-agent]")];
@@ -23,6 +28,14 @@ const windEast = document.getElementById("windEast");
 const windDown = document.getElementById("windDown");
 const applyWindBtn = document.getElementById("applyWindBtn");
 const scenarioSelect = document.getElementById("scenarioSelect");
+const semanticPanel = document.getElementById("semanticPanel");
+const taskForm = document.getElementById("semanticTaskForm");
+const taskInstruction = document.getElementById("taskInstruction");
+const submitTaskBtn = document.getElementById("submitTaskBtn");
+const recommendedTasks = document.getElementById("recommendedTasks");
+const semanticProgram = document.getElementById("semanticProgram");
+const semanticSteps = document.getElementById("semanticSteps");
+const flightDiagnostics = document.getElementById("flightDiagnostics");
 
 const simulator = document.getElementById("simulator")
   || document.querySelector(".simulator");
@@ -75,12 +88,15 @@ let pollActive = false;
 let lastSequence = -1;
 let commandError = "";
 let plannedRoute = null;
+let plannedTrail = null;
 let plannedRouteKey = "";
-let avoidanceRoute = null;
-let pathKey = "";
+let avoidanceView = null;
+let displayedAvoidance = null;
+const motionTimeline = new MotionTimeline();
+const followRig = new FollowCameraRig(THREE);
+let flightTrail = null;
+let trailHead = null;
 let cameraMode = "overview";
-let followOffset = new THREE.Vector3(9, 7, 12);
-const followAnchor = new THREE.Vector3();
 let cameraObstacles = [];
 let environmentReady = false;
 let displayedGridSize = 0;
@@ -100,9 +116,14 @@ const birdRaycaster = new THREE.Raycaster();
 const birdTooltip = document.createElement("div");
 birdTooltip.className = "bird-tooltip";
 birdTooltip.hidden = true;
+birdTooltip.style.whiteSpace = "pre-line";
+birdTooltip.style.maxWidth = "270px";
 sceneContainer.appendChild(birdTooltip);
 let rotorMeshes = [];
 let scenariosLoaded = false;
+let renderedMissionMode = null;
+let recommendationKey = "";
+let semanticStepsKey = "";
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0xbfc5c6, 0.002);
@@ -154,7 +175,9 @@ async function requestJson(url, options = {}) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.error || `Request failed: ${response.status}`);
+    const error = new Error(payload.error || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
 
   return payload;
@@ -169,12 +192,16 @@ function acceptState(payload) {
     || payload.diagnostics?.run_id !== state.diagnostics?.run_id
     || payload.scenario_id !== state.scenario_id
     || payload.runtime_backend !== state.runtime_backend
-    || ["x", "y", "z"].some((axis) => payload.target?.[axis] !== state.target?.[axis])
-    || (payload.flight?.plan_id === 0 && state.flight?.plan_id !== 0)
+    || (payload.scenario?.mission_mode !== "semantic"
+      && (["x", "y", "z"].some((axis) => payload.target?.[axis] !== state.target?.[axis])
+        || (payload.flight?.plan_id === 0 && state.flight?.plan_id !== 0)))
     || (payload.continuous_path || payload.path || []).length
       < (state.continuous_path || state.path || []).length;
+  const changedRun = state && (payload.diagnostics?.run_id !== state.diagnostics?.run_id
+    || payload.scenario_id !== state.scenario_id);
   lastSequence = payload.sequence;
   state = payload;
+  if (changedRun) commandError = "";
   if (hasOwn(payload, "traffic_motion")) {
     trafficMotion = payload.traffic_motion;
   }
@@ -200,7 +227,7 @@ async function pollState() {
 
 
 // Mutations share one gate; reads remain independent during planner latency.
-async function runCommand(action) {
+async function runCommand(action, { semanticValidation = false } = {}) {
   if (commandPending || !state) return false;
   commandPending = true;
   commandError = "";
@@ -208,9 +235,12 @@ async function runCommand(action) {
   try {
     await action();
     return true;
-  } catch {
-    // Do not echo provider errors that might contain credentials.
-    commandError = "Request failed. Check the connection and configuration.";
+  } catch (error) {
+    // Only the task endpoint's curated validation messages are safe to display.
+    // Provider and transport failures never expose their raw exception text.
+    commandError = semanticValidation && error.status === 400
+      ? error.message
+      : isSemanticScenario() ? "请求未成功，请检查连接和 API 配置。" : "Request failed. Check the connection and configuration.";
     return false;
   } finally {
     commandPending = false;
@@ -230,13 +260,14 @@ async function postState(url, body) {
 
 async function toggleMission() {
   return runCommand(() => postState(
-    state.flight?.running || state.flight?.planning
+    (isSemanticScenario() ? state.flight?.running : state.flight?.running || state.flight?.planning)
       ? "/api/runtime/stop" : "/api/mission/start",
   ));
 }
 
 
 async function planMission() {
+  if (isSemanticScenario()) return false;
   return runCommand(() => postState("/api/mission/plan"));
 }
 
@@ -254,6 +285,7 @@ async function loadScenarios() {
     scenarioSelect.appendChild(option);
   });
   scenariosLoaded = true;
+  if (state) scenarioSelect.value = state.scenario_id;
 }
 
 
@@ -272,6 +304,7 @@ async function switchAgent(backend, force = false, config = {}) {
   if (!state || commandPending) return false;
   const normalized = String(backend || "").trim().toLowerCase();
   if (!["mock", "deepseek"].includes(normalized)) return false;
+  if (isSemanticScenario() && normalized !== "deepseek") return false;
   if (!force && normalized === state.agent_backend) return true;
   if (normalized === "deepseek" && !config.api_key && !state.deepseek_key_configured) {
     openAgentDialog();
@@ -323,6 +356,7 @@ function sleep(milliseconds) {
 
 
 async function switchRuntime(backend, force = false) {
+  if (isSemanticScenario() && backend !== "html") return false;
   if (commandPending || !state || (!force && backend === state.runtime_backend)) return;
   if (!window.confirm(`Switch to ${backend.toUpperCase()} and reset the mission?`)) return;
   return runCommand(() => postState("/api/runtime", {
@@ -375,17 +409,17 @@ function setupLighting() {
 }
 
 
-function setupAtmosphere() {
+function setupAtmosphere(campus = false) {
   const canvas = document.createElement("canvas");
   canvas.width = 2048;
   canvas.height = 1024;
   const ctx = canvas.getContext("2d");
   const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
-  sky.addColorStop(0, "#738da3");
-  sky.addColorStop(0.3, "#a9b8c3");
-  sky.addColorStop(0.49, "#b9c4cf");
-  sky.addColorStop(0.56, "#a8aaa3");
-  sky.addColorStop(1, "#6c746e");
+  sky.addColorStop(0, campus ? "#7eaac7" : "#738da3");
+  sky.addColorStop(0.3, campus ? "#b3d1e2" : "#a9b8c3");
+  sky.addColorStop(0.49, campus ? "#d0dee4" : "#b9c4cf");
+  sky.addColorStop(0.56, campus ? "#c4cfc7" : "#a8aaa3");
+  sky.addColorStop(1, campus ? "#9bab98" : "#6c746e");
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   // Distant layered clouds replace the low floating spheres in the flight scene.
@@ -405,9 +439,10 @@ function setupAtmosphere() {
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.mapping = THREE.EquirectangularReflectionMapping;
+  scene.background?.dispose();
   scene.background = texture;
   scene.environment = texture;
-  scene.environmentIntensity = 0.35;
+  scene.environmentIntensity = campus ? 0.5 : 0.35;
 }
 
 
@@ -416,14 +451,29 @@ function buildEnvironment() {
     return;
   }
 
+  const semantic = isSemanticScenario();
+  setupAtmosphere(semantic);
+  const sunlight = scene.children.find(object => object.isDirectionalLight);
+  sunlight.color.set(semantic ? 0xf5f5ed : 0xffdfae);
+  sunlight.intensity = semantic ? 2.8 : 3.2;
+  const skylight = scene.children.find(object => object.isHemisphereLight);
+  skylight.intensity = semantic ? 1.2 : 0.85;
+  skylight.groundColor.set(semantic ? 0x68776a : 0x4d4942);
+  renderer.toneMappingExposure = semantic ? 1.05 : 0.95;
   const urbanParcels = state.scenario?.urban_parcels || [];
   const mapScale = Math.max(1, state.grid_size / 20);
   controls.maxDistance = 115 * mapScale;
+  camera.far = Math.max(400, state.grid_size * WORLD_SCALE * 4);
+  camera.updateProjectionMatrix();
   scene.fog.density = 0.002 / mapScale;
+  scene.fog.color.set(semantic ? 0xcddce0 : 0xbfc5c6);
   if (displayedGridSize !== state.grid_size) {
     displayedGridSize = state.grid_size;
     if (cameraMode === "overview") setCameraMode("overview");
     const sun = scene.children.find((object) => object.isDirectionalLight);
+    // Keep the whole campus in front of the shadow camera on larger maps.
+    const lightScale = semantic ? Math.max(1, mapScale / 2) : 1;
+    sun.position.set(-90 * lightScale, 110 * lightScale, 60 * lightScale);
     const shadow = sun.shadow.camera;
     shadow.left = shadow.bottom = -55 * mapScale;
     shadow.right = shadow.top = 55 * mapScale;
@@ -435,9 +485,11 @@ function buildEnvironment() {
     .map((item) => item.position.z * ALTITUDE_SCALE + item.size.z / 2 + 12));
   const surfaceTextures = new Map();
   state.scene_layout.forEach((item) => {
-    if (urbanParcels.length && item.name.startsWith("building_")) return;
+    if ((semantic || urbanParcels.length) && item.name.startsWith("building_")) return;
+    // Campus architecture and landscape are drawn from the shared campus layout.
+    if (semantic && item.name !== "ground" && item.name !== "base_pad" && item.name !== "target_pad") return;
     let map = null;
-    if (urbanParcels.length && (item.name === "ground" || item.name.startsWith("road_")
+    if (urbanParcels.length && ((!semantic && item.name === "ground") || item.name.startsWith("road_")
         || item.name.startsWith("sidewalk_"))) {
       const kind = item.name.startsWith("road_") ? "asphalt" : "concrete";
       const key = `${kind}:${item.size.x}:${item.size.y}`;
@@ -458,13 +510,20 @@ function buildEnvironment() {
     mesh.userData.environment = true;
     mesh.userData.cameraOccluder = item.name.startsWith("building_");
     scene.add(mesh);
-    if (item.name === "base_pad" || item.name === "target_pad") {
+    if (!semantic && (item.name === "base_pad" || item.name === "target_pad")) {
       scene.add(createEndpointBeacon(item, beaconHeight));
     }
   });
-  if (urbanParcels.length) {
+  if (!semantic && urbanParcels.length) {
     const roads = state.scene_layout.filter(item => item.name.startsWith("road_"));
     scene.add(buildUrbanCity(state.scenario, toWorld, WORLD_SCALE, ALTITUDE_SCALE, roads));
+  }
+  if (semantic) {
+    const campus = new THREE.Group();
+    campus.name = "semantic-campus";
+    campus.userData.environment = true;
+    buildSemanticCampus(THREE, campus, state.scenario);
+    scene.add(campus);
   }
   scene.updateMatrixWorld(true);
   scene.traverse((object) => {
@@ -473,8 +532,10 @@ function buildEnvironment() {
     }
   });
 
-  goalStar = createGoalStar();
-  scene.add(goalStar);
+  if (!semantic) {
+    goalStar = createGoalStar();
+    scene.add(goalStar);
+  }
 
   uavGroup = createDrone();
   uavGroup.position.copy(toWorld(state.uav));
@@ -532,10 +593,12 @@ function createGoalStar() {
 }
 
 
-function updateGoalStar(delta, elapsed, active) {
+function updateGoalStar(delta, elapsed, active, displayTime = Infinity) {
   if (!goalStar) return;
   const reward = goalStar.userData.reward;
-  if (state.milestones?.target_reached && !reward.collected) {
+  const reachedAt = state.milestones?.target_reached_at;
+  if (state.milestones?.target_reached && !reward.collected
+      && (!Number.isFinite(reachedAt) || displayTime >= reachedAt)) {
     reward.collected = true;
     reward.age = 0;
     reward.startedAt = elapsed;
@@ -682,8 +745,6 @@ function createDrone() {
 function createBird(item) {
   const group = new THREE.Group();
   const anatomy = new THREE.Group();
-  const radius = item.radius * WORLD_SCALE;
-  anatomy.scale.setScalar(radius / 1.65);
   group.add(anatomy);
   const dark = new THREE.MeshStandardMaterial({ color: 0x35414a, roughness: 0.8 });
   const light = new THREE.MeshStandardMaterial({ color: 0xe4e8e5, roughness: 0.85 });
@@ -724,24 +785,57 @@ function createBird(item) {
     anatomy.add(pivot);
     return pivot;
   });
-  const safetyBubble = new THREE.Mesh(new THREE.SphereGeometry(radius, 20, 12),
+  const safetyBubble = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12),
     new THREE.MeshBasicMaterial({ color: 0xf2b84b, transparent: true, opacity: 0.12, depthWrite: false }));
   safetyBubble.visible = false;
-  group.add(safetyBubble);
-  group.userData = { wings, anatomy, safetyBubble, id: item.id, radius, yaw: null };
+  const contactBubble = new THREE.Mesh(new THREE.SphereGeometry(1, 16, 10),
+    new THREE.MeshBasicMaterial({ color: 0xff6b57, wireframe: true, transparent: true, opacity: 0.2, depthWrite: false }));
+  contactBubble.visible = false;
+  group.add(safetyBubble, contactBubble);
+  group.userData = { wings, anatomy, safetyBubble, contactBubble,
+    highlightMaterials: [dark, light, beakMaterial], id: item.id, yaw: null };
+  updateBirdEnvelope(group, item);
   return group;
 }
 
 
+function updateBirdEnvelope(bird, item) {
+  // Keep the visible anatomy readable for stored pre-metric replays. Safety
+  // thresholds are accepted only from the current API, never guessed in the UI.
+  const radius = Number.isFinite(item.radius_m) ? item.radius_m
+    : Number.isFinite(item.radius) ? item.radius * WORLD_SCALE : 0;
+  bird.userData.anatomy.scale.setScalar(Math.max(0, radius) / 1.65);
+  for (const name of ["radius_m", "contact_distance_m", "separation_distance_m", "near_miss_distance_m"]) {
+    bird.userData[name] = Number.isFinite(item[name]) && item[name] >= 0 ? item[name] : null;
+  }
+  bird.userData.contactBubble.scale.setScalar(bird.userData.contact_distance_m || 0);
+  bird.userData.safetyBubble.scale.setScalar(bird.userData.separation_distance_m || 0);
+}
+
+
+function currentDynamicRiskLevel(distance, envelope) {
+  if (!Number.isFinite(distance) || !Number.isFinite(envelope?.contact_distance_m)
+      || !Number.isFinite(envelope?.separation_distance_m)) return "unknown";
+  if (distance < envelope.contact_distance_m) return "critical";
+  if (distance < envelope.separation_distance_m) return "high";
+  if (Number.isFinite(envelope.near_miss_distance_m) && distance < envelope.near_miss_distance_m) return "medium";
+  return "low";
+}
+
+
+function dynamicDistanceM(obstacle) {
+  if (Number.isFinite(obstacle?.distance_m)) return obstacle.distance_m;
+  return obstacle?.distance_unit === "m" && Number.isFinite(obstacle.distance) ? obstacle.distance : null;
+}
 
 
 function syncScene(initial) {
   buildEnvironment();
 
   const htmlRuntimeActive = state.runtime_backend === "html";
-  const uavTarget = toWorld(state.uav);
-  uavGroup.userData.targetPosition = uavTarget;
-  if (initial) uavGroup.position.copy(uavTarget);
+  if (initial) motionTimeline.reset();
+  motionTimeline.ingest(state.motion_samples, performance.now() / 1000);
+  if (initial) uavGroup.position.copy(toWorld(state.uav));
 
   state.dynamic_objects.forEach((item) => {
     let bird = birdMeshes.get(item.id);
@@ -750,6 +844,7 @@ function syncScene(initial) {
       scene.add(bird);
       birdMeshes.set(item.id, bird);
     }
+    updateBirdEnvelope(bird, item);
     const target = toWorld(item.position);
     if (initial) {
       bird.position.copy(target);
@@ -763,45 +858,24 @@ function syncScene(initial) {
 
 
 function updatePath() {
-  const nextKey = JSON.stringify(state.continuous_path || state.path || []);
-  if (nextKey === pathKey) return;
-  pathKey = nextKey;
-  if (pathLine) {
-    scene.remove(pathLine);
-    pathLine.geometry.dispose();
-    pathLine.material.dispose();
-    pathLine = null;
+  if (state.runtime_backend !== "html") return;
+  if (!flightTrail) {
+    flightTrail = new FlightTrail(THREE, toWorld);
+    pathLine = flightTrail.object;
+    scene.add(pathLine);
+    trailHead = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(), new THREE.Vector3(),
+    ]), new THREE.LineBasicMaterial({color: 0x19f3eb, depthTest: false, depthWrite: false}));
+    trailHead.renderOrder = 5;
+    scene.add(trailHead);
   }
-  if (state.runtime_backend !== "html") {
-    return;
-  }
-  const points = (state.continuous_path || state.path || []).map((point) => toWorld(point));
-  if (points.length < 2) {
-    return;
-  }
-  const curve = points.length > 2
-    ? new THREE.CatmullRomCurve3(points, false, "centripetal", 0.25)
-    : new THREE.LineCurve3(points[0], points[1]);
-  const geometry = new THREE.TubeGeometry(
-    curve,
-    Math.max(12, points.length * 8),
-    0.14,
-    8,
-    false,
-  );
-  const material = new THREE.MeshBasicMaterial({
-    color: 0x19f3eb,
-    transparent: true,
-    opacity: 0.98,
-    depthTest: false,
-  });
-  pathLine = new THREE.Mesh(geometry, material);
-  pathLine.renderOrder = 5;
-  scene.add(pathLine);
+  flightTrail.update(state.continuous_path || state.path || [], state.path_start_index);
 }
 
 
 function disposeRoute() {
+  plannedTrail?.dispose();
+  plannedTrail = null;
   if (plannedRoute) {
     plannedRoute.traverse((object) => {
       object.geometry?.dispose();
@@ -824,20 +898,32 @@ function updateWaypoints() {
   plannedRouteKey = key;
   if (!waypoints.length) return;
   plannedRoute = new THREE.Group();
-  const points = waypoints.map(toWorld);
+  plannedRoute.name = "planned_route";
+  // Reuse the bounded tube renderer: WebGL line width stays one pixel on many
+  // devices. Planned and flown paths own separate geometry and materials.
+  plannedTrail = new FlightTrail(THREE, toWorld);
+  plannedTrail.radius = 0.095;
+  plannedTrail.material.color.set(0xffc857);
+  plannedTrail.material.opacity = 0.92;
+  plannedTrail.object.name = "planned_route_path";
   // The origin belongs to the accepted plan, not the moving UAV or mission base.
-  const routePoints = planStart ? [toWorld(planStart), ...points] : points;
-  const line = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints(routePoints),
-    new THREE.LineDashedMaterial({ color: 0xffc857, dashSize: 0.7, gapSize: 0.4 }),
-  );
-  line.computeLineDistances();
-  plannedRoute.add(line);
-  points.forEach((point) => {
+  plannedTrail.update(planStart ? [planStart, ...waypoints] : waypoints);
+  plannedTrail.object.traverse(object => {
+    if (object.isMesh) {
+      object.renderOrder = 4;
+      object.name = "planned_route_segment";
+      object.raycast = () => {};
+    }
+  });
+  plannedRoute.add(plannedTrail.object);
+  waypoints.map(toWorld).forEach(point => {
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 10, 8),
-      new THREE.MeshBasicMaterial({ color: 0xffc857 }),
+      new THREE.MeshBasicMaterial({ color: 0xffc857, depthTest: false, depthWrite: false }),
     );
+    marker.name = "planned_waypoint";
+    marker.raycast = () => {};
+    marker.renderOrder = 4;
     marker.position.copy(point);
     plannedRoute.add(marker);
   });
@@ -846,30 +932,32 @@ function updateWaypoints() {
 
 
 function updateAvoidanceRoute() {
-  const avoidance = state.flight?.avoidance;
-  if (!avoidanceRoute) {
-    avoidanceRoute = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
-      new THREE.LineDashedMaterial({ color: 0xff9f43, dashSize: 0.25, gapSize: 0.15, depthTest: false }),
-    );
-    avoidanceRoute.renderOrder = 6;
-    scene.add(avoidanceRoute);
+  if (!avoidanceView) {
+    avoidanceView = new AvoidanceView(THREE, toWorld);
+    scene.add(avoidanceView.object);
   }
-  avoidanceRoute.visible = state.runtime_backend === "html" && Boolean(avoidance?.active && avoidance.target);
-  if (avoidanceRoute.visible) {
-    const positions = avoidanceRoute.geometry.attributes.position;
-    [toWorld(state.uav), toWorld(avoidance.target)].forEach((point, index) => positions.setXYZ(index, point.x, point.y, point.z));
-    positions.needsUpdate = true;
-    avoidanceRoute.geometry.computeBoundingSphere();
-    avoidanceRoute.computeLineDistances();
-    avoidanceRoute.material.color.set(avoidance.limited ? 0xff5555 : 0xff9f43);
-  }
+  avoidanceView.ingest(state.flight?.avoidance?.visualization);
 }
 
 
+function renderAvoidanceStatus(sample) {
+  if (!avoidanceStatus) return;
+  avoidanceStatus.hidden = !sample;
+  if (!sample) return;
+  const dynamic = Boolean(sample.threats?.length || sample.episode?.object_ids?.length);
+  const status = sample.active ? (dynamic ? "动态避障" : "航迹调整")
+    : dynamic ? (sample.episode?.status === "cleared" ? "恢复航行" : "避障结束") : "调整结束";
+  const clearance = sample.episode?.min_separation_clearance_m;
+  const value = Number.isFinite(clearance) ? `${clearance.toFixed(2)} m` : "未测";
+  setText(document.getElementById("avoidanceStatusTitle"), status);
+  setText(document.getElementById("avoidanceClearance"), `最小安全净空 ${value}`);
+  avoidanceStatus.dataset.active = String(sample.active);
+  avoidanceStatus.dataset.violation = String(Number.isFinite(clearance) && clearance < 0);
+}
+
 function setSceneActorVisibility(htmlRuntimeActive) {
   if (plannedRoute) plannedRoute.visible = htmlRuntimeActive;
-  if (avoidanceRoute && !htmlRuntimeActive) avoidanceRoute.visible = false;
+  if (avoidanceView && !htmlRuntimeActive) avoidanceView.object.visible = false;
   if (uavGroup) {
     uavGroup.visible = htmlRuntimeActive;
   }
@@ -879,6 +967,7 @@ function setSceneActorVisibility(htmlRuntimeActive) {
   if (pathLine) {
     pathLine.visible = htmlRuntimeActive;
   }
+  if (trailHead && !htmlRuntimeActive) trailHead.visible = false;
 }
 
 
@@ -886,16 +975,30 @@ function clearEnvironment() {
   goalReward.hidden = true;
   goalStar = null;
   disposeRoute();
-  if (avoidanceRoute) {
-    avoidanceRoute.geometry.dispose();
-    avoidanceRoute.material.dispose();
-    scene.remove(avoidanceRoute);
-    avoidanceRoute = null;
+  if (avoidanceView) {
+    scene.remove(avoidanceView.object);
+    avoidanceView.dispose();
+    avoidanceView = null;
   }
-  pathKey = "";
+  displayedAvoidance = null;
+  renderAvoidanceStatus(null);
+  if (flightTrail) {
+    scene.remove(flightTrail.object);
+    flightTrail.dispose();
+    flightTrail = null;
+    pathLine = null;
+  }
+  if (trailHead) {
+    scene.remove(trailHead);
+    trailHead.geometry.dispose();
+    trailHead.material.dispose();
+    trailHead = null;
+  }
+  motionTimeline.reset();
   [...scene.children].forEach((child) => {
     if (child.userData.environment || child === uavGroup || birdMeshesHas(child) || child === pathLine) {
       child.traverse((object) => {
+        if (object.isInstancedMesh) object.dispose();
         object.geometry?.dispose();
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         materials.forEach((material) => {
@@ -908,8 +1011,6 @@ function clearEnvironment() {
   });
   birdMeshes.clear();
   cameraObstacles = [];
-  followOffset.set(9, 7, 12);
-  followAnchor.set(0, 0, 0);
   rotorMeshes = [];
   uavGroup = null;
   pathLine = null;
@@ -935,32 +1036,38 @@ function renderUi() {
   renderTelemetry();
   renderRuntimeControls();
   renderDecisionTrace(getHistoryEntries()[0] || null);
+  renderSemanticMission();
 }
 
 
 function renderToolbarState() {
+  const semantic = isSemanticScenario();
+  simulator?.setAttribute("data-mission-mode", semantic ? "semantic" : "navigation");
   simulator?.setAttribute("data-operation", commandError ? "error" : state?.flight?.mode || "idle");
 
-  const missionPhase = { fly_to_target: "Outbound", returning_home: "Returning", completed: "Completed" }[state?.phase] || "--";
+  const missionPhase = semantic ? "校园任务" : { fly_to_target: "Outbound", returning_home: "Returning", completed: "Completed" }[state?.phase] || "--";
   setText(phaseValue, `${missionPhase} / ${state?.flight?.stage || "--"} / ${state?.flight?.mode || "idle"}`);
   const traceDecision = getHistoryEntries()[0]?.decision;
-  const traceBackend = traceDecision?.agent_backend || state?.agent_backend;
-  const traceModel = traceDecision?.agent_backend
+  const traceBackend = semantic ? "DeepSeek" : traceDecision?.agent_backend || state?.agent_backend;
+  const traceModel = semantic ? null : traceDecision?.agent_backend
     ? traceDecision.agent_model
     : state?.agent_model;
   setText(backendValue, traceModel ? `${traceBackend}:${traceModel}` : traceBackend);
   const flight = state?.flight || {};
-  const active = Boolean(flight.running || flight.planning);
+  const active = Boolean(semantic ? flight.running : flight.running || flight.planning);
   const unavailable = !state || state.status !== "active";
+  planBtn.hidden = semantic;
   planBtn.disabled = commandPending || unavailable || active || flight.mode === "braking";
-  startBtn.disabled = commandPending || unavailable || flight.mode === "braking";
+  startBtn.disabled = commandPending || unavailable || flight.mode === "braking"
+    || (semantic && !["interpreting", "running", "error"].includes(state.semantic_mission?.status));
   resetBtn.disabled = commandPending || !state;
   scenarioSelect.disabled = commandPending || !state;
   agentButtons.forEach((button) => {
     const selected = button.dataset.agent === state?.agent_backend;
     button.setAttribute("aria-checked", String(selected));
     button.classList.toggle("active", selected);
-    button.disabled = commandPending;
+    button.hidden = semantic && button.dataset.agent === "mock";
+    button.disabled = commandPending || (semantic && button.dataset.agent === "mock");
   });
   if (agentKeyBtn) {
     agentKeyBtn.disabled = commandPending;
@@ -969,12 +1076,266 @@ function renderToolbarState() {
 
   const iconChanged = updateCommandButton(
     startBtn,
-    active ? "Pause" : "Start",
+    semantic ? (active ? "暂停任务" : "继续任务") : (active ? "Pause" : "Start"),
     active ? "pause" : "play",
   );
   if (iconChanged) {
     createLucideIcons();
   }
+}
+
+
+function isSemanticScenario() {
+  return state?.scenario?.mission_mode === "semantic";
+}
+
+
+function semanticStatusLabel(status) {
+  return {
+    idle: "待提交", interpreting: "解析中", needs_clarification: "待补充",
+    running: "执行中", completed: "已完成", error: "任务异常", safety_wait: "等待处理",
+  }[status] || "待提交";
+}
+
+
+async function submitSemanticTask(event) {
+  event?.preventDefault();
+  if (!isSemanticScenario() || commandPending) return false;
+  const instruction = taskInstruction.value.trim();
+  if (!instruction) return false;
+  if (!state.deepseek_key_configured) {
+    openAgentDialog();
+    return false;
+  }
+  return runCommand(() => postState("/api/mission/task", { instruction }), { semanticValidation: true });
+}
+
+
+const SEMANTIC_ACTION_LABELS = {
+  visit: "访问", inspect: "巡检", thermal_scan: "热观测", capture: "模拟采样", return_home: "返回并降落",
+};
+const STEP_STATUS_LABELS = {
+  pending: "待执行", active: "进行中", completed: "已完成",
+  skipped: "条件不满足，跳过", cancelled: "任务修改后取消",
+};
+
+
+function pointOfInterestLabel(id) {
+  return state?.scenario?.points_of_interest?.find(point => point.id === id)?.label || id || "指定地点";
+}
+
+
+function semanticElement(tag, className, text) {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text !== undefined) element.textContent = text;
+  return element;
+}
+
+
+function semanticConditionLabel(expression, mission, revision = mission.plan_revision ?? mission.revision) {
+  if (!isRecord(expression)) return "待确认条件";
+  if (Array.isArray(expression.all)) return expression.all
+    .map(condition => `（${semanticConditionLabel(condition, mission, revision)}）`).join("且");
+  if (Array.isArray(expression.any)) return expression.any
+    .map(condition => `（${semanticConditionLabel(condition, mission, revision)}）`).join("或");
+  if (expression.not) return `不满足（${semanticConditionLabel(expression.not, mission, revision)}）`;
+  const fields = {
+    temperature_c: "温度", anomaly: "异常", captured: "采样完成", inspected: "巡检完成",
+    visited: "到达地点", returned: "已返航", landed: "已降落",
+    battery_percent: "电量", elapsed_seconds: "任务用时",
+  };
+  const operator = { "<": "低于", "<=": "不超过", "==": "等于", "!=": "不等于", ">=": "至少", ">": "超过" };
+  const field = fields[expression.field] || expression.field || "结果";
+  const result = expression.evidence_id ? (mission.evidence || []).find(entry => entry.evidence_id === expression.evidence_id) : null;
+  const dependency = result || (revision === (mission.plan_revision ?? mission.revision)
+    ? semanticProgramNodes(mission.program).find(step => step.id === expression.step_id) : null)
+    || (mission.steps || []).find(step => step.id === expression.step_id && (!revision || step.revision === revision));
+  const location = expression.source === "telemetry" ? "" : `${pointOfInterestLabel(dependency?.target_id)} · `;
+  const value = typeof expression.value === "boolean" ? (expression.value ? "是" : "否") : String(expression.value ?? "待确认");
+  const unit = expression.field === "temperature_c" ? " °C"
+    : expression.field === "battery_percent" ? "%" : expression.field === "elapsed_seconds" ? " 秒" : "";
+  return `${location}${field}${operator[expression.op] || "等于"} ${value}${unit}`;
+}
+
+
+function semanticProgramNodes(program) {
+  const nodes = Array.isArray(program) ? program : Array.isArray(program?.steps) ? program.steps : [];
+  return nodes.flatMap(node => [node,
+    ...semanticProgramNodes(node.steps), ...semanticProgramNodes(node.then), ...semanticProgramNodes(node.else)]);
+}
+
+
+function semanticProgramLabel(node, mission) {
+  const action = `${SEMANTIC_ACTION_LABELS[node.action] || "任务"} · ${pointOfInterestLabel(node.target_id)}`;
+  if (node.action === "repeat") {
+    const progress = (mission.loops || []).find(loop => loop.id === node.id && loop.revision === (mission.plan_revision ?? mission.revision));
+    const total = Number.isInteger(node.count) ? `${node.count} 次` : "持续";
+    const iteration = progress?.iteration > 0 ? ` · 第 ${progress.iteration} 次${progress.status === "completed" ? "，已结束" : ""}` : "";
+    return `循环 ${total}${iteration}`;
+  }
+  if (node.action === "branch") return `条件分支 · ${semanticConditionLabel(node.condition, mission)}`;
+  return action;
+}
+
+
+function semanticEvidenceForStep(step, mission) {
+  if (step.status !== "completed") return null;
+  return (mission.evidence || []).find(entry => isRecord(entry)
+    && entry.mission_id === mission.mission_id && entry.vehicle_id === mission.vehicle_id
+    && entry.target_id === step.target_id && entry.action === step.action
+    && (step.execution_id ? entry.execution_id === step.execution_id && entry.revision === step.revision
+      : !entry.execution_id && entry.step_id === step.id));
+}
+
+
+function renderSemanticMission() {
+  const semantic = isSemanticScenario();
+  semanticPanel.hidden = !semantic;
+  if (semantic !== renderedMissionMode) {
+    renderedMissionMode = semantic;
+    flightDiagnostics.open = !semantic;
+    document.getElementById("flightDiagnosticsSummary").hidden = !semantic;
+    setText(document.getElementById("inspectorHeading"), semantic ? "任务工作台" : "Agent Trace");
+  }
+  if (!semantic) return;
+  const mission = state.semantic_mission || {};
+  const steps = Array.isArray(mission.steps) ? mission.steps : [];
+  const evidence = Array.isArray(mission.evidence) ? mission.evidence : [];
+  const configured = Boolean(state.deepseek_key_configured);
+  const planRevision = mission.plan_revision ?? mission.revision;
+  const revisionSteps = steps.filter(step => !planRevision || step.revision === planRevision);
+  setText(document.getElementById("plannerProgress"), `当前任务已完成 ${revisionSteps.filter(step => step.status === "completed").length} 步 · ${state.flight?.planner_calls || 0} 次本地规划`);
+  taskInstruction.disabled = commandPending;
+  submitTaskBtn.disabled = commandPending || !configured || !taskInstruction.value.trim();
+  submitTaskBtn.textContent = mission.instruction || mission.revision > 0 || steps.length ? "修改任务" : "提交任务";
+  setText(document.getElementById("instructionCount"), `${taskInstruction.value.length} / 2000`);
+  taskForm.setAttribute("aria-busy", String(commandPending || mission.status === "interpreting"));
+
+  const recommendations = Array.isArray(state.scenario.recommended_tasks) ? state.scenario.recommended_tasks : [];
+  const nextRecommendationKey = JSON.stringify(recommendations);
+  if (nextRecommendationKey !== recommendationKey) {
+    recommendationKey = nextRecommendationKey;
+    recommendedTasks.replaceChildren(...recommendations.map((instruction, index) => {
+      const button = semanticElement("button", "recommended-task");
+      button.type = "button";
+      button.append(semanticElement("span", "recommendation-index", String(index + 1).padStart(2, "0")),
+        semanticElement("span", "", String(instruction)));
+      button.addEventListener("click", () => {
+        taskInstruction.value = String(instruction);
+        commandError = "";
+        renderSemanticMission();
+        taskInstruction.focus({ preventScroll: true });
+      });
+      return button;
+    }));
+  }
+  const statusElement = document.getElementById("semanticStatus");
+  statusElement.dataset.status = mission.status || "idle";
+  const paused = ["running", "interpreting"].includes(mission.status) && !state.flight?.running;
+  setText(statusElement, paused ? "已暂停" : semanticStatusLabel(mission.status));
+  const defaults = {
+    idle: "暂无任务",
+    interpreting: "正在解析任务指令。",
+    needs_clarification: "请补充具体地点或任务要求后重新提交。",
+    running: "正在执行任务。",
+    completed: "任务已完成。",
+    error: "任务未完成，请调整指令后重新提交。",
+    safety_wait: "任务已安全等待，请修改任务或提交返航指令。",
+  };
+  const message = document.getElementById("semanticMessage");
+  message.dataset.error = String(Boolean(commandError || mission.status === "error"));
+  const messageText = commandError || (paused ? "任务已暂停，可继续或重置。" : mission.message || defaults[mission.status] || defaults.idle);
+  setText(message, messageText);
+  const summary = document.getElementById("semanticSummary");
+  const summaryText = typeof mission.summary === "string" ? mission.summary.trim() : "";
+  summary.hidden = !summaryText || summaryText === messageText.trim();
+  setText(summary, summary.hidden ? "" : summaryText);
+  const constraintsElement = document.getElementById("semanticConstraints");
+  const constraints = mission.constraints || {};
+  const constraintLabels = [];
+  if (Number.isFinite(constraints.max_altitude_m)) constraintLabels.push(`限高 ${constraints.max_altitude_m} m`);
+  if (Array.isArray(constraints.avoid_regions)) {
+    constraints.avoid_regions.forEach((id) => {
+      const label = state.scenario.semantic_regions?.find(region => region.id === id)?.label || id;
+      constraintLabels.push(`避开${label}`);
+    });
+  }
+  constraintsElement.hidden = constraintLabels.length === 0;
+  if (constraintsElement.dataset.value !== JSON.stringify(constraintLabels)) {
+    constraintsElement.dataset.value = JSON.stringify(constraintLabels);
+    constraintsElement.replaceChildren(...constraintLabels.map(label => semanticElement("span", "constraint-chip", label)));
+  }
+
+  const nextStepsKey = JSON.stringify([state.scenario_id, mission.mission_id, mission.vehicle_id,
+    mission.revision, planRevision, mission.program, mission.loops, steps, mission.current_step_id, mission.current_execution_id, evidence]);
+  if (nextStepsKey !== semanticStepsKey) {
+    semanticStepsKey = nextStepsKey;
+    const program = semanticProgramNodes(mission.program).filter(node => ["repeat", "branch"].includes(node.action));
+    semanticProgram.hidden = program.length === 0;
+    semanticProgram.replaceChildren(...program.map(node => {
+      const item = semanticElement("div", "task-program-rule");
+      item.append(semanticElement("strong", "", semanticProgramLabel(node, mission)));
+      if (node.action === "repeat") {
+        const labels = (node.steps || []).map(child => semanticProgramLabel(child, mission));
+        item.append(semanticElement("span", "", labels.join(" → ")));
+        if (node.until) item.append(semanticElement("span", "", `结束条件：${semanticConditionLabel(node.until, mission)}`));
+        if (node.when) item.append(semanticElement("span", "", `执行条件：${semanticConditionLabel(node.when, mission)}`));
+      } else {
+        const branchLabel = nodes => (nodes || []).map(child => semanticProgramLabel(child, mission)).join(" → ");
+        item.append(semanticElement("span", "", `满足时：${branchLabel(node.then) || "继续后续任务"}`));
+        if (node.else?.length) item.append(semanticElement("span", "", `否则：${branchLabel(node.else)}`));
+      }
+      return item;
+    }));
+    const revisions = new Set(steps.map(step => step.revision || 1));
+    let displayedRevision = null;
+    const items = [];
+    steps.forEach((step, index) => {
+      const revision = step.revision || 1;
+      if (revisions.size > 1 && displayedRevision !== revision) {
+        const heading = semanticElement("li", "task-revision-heading",
+          `${revision === planRevision ? "当前任务" : "任务记录"} · 第 ${revision} 版`);
+        items.push(heading);
+        displayedRevision = revision;
+      }
+      const item = semanticElement("li", "semantic-step");
+      item.dataset.status = step.status || "pending";
+      if (mission.current_execution_id ? step.execution_id === mission.current_execution_id
+        : step.id === mission.current_step_id && step.status === "active") item.setAttribute("aria-current", "step");
+      const marker = step.status === "completed" ? "✓" : ["skipped", "cancelled"].includes(step.status) ? "−" : String(index + 1);
+      item.append(semanticElement("span", "task-step-marker", marker));
+      const content = semanticElement("div", "task-step-content");
+      const label = `${SEMANTIC_ACTION_LABELS[step.action] || "执行任务"} · ${pointOfInterestLabel(step.target_id)}`;
+      content.append(semanticElement("strong", "", label));
+      const status = STEP_STATUS_LABELS[step.status] || "待执行";
+      const duration = Number(step.duration_seconds) > 0 ? ` · 停留 ${step.duration_seconds} 秒` : "";
+      const result = semanticEvidenceForStep(step, mission);
+      content.append(semanticElement("span", "task-step-status", result ? evidenceResultLabel(result) : status + duration));
+      const iterations = Object.values(step.loop_iterations || {});
+      if (iterations.length) content.append(semanticElement("span", "task-step-iteration", `循环第 ${iterations.join(" / ")} 次`));
+      if (step.when) {
+        content.append(semanticElement("span", "task-step-condition", `条件：${semanticConditionLabel(step.when, mission, step.revision)}`));
+      }
+      item.append(content);
+      items.push(item);
+    });
+    semanticSteps.replaceChildren(...items);
+  }
+}
+
+
+function evidenceResultLabel(entry) {
+  const result = isRecord(entry.result) ? entry.result : {};
+  if (entry.action === "thermal_scan") {
+    const temperature = Number.isFinite(result.temperature_c) ? `${result.temperature_c.toFixed(1)} °C` : "温度未记录";
+    return `${temperature} · ${result.anomaly === true ? "检测到模拟异常" : result.anomaly === false ? "未检测到模拟异常" : "异常状态未确认"}`;
+  }
+  if (entry.action === "capture") return result.captured === true
+    ? "模拟采样记录已生成；不生成照片。" : "模拟采样未确认完成。";
+  if (entry.action === "inspect") return result.inspected === true ? "已完成仿真巡检。" : "巡检未确认完成。";
+  if (entry.action === "return_home") return result.returned === true && result.landed === true ? "遥测已确认返回起点并降落。" : "返航或降落尚未确认。";
+  return result.visited === true ? "遥测已确认到达指定位置。" : "动作结果尚未确认。";
 }
 
 
@@ -1014,11 +1375,12 @@ function renderTelemetry() {
   setText(
     threatValue,
     threat
-      ? `${valueOrDash(threat.threat_level)} / ${formatNumber(threat.predicted_distance)}`
+      ? `${currentDynamicRiskLevel(dynamicDistanceM(threat), threat)} / ${formatNumber(dynamicDistanceM(threat))} m（当前）`
       : hasOwn(observation, "nearest_dynamic_obstacle") ? "none" : "--",
   );
   if (threatValue) {
-    threatValue.style.color = threatColor(threat?.threat_level || "low");
+    threatValue.style.color = threatColor(currentDynamicRiskLevel(dynamicDistanceM(threat), threat));
+    threatValue.title = "当前中心距对应的风险等级；不包含未来轨迹预测。";
   }
 }
 
@@ -1110,7 +1472,9 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
   setText(resultActionValue, `${flight.mode || "idle"} / ${formatNumber(flight.speed_mps)} m/s`);
   setText(executionPositionValue, formatPoint(state.uav));
   const milestones = state.milestones || {};
-  setText(missionProgressText, `${milestones.target_reached ? "★ Collected · Target reached" : "☆ Target pending"} · ${milestones.base_returned ? "Returned to base" : "Return pending"}`);
+  setText(missionProgressText, isSemanticScenario()
+    ? `${(state.semantic_mission?.steps || []).filter(step => step.status === "completed").length} 个步骤已验证完成 · 当前阶段 ${semanticStatusLabel(state.semantic_mission?.status)}`
+    : `${milestones.target_reached ? "★ Collected · Target reached" : "☆ Target pending"} · ${milestones.base_returned ? "Returned to base" : "Return pending"}`);
   const recovery = flight.recovery || {};
   const recoveryLabels = {
     refresh_observation_and_retry_provider: "Waiting for API recovery",
@@ -1144,10 +1508,12 @@ function renderRuntimeControls() {
     const selected = button.dataset.runtime === state.runtime_backend;
     button.setAttribute("aria-checked", String(selected));
     button.classList.toggle("active", selected);
-    button.disabled = commandPending;
+    button.disabled = commandPending || (isSemanticScenario() && button.dataset.runtime === "airsim");
+    button.title = isSemanticScenario() && button.dataset.runtime === "airsim"
+      ? "园区任务目前使用 HTML 仿真观测" : "";
   });
   if (airsimConfigBtn) {
-    airsimConfigBtn.disabled = commandPending;
+    airsimConfigBtn.disabled = commandPending || isSemanticScenario();
   }
 
   scenarioSelect.value = state.scenario_id || "";
@@ -1165,7 +1531,7 @@ function renderRuntimeControls() {
   setInputUnlessFocused(windEast, wind.y ?? 0);
   setInputUnlessFocused(windDown, wind.z ?? 0);
 
-  reconnectAirSimBtn.disabled = commandPending;
+  reconnectAirSimBtn.disabled = commandPending || isSemanticScenario();
   applyWindBtn.disabled = commandPending
     || !connected
     || !Boolean(runtime.supports_wind);
@@ -1220,7 +1586,7 @@ function openAgentDialog() {
 
 
 function openAirSimDialog() {
-  if (commandPending) {
+  if (commandPending || isSemanticScenario()) {
     return;
   }
   renderRuntimeControls();
@@ -1322,11 +1688,10 @@ function formatDynamicRisk(obstacle, fieldPresent) {
     return valueOrDash(obstacle);
   }
   const parts = [];
-  if (obstacle.threat_level) {
-    parts.push(String(obstacle.threat_level));
-  }
-  if (obstacle.predicted_distance !== null && obstacle.predicted_distance !== undefined) {
-    parts.push(`predicted ${formatNumber(obstacle.predicted_distance)}`);
+  parts.push(`当前 ${currentDynamicRiskLevel(dynamicDistanceM(obstacle), obstacle)}`);
+  parts.push(`中心距 ${formatNumber(dynamicDistanceM(obstacle))} m`);
+  if (Number.isFinite(obstacle.separation_clearance_m)) {
+    parts.push(`安全净空 ${formatNumber(obstacle.separation_clearance_m)} m`);
   }
   if (obstacle.id) {
     parts.push(String(obstacle.id));
@@ -1394,6 +1759,7 @@ function formatVector(vector) {
 
 
 function threatColor(level) {
+  if (level === "unknown") return "#94a3b8";
   if (level === "critical" || level === "high") {
     return "#ff6b57";
   }
@@ -1414,74 +1780,18 @@ function toWorld(point) {
 }
 
 
-function visibleFollowDistance(target, offset) {
-  const distance = offset.length();
-  if (distance < 1e-6) return 0;
-  const ray = new THREE.Ray(target, offset.clone().divideScalar(distance));
-  const hit = new THREE.Vector3();
-  let visible = distance;
-  for (const obstacle of cameraObstacles) {
-    if (ray.intersectBox(obstacle, hit)) {
-      visible = Math.min(visible, hit.distanceTo(target));
-    }
-  }
-  return visible;
+function worldFromSample(position) {
+  return toWorld({x: position[0], y: position[1], z: position[2]});
 }
 
 
-function chooseFollowOffset(target) {
-  // Retain even a shortened safe boom; do not reselect tied directions every frame.
-  if (visibleFollowDistance(target, followOffset) >= followOffset.length() - 0.4) {
-    return followOffset;
-  }
-  const base = new THREE.Vector3(9, 7, 12);
-  const axis = new THREE.Vector3(0, 1, 0);
-  let best = null;
-  let bestScore = Infinity;
-  let fallback = null;
-  let fallbackDistance = 0;
-  for (const height of [7, 12, 20, 36]) {
-    const offsets = [new THREE.Vector3(0, height, 15), new THREE.Vector3(0, height, -15),
-      new THREE.Vector3(15, height, 0), new THREE.Vector3(-15, height, 0)];
-    for (const angle of [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2,
-      -Math.PI / 2, 3 * Math.PI / 4, -3 * Math.PI / 4, Math.PI]) {
-      offsets.push(new THREE.Vector3(base.x, height, base.z).applyAxisAngle(axis, angle));
-    }
-    for (const offset of offsets) {
-      const visible = visibleFollowDistance(target, offset);
-      if (visible > fallbackDistance) {
-        fallbackDistance = visible;
-        fallback = offset.clone().multiplyScalar(Math.max(0.1, visible - 1.2) / offset.length());
-      }
-      if (visible < offset.length() - 0.4) continue;
-      const score = offset.distanceToSquared(followOffset) + 0.15 * offset.distanceToSquared(base);
-      if (score < bestScore) {
-        bestScore = score;
-        best = offset;
-      }
-    }
-  }
-  followOffset = best || fallback || base;
-  return followOffset;
-}
-
-function updateFollowCamera(delta) {
+function updateFollowCamera(delta, reset = false) {
   const target = uavGroup.position;
-  // Transport the rig with its subject before damping the boom, avoiding polling lag.
-  camera.position.add(target.clone().sub(followAnchor));
-  followAnchor.copy(target);
-  const offset = camera.position.clone().sub(target);
-  offset.lerp(chooseFollowOffset(target), 1 - Math.exp(-3.2 * delta));
-  const length = offset.length();
-  const visible = visibleFollowDistance(target, offset);
-  // Retract along the current sightline instead of teleporting to another angle.
-  if (visible < length && length > 1e-6) {
-    offset.multiplyScalar(Math.max(0.1, visible - 1.2) / length);
-  }
-  camera.position.copy(target).add(offset);
+  if (reset) followRig.reset(target, cameraObstacles);
+  camera.position.copy(followRig.update(target, delta, cameraObstacles,
+    motionTimeline.preview().map(worldFromSample)));
   camera.lookAt(target);
 }
-
 
 function setCameraMode(mode) {
   cameraMode = mode;
@@ -1491,13 +1801,19 @@ function setCameraMode(mode) {
   if (mode === "overview") {
     const mapScale = Math.max(1, (state?.grid_size || 20) / 20);
     const urban = Boolean(state?.scenario?.urban_parcels?.length);
-    camera.position.set((urban ? 50 : 55) * mapScale,
-      (urban ? 42 : 60) * mapScale, (urban ? 56 : 65) * mapScale);
-    controls.target.set(0, urban ? 24 : 17, 0);
+    if (isSemanticScenario()) {
+      // View from the south entrance, matching the campus reference photograph.
+      const size = state.grid_size * WORLD_SCALE;
+      const fit = Math.max(1, 1.1 / camera.aspect);
+      camera.position.set(size * 0.12 * fit, size * 0.73 * fit, size * 0.88 * fit);
+      controls.target.set(0, 0, size * 0.08);
+    } else {
+      camera.position.set((urban ? 50 : 55) * mapScale,
+        (urban ? 42 : 60) * mapScale, (urban ? 56 : 65) * mapScale);
+      controls.target.set(0, urban ? 24 : 17, 0);
+    }
   } else if (uavGroup) {
-    followOffset.set(9, 7, 12);
-    followAnchor.copy(uavGroup.position);
-    camera.position.copy(uavGroup.position).add(chooseFollowOffset(uavGroup.position));
+    camera.position.copy(followRig.reset(uavGroup.position, cameraObstacles));
     camera.lookAt(uavGroup.position);
   }
 }
@@ -1505,61 +1821,87 @@ function setCameraMode(mode) {
 
 function animate() {
   timer.update();
-  const delta = Math.min(timer.getDelta(), 0.05);
+  const delta = Math.min(timer.getDelta(), 0.1);
   const elapsed = timer.getElapsed();
   const htmlRuntimeActive = state?.runtime_backend === "html";
+  const frame = htmlRuntimeActive ? motionTimeline.sample(performance.now() / 1000) : null;
 
-  if (uavGroup && htmlRuntimeActive) {
-    const grounded = state.flight?.stage === "landed";
-    if (uavGroup.userData.targetPosition) {
-      const target = uavGroup.userData.targetPosition;
-      const direction = target.clone().sub(uavGroup.position);
-      uavGroup.position.lerp(target, 1 - Math.exp(-20 * delta));
-      if (Math.abs(direction.x) + Math.abs(direction.z) > 0.001) {
-        uavGroup.rotation.y = Math.atan2(direction.x, direction.z);
-      }
-      uavGroup.rotation.z = grounded ? 0 : Math.sin(elapsed * 2.2) * 0.018;
-    }
+  if (uavGroup && frame) {
+    uavGroup.position.copy(worldFromSample(frame.position));
+    // Runtime yaw is measured from north; the camera pod faces local -z.
+    uavGroup.rotation.y = -frame.yaw;
+    uavGroup.rotation.z = frame.landed ? 0 : Math.sin(frame.time * 2.2) * 0.018;
     rotorMeshes.forEach((rotor) => {
-      if (!grounded || state.flight?.running) rotor.rotation.y += delta * 42 * rotor.userData.speed;
+      if (!frame.landed) rotor.rotation.y += delta * 42 * rotor.userData.speed;
     });
+    flightTrail?.setVisibleEnd(frame.path_index);
+    const head = (state.continuous_path || state.path || [])[frame.path_index - (state.path_start_index || 0)];
+    if (trailHead) {
+      trailHead.visible = Boolean(head && [head.x, head.y, head.z].every(Number.isFinite));
+      if (trailHead.visible) {
+        const attribute = trailHead.geometry.attributes.position;
+        const start = toWorld(head), end = uavGroup.position;
+        attribute.setXYZ(0, start.x, start.y, start.z);
+        attribute.setXYZ(1, end.x, end.y, end.z);
+        attribute.needsUpdate = true;
+        trailHead.geometry.computeBoundingSphere();
+      }
+    }
   }
 
-  if (htmlRuntimeActive) {
+  displayedAvoidance = avoidanceView?.update(frame?.time, uavGroup?.position,
+    state?.flight?.waypoints?.[state?.flight?.waypoint_index],
+    Boolean(state?.flight?.running && !state.flight.planning && !state.flight.error),
+    Boolean(htmlRuntimeActive && frame)) || null;
+  renderAvoidanceStatus(displayedAvoidance);
+  const highlightedBirds = new Set(displayedAvoidance
+    ? [...(displayedAvoidance.threats || []).map(threat => threat.id), ...(displayedAvoidance.episode?.object_ids || [])] : []);
+
+  if (htmlRuntimeActive && frame) {
     birdMeshes.forEach((bird, id) => {
-      const model = trafficMotion?.models[id];
-      if (model) {
-        const seconds = trafficMotion.elapsed; // Shared backend simulation clock; no wall-time extrapolation.
-        const { position, velocity } = sampleTraffic(model, seconds);
-        bird.position.lerp(toWorld({ x: position[0], y: position[1], z: position[2] }), 1 - Math.exp(-20 * delta));
-        const speed = Math.hypot(velocity[0] * WORLD_SCALE, velocity[1] * WORLD_SCALE, velocity[2] * ALTITUDE_SCALE);
-        if (speed > 0.02) {
-          const yaw = Math.atan2(velocity[0], velocity[1]);
-          const change = bird.userData.yaw === null ? 0 : Math.atan2(Math.sin(yaw - bird.userData.yaw), Math.cos(yaw - bird.userData.yaw));
-          bird.rotation.y = yaw;
-          bird.userData.anatomy.rotation.z = THREE.MathUtils.lerp(bird.userData.anatomy.rotation.z,
-            THREE.MathUtils.clamp(-change / Math.max(delta, 0.001) * 0.3, -0.45, 0.45), 1 - Math.exp(-5 * delta));
-          bird.userData.yaw = yaw;
-          bird.userData.anatomy.rotation.x = -Math.atan2(velocity[2] * ALTITUDE_SCALE,
-            Math.hypot(velocity[0] * WORLD_SCALE, velocity[1] * WORLD_SCALE));
-        }
-        const glide = Math.sin(seconds * 0.65 + model.phase) > 0.5 && speed > 0.8;
-        bird.userData.wings.forEach((wing, index) => {
-          wing.rotation.z = (index === 0 ? -1 : 1) * (glide ? 0.08 : Math.sin(seconds * 9 + model.phase) * 0.45);
-        });
+      const sample = frame.traffic[id];
+      bird.visible = Boolean(sample);
+      if (!sample) return;
+      const position = sample.slice(0, 3), velocity = sample.slice(3);
+      const seconds = frame.time;
+      bird.position.copy(worldFromSample(position));
+      const speed = Math.hypot(velocity[0] * WORLD_SCALE, velocity[1] * WORLD_SCALE, velocity[2] * ALTITUDE_SCALE);
+      if (speed > 0.02) {
+        const yaw = Math.atan2(velocity[0], velocity[1]);
+        const change = bird.userData.yaw === null ? 0 : Math.atan2(Math.sin(yaw - bird.userData.yaw), Math.cos(yaw - bird.userData.yaw));
+        bird.rotation.y = yaw;
+        bird.userData.anatomy.rotation.z = THREE.MathUtils.lerp(bird.userData.anatomy.rotation.z,
+          THREE.MathUtils.clamp(-change / Math.max(delta, 0.001) * 0.3, -0.45, 0.45), 1 - Math.exp(-5 * delta));
+        bird.userData.yaw = yaw;
+        bird.userData.anatomy.rotation.x = -Math.atan2(velocity[2] * ALTITUDE_SCALE,
+          Math.hypot(velocity[0] * WORLD_SCALE, velocity[1] * WORLD_SCALE));
       }
-      const separation = bird.position.distanceTo(toWorld(state.uav));
-      const high = separation < bird.userData.radius + 1;
-      const near = separation < bird.userData.radius + 4;
-      bird.userData.safetyBubble.visible = near || hoveredBird === bird;
-      bird.userData.safetyBubble.material.color.set(high ? 0xff6b57 : near ? 0xf2b84b : 0x74d8df);
+      const phase = trafficMotion?.models[id]?.phase || 0;
+      const glide = Math.sin(seconds * 0.65 + phase) > 0.5 && speed > 0.8;
+      bird.userData.wings.forEach((wing, index) => {
+        wing.rotation.z = (index === 0 ? -1 : 1) * (glide ? 0.08 : Math.sin(seconds * 9 + phase) * 0.45);
+      });
+      const separation = bird.position.distanceTo(uavGroup.position);
+      const risk = currentDynamicRiskLevel(separation, bird.userData);
+      const highlighted = highlightedBirds.has(id);
+      bird.userData.avoidanceRelated = highlighted;
+      bird.userData.highlightMaterials.forEach(material => {
+        material.emissive.set(highlighted ? 0xff963e : 0x000000);
+        material.emissiveIntensity = highlighted ? (displayedAvoidance.active ? .6 : .25) : 0;
+      });
+      const showEnvelope = risk !== "unknown" && (risk !== "low" || hoveredBird === bird || highlighted);
+      bird.userData.safetyBubble.visible = showEnvelope;
+      bird.userData.contactBubble.visible = showEnvelope;
+      bird.userData.safetyBubble.material.color.set(highlighted && risk === "low" ? "#ff963e" : threatColor(risk));
+      bird.userData.safetyBubble.material.opacity = highlighted && displayedAvoidance.active ? .23 : .12;
+      bird.userData.contactBubble.material.color.set(risk === "critical" ? "#ff6b57" : "#94a3b8");
     });
   }
-  updateGoalStar(delta, elapsed, htmlRuntimeActive);
+  updateGoalStar(delta, elapsed, htmlRuntimeActive, frame?.time);
   updateBirdHover(htmlRuntimeActive);
 
   if (cameraMode === "follow" && uavGroup) {
-    updateFollowCamera(delta);
+    updateFollowCamera(delta, Boolean(frame?.reset));
   } else {
     controls.update();
   }
@@ -1571,8 +1913,15 @@ function updateBirdHover(active) {
   hoveredBird = null;
   if (active && Math.abs(birdPointer.x) <= 1 && Math.abs(birdPointer.y) <= 1) {
     birdRaycaster.setFromCamera(birdPointer, camera);
+    // Most pointer positions miss all birds. Avoid raycasting the entire city
+    // and accumulated trail on every animation frame just to discover that.
+    const birds = [...birdMeshes.values()].filter(bird => bird.visible);
+    const bubbles = new Set(birds.flatMap(bird => [bird.userData.safetyBubble, bird.userData.contactBubble]));
+    const candidates = birdRaycaster.intersectObjects(birds, true)
+      .filter(entry => entry.object.visible && !bubbles.has(entry.object));
+    if (!candidates.length) { birdTooltip.hidden = true; return; }
     const hit = birdRaycaster.intersectObjects(scene.children, true)
-      .find((entry) => entry.object.visible && ![...birdMeshes.values()].some((bird) => entry.object === bird.userData.safetyBubble));
+      .find((entry) => entry.object.visible && !bubbles.has(entry.object));
     let object = hit?.object;
     while (object) {
       if (object.userData.id && birdMeshes.get(object.userData.id) === object) {
@@ -1584,11 +1933,14 @@ function updateBirdHover(active) {
   }
   birdTooltip.hidden = !hoveredBird;
   if (hoveredBird) {
-    birdTooltip.textContent = `${hoveredBird.userData.id} · ${hoveredBird.position.y.toFixed(1)} m`;
+    const centerDistance = hoveredBird.position.distanceTo(uavGroup.position);
+    const data = hoveredBird.userData;
+    const text = `${data.id}${data.avoidanceRelated ? " · 避障关联目标" : ""} · 当前中心距 ${centerDistance.toFixed(1)} m\n内圈接触 ${formatNumber(data.contact_distance_m)} m · 外圈安全 ${formatNumber(data.separation_distance_m)} m`;
+    if (birdTooltip.textContent !== text) birdTooltip.textContent = text;
     const width = sceneContainer.clientWidth;
     const height = sceneContainer.clientHeight;
-    birdTooltip.style.left = `${Math.min(width - 150, Math.max(8, (birdPointer.x + 1) * width / 2 + 12))}px`;
-    birdTooltip.style.top = `${Math.min(height - 36, Math.max(8, (1 - birdPointer.y) * height / 2 - 28))}px`;
+    birdTooltip.style.left = `${Math.max(8, Math.min(width - 288, (birdPointer.x + 1) * width / 2 + 12))}px`;
+    birdTooltip.style.top = `${Math.max(8, Math.min(height - 68, (1 - birdPointer.y) * height / 2 - 52))}px`;
   }
 }
 
@@ -1631,6 +1983,12 @@ cancelAgentBtn?.addEventListener("click", () => closeDialog(agentDialog));
 closeAirSimBtn?.addEventListener("click", () => closeDialog(airsimDialog));
 closeAirSimFooterBtn?.addEventListener("click", () => closeDialog(airsimDialog));
 window.addEventListener("resize", onResize);
+new ResizeObserver(onResize).observe(sceneContainer);
+taskForm?.addEventListener("submit", submitSemanticTask);
+taskInstruction?.addEventListener("input", () => {
+  commandError = "";
+  renderSemanticMission();
+});
 
 createLucideIcons();
 renderToolbarState();

@@ -110,6 +110,12 @@
         </div>
       </section>
 
+      <section id="avoidanceStatus" class="avoidance-status" aria-label="动态避障状态" role="status" hidden>
+        <strong id="avoidanceStatusTitle">动态避障</strong>
+        <span id="avoidanceClearance">最小安全净空 未测</span>
+        <div class="avoidance-key"><span><i class="nominal-key"></i>原控制预测</span><span><i class="selected-key"></i>避障控制预测</span></div>
+      </section>
+
       <div class="scene-tools" role="group" aria-label="Scene controls">
         <button id="overviewBtn" type="button" class="icon-button active" aria-label="Overview camera" title="Overview camera">
           <i data-lucide="scan" aria-hidden="true"></i>
@@ -125,6 +131,7 @@
         <span><i class="legend-target" aria-hidden="true"></i>Target</span>
         <span><i class="legend-base" aria-hidden="true"></i>Base</span>
         <span><i class="legend-planned" aria-hidden="true"></i>Planned</span>
+        <span><i class="legend-executing" aria-hidden="true"></i>Executing</span>
         <span><i class="legend-flown" aria-hidden="true"></i>Flown</span>
       </div>
     </section>
@@ -133,7 +140,7 @@
       <header class="inspector-header">
         <span id="currentStepValue" class="step-index">#0</span>
         <div class="inspector-title">
-          <h1>Agent Trace</h1>
+          <h1 id="inspectorHeading">Agent Trace</h1>
           <p>
             <span id="backendValue" class="backend-value">--</span>
             <span aria-hidden="true">/</span>
@@ -144,6 +151,35 @@
       </header>
 
       <div id="traceView" class="inspector-view">
+        <section id="semanticPanel" class="semantic-panel" aria-label="园区任务" hidden>
+          <form id="semanticTaskForm" class="semantic-task-form">
+            <label for="taskInstruction">任务指令</label>
+            <textarea id="taskInstruction" rows="4" maxlength="2000" placeholder="任务目标、条件或调整要求" required></textarea>
+            <div class="task-form-footer">
+              <span id="instructionCount">0 / 2000</span>
+              <button id="submitTaskBtn" class="task-submit" type="submit">提交任务</button>
+            </div>
+          </form>
+          <section class="semantic-section" aria-labelledby="recommendedTaskHeading">
+            <div class="semantic-section-heading">
+              <h2 id="recommendedTaskHeading">推荐任务</h2>
+            </div>
+            <div id="recommendedTasks" class="recommended-tasks"></div>
+          </section>
+          <section class="semantic-section" aria-labelledby="executionHeading">
+            <div class="semantic-section-heading">
+              <h2 id="executionHeading">任务执行</h2>
+              <span id="semanticStatus" class="semantic-status" data-status="idle">待提交</span>
+            </div>
+            <p id="semanticMessage" class="semantic-message" role="status" aria-live="polite">暂无任务</p>
+            <p id="semanticSummary" class="semantic-summary" hidden></p>
+            <div id="semanticConstraints" class="semantic-constraints" hidden></div>
+            <div id="semanticProgram" class="semantic-program" aria-label="任务条件与循环" hidden></div>
+            <ol id="semanticSteps" class="semantic-steps"></ol>
+          </section>
+        </section>
+        <details id="flightDiagnostics" class="flight-diagnostics" open>
+          <summary id="flightDiagnosticsSummary" hidden>飞行与避障详情</summary>
         <section class="trace-stage" data-stage="observation" data-status="waiting">
           <header class="stage-header stage-title-row">
             <span class="stage-index">01</span>
@@ -237,6 +273,7 @@
             <p id="feedbackText">--</p>
           </div>
         </section>
+        </details>
       </div>
     </aside>
 

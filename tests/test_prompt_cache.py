@@ -4,7 +4,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from uav_llm_demo.agents import DeepSeekAgent, MockLLMAgent, PlannerProviderError
+from uav_llm_demo.environment import nearest_building
 from uav_llm_demo.provider_usage import LOGGER, prefix_metrics, record_request
+from uav_llm_demo.safety import SafetyChecker
 from uav_llm_demo.scenarios import SCENARIOS
 
 
@@ -16,6 +18,61 @@ def context():
 
 
 class PromptCacheTests(unittest.TestCase):
+    @staticmethod
+    def sections(prompt):
+        scene, remainder = prompt.removeprefix("Scene:\n").split("\nMission:\n", 1)
+        _, remainder = remainder.split("\nState:\n", 1)
+        state, feedback = remainder.split("\nFeedback:\n", 1)
+        return json.loads(scene), json.loads(state), feedback
+
+    def test_known_failed_descent_has_grid_metres_and_actual_clearance_evidence(self):
+        ctx = context()
+        ctx["position"] = dict(x=3.200829, y=17.082845, z=9.522685)
+        ctx["nearest_static_obstacle"] = nearest_building(
+            tuple(ctx["position"].values()), SCENARIOS["urban_crossing"].building_map)
+        original = deepcopy(ctx)
+        scene, state, feedback = self.sections(MockLLMAgent().build_prompt(
+            ctx, "Waypoint 0 intersects building safety envelope; Segment 0 is statically unsafe."))
+        self.assertEqual(ctx, original)
+        self.assertEqual(scene["units"]["coordinates"], "grid")
+        self.assertEqual(scene["units"]["metres_per_grid"], dict(x=3, y=3, z=5))
+        for volume in scene["building_volumes"]:
+            self.assertEqual(volume["roof_height_m"], volume["max"]["z"] * 5)
+        nearest = state["nearest_static_obstacle"]
+        self.assertNotIn("height", nearest)
+        self.assertEqual(nearest["height_grid_levels"], 4)
+        self.assertEqual(nearest["roof_height_m"], 20)
+        column = state["descent_column"]
+        self.assertEqual(column["clearance_m"], .6)
+        self.assertEqual(column["safety_expanded_envelopes"], [dict(
+            kind="building", min_z_grid=-.12, max_z_grid=4.12, max_altitude_m=20.6)])
+        self.assertFalse(SafetyChecker(ctx).segment_safe(
+            ctx["position"], dict(x=3.200829, y=17.082845, z=2.2)))
+        self.assertIn("Segment 0 is statically unsafe", feedback)
+
+    def test_descent_evidence_uses_all_actual_envelopes_including_no_fly_zones(self):
+        ctx = context()
+        ctx.pop("urban_parcels")
+        ctx["position"] = dict(x=3.2, y=17.08, z=9.5)
+        ctx["buildings"] = [dict(x=3, y=17, height=4), dict(x=4, y=17, height=12)]
+        # An unrelated nearest-obstacle summary must not determine the column.
+        ctx["nearest_static_obstacle"] = dict(position=dict(x=4, y=17), height=12)
+        ctx["no_fly_zones"] = [dict(min=dict(x=3.1, y=17, z=6),
+                                    max=dict(x=3.3, y=17.2, z=7))]
+        scene, state, _ = self.sections(MockLLMAgent().build_prompt(ctx))
+        self.assertEqual({item["roof_height_m"] for item in scene["buildings"]}, {20, 60})
+        column = state["descent_column"]["safety_expanded_envelopes"]
+        self.assertEqual({item["kind"] for item in column}, {"building", "no-fly zone"})
+        self.assertEqual({item["max_z_grid"] for item in column}, {4.12, 7.12})
+        checker = SafetyChecker(ctx)
+        for item in column:
+            self.assertTrue(any(kind == item["kind"] and lo[2] == item["min_z_grid"]
+                                and hi[2] == item["max_z_grid"]
+                                for lo, hi, kind in checker.boxes))
+        ctx["position"] = dict(x=6, y=17, z=9.5)
+        _, state, _ = self.sections(MockLLMAgent().build_prompt(ctx))
+        self.assertEqual(state["descent_column"]["safety_expanded_envelopes"], [])
+
     def test_moving_state_and_retry_feedback_cannot_break_scene_and_mission_prefix(self):
         before = context()
         after = deepcopy(before)
@@ -60,6 +117,7 @@ class PromptCacheTests(unittest.TestCase):
             with self.assertRaises(PlannerProviderError):
                 DeepSeekAgent(api_key="test-credential").plan(context())
         event = json.loads(captured.records[0].getMessage())
+        self.assertEqual(event["prompt_version"], "static-prefix-v1")
         self.assertEqual(event["cache_hit_rate"], 0.8)
         self.assertTrue(event["usage_consistent"])
         self.assertNotIn("test-credential", captured.output[0])
@@ -75,6 +133,13 @@ class PromptCacheTests(unittest.TestCase):
             self.assertFalse(event["usage_consistent"])
             self.assertIsNone(event["cache_hit_rate"])
             self.assertNotIn("credential", captured.output[0])
+
+    def test_explicit_prompt_version_reaches_event_and_log(self):
+        with self.assertLogs(LOGGER, level="INFO") as captured:
+            event = record_request({}, http_status=200, elapsed_ms=10, model="test", metrics={},
+                                   prompt_version="semantic-tasks-v1")
+        self.assertEqual(event["prompt_version"], "semantic-tasks-v1")
+        self.assertEqual(json.loads(captured.records[0].getMessage())["prompt_version"], "semantic-tasks-v1")
 
 
 if __name__ == "__main__":

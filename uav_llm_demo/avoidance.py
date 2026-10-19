@@ -3,6 +3,18 @@ from dataclasses import dataclass
 from math import cos, sin, pi
 
 from .motion import SCALE, VehicleState, distance, norm
+from .dynamic_risk import AVOIDANCE_BUFFER_M, separation_distance_m
+from .traffic_prediction import TrafficPredictor
+from .avoidance_evidence import AvoidanceEvidence
+
+
+@dataclass(frozen=True)
+class PredictedTraffic:
+    radius_m: float
+    positions: tuple
+    uncertainty_horizontal_m: tuple
+    uncertainty_vertical_m: tuple
+    object_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -10,15 +22,17 @@ class Rollout:
     clearance: float
     exposure: float
     end: tuple
+    path: tuple = ()
+    object_clearances: tuple = ()
 
 
 class LocalAvoidance:
     HORIZON = 3.0
     DT = 0.15
-    BUFFER = 0.3
+    BUFFER = AVOIDANCE_BUFFER_M
     TERMINAL_HORIZON = 6.0
 
-    def __init__(self):
+    def __init__(self, *, calibration_profile="combined"):
         self.active = False
         self.target = None
         self.since = None
@@ -30,26 +44,40 @@ class LocalAvoidance:
         self.progress_goal = None
         self.best_remaining = float("inf")
         self.last_progress = 0.0
+        self.predictor = TrafficPredictor(calibration_profile=calibration_profile)
+        self._radii = {}
+        self.evidence = AvoidanceEvidence()
 
-    def snapshot(self):
-        return dict(active=self.active, target=(dict(zip("xyz", self.target)) if self.target else None),
+    def snapshot(self, *, include_visualization=False):
+        result = dict(active=self.active, target=(dict(zip("xyz", self.target)) if self.target else None),
                     replans=self.replans, limited=self.limited, message=self.message,
-                    prediction="observed_constant_velocity", horizon_seconds=self.HORIZON)
+                    prediction="history_damped_acceleration", horizon_seconds=self.HORIZON,
+                    observed_tracks=len(self.predictor.object_ids))
+        if include_visualization:
+            result["visualization"] = self.evidence.snapshot()
+        return result
 
-    @staticmethod
-    def uncertainty(seconds):
-        # Engineering margin for unmodelled turns, not a calibrated probability bound.
-        return 0.12 * seconds + 0.025 * seconds * seconds
+    def observe(self, observations, now):
+        self.predictor.update(observations, now)
+        for item in observations:
+            if item["id"] in self.predictor.object_ids:
+                self._radii[item["id"]] = separation_distance_m(item["radius_m"])
+        self._radii = {key: value for key, value in self._radii.items()
+                       if key in self.predictor.object_ids}
 
-    def predictions(self, state, birds, max_speed=4.0):
+    def predictions(self, state, now, max_speed=4.0):
         tracks = []
-        for bird in birds:
-            positions = [tuple(bird.position[j] + bird.velocity[j] * i * self.DT for j in range(3))
-                         for i in range(round(self.TERMINAL_HORIZON / self.DT) + 1)]
-            # Radius is stored in horizontal grid cells, not metres.
-            radius = bird.radius * SCALE[0] + 1.0
-            if min(distance(state.position, p) for p in positions) <= max(max_speed, norm(state.velocity)) * self.TERMINAL_HORIZON + radius + self.uncertainty(self.TERMINAL_HORIZON):
-                tracks.append((radius, positions))
+        for object_id in self.predictor.object_ids:
+            forecast = self.predictor.forecast(object_id, now, self.TERMINAL_HORIZON, self.DT)
+            if forecast is None:
+                continue
+            radius = self._radii[object_id]
+            uncertainty = max(norm((horizontal, vertical)) for horizontal, vertical in zip(
+                forecast.uncertainty_horizontal_m, forecast.uncertainty_vertical_m))
+            if min(distance(state.position, p) for p in forecast.positions) <= max(max_speed, norm(state.velocity)) * self.TERMINAL_HORIZON + radius + uncertainty:
+                tracks.append(PredictedTraffic(radius, forecast.positions,
+                                               forecast.uncertainty_horizontal_m,
+                                               forecast.uncertainty_vertical_m, object_id))
         return tracks
 
     def stalled(self, manager, state, now):
@@ -65,15 +93,26 @@ class LocalAvoidance:
 
     @staticmethod
     def _swept_distance(a, b):
-        delta = tuple(b[i] - a[i] for i in range(3))
-        t = max(0, min(1, -sum(a[i] * delta[i] for i in range(3)) / max(norm(delta) ** 2, 1e-12)))
-        return norm(tuple(a[i] + t * delta[i] for i in range(3)))
+        delta = tuple(y - x for x, y in zip(a, b))
+        t = max(0, min(1, -sum(x * d for x, d in zip(a, delta)) / max(norm(delta) ** 2, 1e-12)))
+        return norm(tuple(x + t * d for x, d in zip(a, delta)))
 
-    def rollout(self, state, target, controller, checker, tracks, *, terminal=False):
+    @classmethod
+    def _uncertain_swept_distance(cls, a, b, horizontal, vertical):
+        # Distance from the relative swept line to a cylindrical error set.
+        # Independent minima may occur at different times: their combination is
+        # a conservative lower bound, never an optimistic clearance estimate.
+        xy = max(0.0, cls._swept_distance(a[:2], b[:2]) - horizontal)
+        z = 0.0 if a[2] * b[2] <= 0 else min(abs(a[2]), abs(b[2]))
+        return (xy * xy + max(0.0, z - vertical) ** 2) ** .5
+
+    def rollout(self, state, target, controller, checker, tracks, *, terminal=False, capture=False):
         if target is not None and not checker.segment_safe(state.position, target):
             return None
         clearance, exposure = float("inf"), 0.0
         settled_at = None
+        path = [state.position] if capture else []
+        object_clearances = {}
         horizon = self.TERMINAL_HORIZON if terminal else self.HORIZON
         for index in range(1, round(horizon / self.DT) + 1):
             velocity = controller.velocity_command(state, target, self.DT)
@@ -81,15 +120,22 @@ class LocalAvoidance:
                              for i in range(3))
             if not checker.segment_safe(state.position, position):
                 return None
-            for radius, positions in tracks:
+            for track in tracks:
+                positions = track.positions
                 if index >= len(positions):
                     return None
                 a = tuple((positions[index - 1][i] - state.position[i]) * SCALE[i] for i in range(3))
                 b = tuple((positions[index][i] - position[i]) * SCALE[i] for i in range(3))
-                gap = self._swept_distance(a, b) - radius - self.uncertainty(index * self.DT)
+                gap = self._uncertain_swept_distance(
+                    a, b, max(track.uncertainty_horizontal_m[index - 1:index + 1]),
+                    max(track.uncertainty_vertical_m[index - 1:index + 1])) - track.radius_m
                 clearance = min(clearance, gap)
                 exposure += max(0, self.BUFFER - gap) * self.DT
+                if capture and track.object_id is not None:
+                    object_clearances[track.object_id] = min(object_clearances.get(track.object_id, float("inf")), gap)
             state = VehicleState(position, velocity)
+            if capture:
+                path.append(position)
             if terminal:
                 if distance(position, target) <= 0.18 and norm(velocity) <= 0.25:
                     settled_at = index * self.DT if settled_at is None else settled_at
@@ -97,9 +143,21 @@ class LocalAvoidance:
                     settled_at = None
         if terminal and (settled_at is None or horizon - settled_at < 0.75):
             return None
-        return Rollout(clearance, exposure, state.position)
+        return Rollout(clearance, exposure, state.position, tuple(path), tuple(object_clearances.items()))
 
     def choose(self, state, nominal, controller, checker, tracks, now, *, terminal=False):
+        was_active = self.active
+        target = self._choose(state, nominal, controller, checker, tracks, now, terminal=terminal)
+        # Capture the same controller simulation used for decisions. Diagnostics
+        # never feed back into candidate selection or consume world truth.
+        if self.evidence.due(now, self.active, was_active):
+            nominal_rollout = self.rollout(state, nominal, controller, checker, tracks, capture=True,
+                terminal=terminal and nominal is not None and distance(state.position, nominal) <= 6)
+            selected_rollout = self.rollout(state, target, controller, checker, tracks, capture=True) if self.active else None
+            self.evidence.record(now, self.active, self.limited, nominal_rollout, selected_rollout, self.BUFFER)
+        return target
+
+    def _choose(self, state, nominal, controller, checker, tracks, now, *, terminal=False):
         """Return a temporary waypoint (or hold); never alter the mission queue."""
         starting = not self.active
         terminal = terminal and nominal is not None and distance(state.position, nominal) <= 6

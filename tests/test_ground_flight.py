@@ -1,3 +1,4 @@
+from tests.scenario_fixtures import empty_airspace
 import unittest
 from unittest.mock import patch
 from dataclasses import replace
@@ -7,11 +8,10 @@ from uav_llm_demo.agents import MockLLMAgent, checked_plan
 from uav_llm_demo.benchmark import run_scenario
 from uav_llm_demo.motion import TrajectoryController, VehicleState
 from uav_llm_demo.safety import SafetyChecker
-from uav_llm_demo.scenarios import load_scenario
 
 
 def scene():
-    return replace(load_scenario('open_field'), grid_size=7, base=(0, 3, 0),
+    return replace(empty_airspace(), grid_size=7, base=(0, 3, 0),
                    target=(6, 3, 3), dynamic_objects=(), buildings=())
 
 
@@ -39,6 +39,19 @@ class GroundFlightTests(unittest.TestCase):
         ctx.update(position=ctx['target'], goal=ctx['base'])
         inbound = checked_plan(MockLLMAgent(), ctx, '')
         self.assertEqual(inbound.waypoints[-2:], ((0, 3, 2.2), (0, 3, 0)))
+
+    def test_cruise_boundary_tolerates_roundoff_without_allowing_real_low_flight(self):
+        ctx = context(replace(scene(), min_altitude=2, max_altitude=2))
+        checker = SafetyChecker(ctx)
+        for delta in (-1e-10, 0, 1e-10):
+            point = (6, 3, 2 + delta)
+            self.assertEqual(checker.validate_waypoint(point), [])
+            self.assertTrue(checker.segment_safe((0, 3, 2 + delta), point))
+        for delta in (-1e-5, 1e-5):
+            point = (6, 3, 2 + delta)
+            self.assertTrue(checker.validate_waypoint(point))
+            self.assertFalse(checker.segment_safe((0, 3, 2 + delta), (6, 3, 2)))
+        self.assertFalse(checker.segment_safe((0, 3, 0), (6, 3, 2)))
 
     def test_three_dimensional_route_climbs_over_full_width_wall(self):
         s = replace(scene(), buildings=tuple((3,y,4) for y in range(7)))
@@ -69,7 +82,7 @@ class GroundFlightTests(unittest.TestCase):
                 state = VehicleState(state.position, velocity)
 
     def test_round_trip_only_completes_after_ground_return(self):
-        result = run_scenario('open_field', scenario=scene(), max_seconds=120)
+        result = run_scenario('test_airspace', scenario=scene(), max_seconds=120)
         self.assertEqual(result['status'], 'completed', result['termination_reason'])
         self.assertTrue(result['milestones']['target_reached'])
         self.assertTrue(result['milestones']['base_returned'])

@@ -34,9 +34,30 @@ def scene_layout(scenario: ScenarioDefinition) -> list[dict]:
         objects.append(dict(name=name, position=dict(x=x, y=y, z=z),
                             size=dict(x=width, y=depth, z=height), color=color))
 
-    extent = 180 if scenario.urban_parcels else scenario.grid_size * METERS_PER_CELL + 22
+    campus = scenario.mission_mode == "semantic"
+    extent = 180 if scenario.urban_parcels and not campus else scenario.grid_size * METERS_PER_CELL + 22
     box("ground", half, half, -0.1, extent, extent, 1,
-        "#a9b0a9" if scenario.urban_parcels else "#75945e")
+        "#8d9c80" if campus else "#a9b0a9" if scenario.urban_parcels else "#75945e")
+    if campus:
+        layout = scenario.campus_layout or {}
+        # The detailed browser campus and this conservative Unreal export read
+        # the same source. Ground markings never introduce flight obstacles.
+        for item in layout.get("surfaces", []):
+            left, right, north, south = item["footprint"]
+            box("campus_" + item["id"].replace("-", "_"),
+                (left + right) / 2, (north + south) / 2, -0.006,
+                (right - left + 0.78) * METERS_PER_CELL,
+                (south - north + 0.78) * METERS_PER_CELL, 0.04, item["color"])
+        for kind, color in (("waterways", "#789f9d"), ("roads", "#687271")):
+            for item in layout.get(kind, []):
+                for index, ((x1, y1), (x2, y2)) in enumerate(zip(item["points"], item["points"][1:])):
+                    # The box-only export approximates diagonal ground strips;
+                    # they are decorative and lie beneath the flight floor.
+                    box(f"campus_{item['id']}_{index}", (x1 + x2) / 2, (y1 + y2) / 2,
+                        -0.004 if kind == "roads" else -0.016,
+                        (abs(x2 - x1) + item["width"]) * METERS_PER_CELL,
+                        (abs(y2 - y1) + item["width"]) * METERS_PER_CELL,
+                        0.03, color)
     if scenario.urban_parcels:
         centers = scenario.urban_street_centers
         service_centers = tuple((before + after) / 2 for before, after in zip(centers, centers[1:]))
@@ -78,7 +99,7 @@ def scene_layout(scenario: ScenarioDefinition) -> list[dict]:
         for index, middle in enumerate(service_centers):
             box(f"road_service_ns_{index}", middle, half, 0.006, 5.4, extent - 6, 0.05, "#39454b")
             box(f"road_service_ew_{index}", half, middle, 0.007, extent - 6, 5.4, 0.05, "#39454b")
-    else:
+    elif not campus:
         for lane, offset in enumerate((-18, 18)):
             x = half + offset / METERS_PER_CELL
             box(f"road_{lane}", x, half, 0.005, 5.4, 78, 0.05, "#4b5150")

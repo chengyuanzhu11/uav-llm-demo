@@ -38,6 +38,27 @@ class RuntimeApiTest(unittest.TestCase):
         response = self.make_app().test_client().post("/api/step")
         self.assertEqual(response.status_code, 404)
 
+    def test_retired_crossing_demo_endpoint_cannot_replace_current_mission(self):
+        app = self.make_app()
+        service = app.extensions["mission_service"]
+        client = app.test_client()
+        before = service.state()
+        run_id = service.trace.run_id
+        environment = service._environment
+
+        response = client.post("/api/demo/crossing", json={})
+
+        self.assertEqual(response.status_code, 404)
+        after = service.state()
+        self.assertIs(service._environment, environment)
+        self.assertEqual(service.trace.run_id, run_id)
+        # Idle bird traffic advances with wall time; only mission state must stay fixed.
+        for field in ("scenario_id", "agent_backend", "uav", "target", "base", "phase"):
+            self.assertEqual(after[field], before[field])
+        for field in ("running", "planner_calls", "plan_id", "waypoints"):
+            self.assertEqual(after["flight"][field], before["flight"][field])
+        self.assertNotIn("demo", before)
+
     def test_mission_start_returns_planning_state(self):
         app = self.make_app()
         response = app.test_client().post("/api/mission/start")

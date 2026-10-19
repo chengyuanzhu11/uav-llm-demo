@@ -1,3 +1,4 @@
+from tests.scenario_fixtures import empty_airspace
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +15,6 @@ from uav_llm_demo.motion import VehicleState
 from uav_llm_demo.recovery import RecoveryMemory
 from uav_llm_demo.replay import load_run, scenario_from_record
 from uav_llm_demo.run_log import JournalWriter, RunTrace
-from uav_llm_demo.scenarios import load_scenario
 
 
 class RecoveryTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class RecoveryTests(unittest.TestCase):
         class Unsafe(MockLLMAgent):
             def plan(self, context, feedback=''):
                 return RoutePlan(((-1, -1, -1),), '', 'low', '')
-        context = load_scenario('open_field').to_dict()
+        context = empty_airspace().to_dict()
         context.update(position=context['base'], goal=context['target'])
         with self.assertRaises(PlanValidationError) as caught:
             checked_plan(Unsafe(), context, '')
@@ -66,7 +66,7 @@ class RecoveryTests(unittest.TestCase):
 
 class TimeAndJournalTests(unittest.TestCase):
     def test_reads_are_isolated_and_do_not_advance_clock(self):
-        service = MissionService(scenario_id='open_field', target_seed=7, traffic_seed=8)
+        service = MissionService(scenario=empty_airspace(), target_seed=7, traffic_seed=8)
         self.addCleanup(service.close)
         first = service.state()
         first['target']['x'] = -999
@@ -82,7 +82,7 @@ class TimeAndJournalTests(unittest.TestCase):
         self.assertAlmostEqual(after['traffic_motion']['elapsed'], after['simulation_time'])
 
     def test_reset_has_new_run_identity_and_clears_failure_and_completion(self):
-        service = MissionService(scenario_id='open_field', target_seed=7)
+        service = MissionService(scenario=empty_airspace(), target_seed=7)
         self.addCleanup(service.close)
         old = service.trace.run_id
         service.recovery.provider_failed('fail', (1, 2, 2), 0)
@@ -118,7 +118,7 @@ class BenchmarkProtocolTests(unittest.TestCase):
             def plan(self, context, feedback=''):
                 time.sleep(.1)
                 return super().plan(context, feedback)
-        result = run_scenario('open_field', agent=Slow(), max_seconds=.2)
+        result = run_scenario('test_airspace', scenario=empty_airspace(), agent=Slow(), max_seconds=.2)
         self.assertEqual(result['metrics']['steps'], 1)
         self.assertEqual(result['status'], 'timeout')
         self.assertEqual(result['termination_reason'], 'simulation_budget')
@@ -126,7 +126,7 @@ class BenchmarkProtocolTests(unittest.TestCase):
         self.assertAlmostEqual(result['simulation_seconds'], .2)
 
     def test_simulated_latency_is_explicit_and_can_consume_budget(self):
-        result = run_scenario('open_field', max_seconds=.2, planner_latency_seconds=1)
+        result = run_scenario('test_airspace', scenario=empty_airspace(), max_seconds=.2, planner_latency_seconds=1)
         self.assertEqual(result['metrics']['steps'], 0)
         self.assertFalse(result['metrics']['success'])
         self.assertEqual(result['status'], 'timeout')
@@ -134,10 +134,10 @@ class BenchmarkProtocolTests(unittest.TestCase):
     def test_virtual_rejects_remote_api_without_calling_it(self):
         with patch('uav_llm_demo.agents._post_deepseek', side_effect=AssertionError('API used')):
             with self.assertRaises(ValueError):
-                run_scenario('open_field', backend='deepseek', mode='virtual')
+                run_scenario('test_airspace', scenario=empty_airspace(), backend='deepseek', mode='virtual')
 
     def test_realtime_budget_uses_wall_clock_and_production_loop(self):
-        result = run_scenario('open_field', mode='realtime', max_seconds=.15)
+        result = run_scenario('test_airspace', scenario=empty_airspace(), mode='realtime', max_seconds=.15)
         self.assertGreaterEqual(result['wall_seconds'], .15)
         self.assertEqual(result['status'], 'timeout')
         self.assertGreater(result['diagnostics']['timing']['stages']['control_tick']['count'], 0)
@@ -145,19 +145,19 @@ class BenchmarkProtocolTests(unittest.TestCase):
     def test_invalid_budget_rejected(self):
         for value in [0, -1, float('nan'), float('inf'), True]:
             with self.assertRaises(ValueError):
-                run_scenario('open_field', max_seconds=value)
+                run_scenario('test_airspace', scenario=empty_airspace(), max_seconds=value)
 
     def test_response_replay_and_seeded_runs_preserve_completion(self):
-        base = load_scenario('open_field')
+        base = empty_airspace()
         scenario = replace(base, target=(base.base[0]+1, base.base[1], base.min_altitude), dynamic_objects=())
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'journal.jsonl'
             writer = JournalWriter(path)
             try:
-                original = run_scenario('open_field', scenario=scenario, seed=7, max_seconds=90, journal=writer)
+                original = run_scenario('test_airspace', scenario=scenario, seed=7, max_seconds=90, journal=writer)
                 writer.flush()
                 header, agent = load_run(path, original['diagnostics']['run_id'])
-                replayed = run_scenario('open_field', scenario=scenario_from_record(header['scenario']),
+                replayed = run_scenario('test_airspace', scenario=scenario_from_record(header['scenario']),
                                         agent=agent, seed=header['target_seed'], traffic_seed=header['traffic_seed'], max_seconds=90)
                 self.assertEqual(original['status'], 'completed')
                 self.assertEqual(replayed['status'], 'completed')
@@ -172,7 +172,7 @@ class ComparisonTests(unittest.TestCase):
     def test_paired_comparison_exposes_recoveries_and_regressions(self):
         from copy import deepcopy
         from uav_llm_demo.benchmark import compare_results
-        first = run_scenario('open_field', max_seconds=.1, seed=3)
+        first = run_scenario('test_airspace', scenario=empty_airspace(), max_seconds=.1, seed=3)
         second = deepcopy(first)
         second['metrics']['success'] = True
         report = compare_results([first], [second])
@@ -213,7 +213,7 @@ class LongRunningTests(unittest.TestCase):
         self.assertFalse(cost['complete_usage'])
 
     def test_reset_discards_ready_stale_plan_without_waiting_old_injected_delay(self):
-        service = MissionService(scenario_id='open_field', planner_latency_seconds=100)
+        service = MissionService(scenario=empty_airspace(), planner_latency_seconds=100)
         self.addCleanup(service.close)
         service.start(background=False)
         service._future.result(timeout=2)
@@ -237,7 +237,7 @@ class RealtimeDeadlineTests(unittest.TestCase):
                 self._publish_state()
                 return self.state()
         with patch('uav_llm_demo.benchmark.MissionService', CompletionService):
-            return run_scenario('open_field', mode='realtime', max_seconds=.05)
+            return run_scenario('test_airspace', scenario=empty_airspace(), mode='realtime', max_seconds=.05)
 
     def test_completion_after_deadline_is_timeout(self):
         result = self.run_completion(late=True)
