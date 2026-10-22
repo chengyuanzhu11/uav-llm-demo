@@ -8,6 +8,7 @@ from .dynamic_risk import separation_distance_m
 Point = tuple[float, float, float]
 SCALE = (3.0, 3.0, 5.0)
 SAFETY_MARGIN = 0.6
+GROUND_COLUMN_RADIUS_M = 0.75
 MAX_WAYPOINTS = 64
 # Numeric boundary tolerance, distinct from obstacle clearance and arrival tolerance.
 # The controller stops corrections below 1e-9 m; exact cruise comparisons can deadlock.
@@ -71,9 +72,19 @@ class SafetyChecker:
         self.upper = (self.grid_size - 1, self.grid_size - 1, _number(altitude["max"]))
         if self.grid_size < 1 or self.lower[2] > self.upper[2]:
             raise ValueError("Invalid flight bounds.")
-        base = context.get("base")
-        self.ground_base = (_point(base) if base is not None and _point(base)[2] == 0 else None)
-        self.pad_radius_m = 0.75
+        self.pad_radius_m = GROUND_COLUMN_RADIUS_M
+        # These sites come from local surface validation, never from model output.
+        # The original ground base uses the same narrow access-column mechanism.
+        sites = context.get("ground_sites", [])
+        if not isinstance(sites, (tuple, list)):
+            raise ValueError("Ground sites must be a list of validated ground points.")
+        explicit_sites = tuple(_point(site) for site in sites)
+        if any(site[2] != 0 or not (0 <= site[0] <= self.upper[0]
+                                   and 0 <= site[1] <= self.upper[1]) for site in explicit_sites):
+            raise ValueError("Ground sites must be inside the map at ground height zero.")
+        base = _point(context["base"]) if context.get("base") is not None else None
+        self.ground_sites = tuple(dict.fromkeys(
+            ((base,) if base is not None and base[2] == 0 else ()) + explicit_sites))
         self.boxes = []
         for item in context.get("buildings", []):
             x, y, height = (_number(item[key]) for key in ("x", "y", "height"))
@@ -82,6 +93,10 @@ class SafetyChecker:
             self._add_box((x - .39, y - .39, 0), (x + .39, y + .39, height), "building")
         for zone in context.get("no_fly_zones", []):
             self._add_box(_point(zone["min"]), _point(zone["max"]), "no-fly zone")
+        for site in explicit_sites:
+            entry = (*site[:2], min(self.upper[2], self.lower[2] + .2))
+            if not self.segment_safe(site, entry):
+                raise ValueError("Ground access column intersects flight bounds or an obstacle.")
 
     def _add_box(self, lower, upper, label):
         if any(lo > hi for lo, hi in zip(lower, upper)):
@@ -97,12 +112,15 @@ class SafetyChecker:
             return False
         if z >= self.lower[2] - ALTITUDE_EPSILON:
             return True
-        return z >= 0 and self._over_pad(point)
+        return z >= 0 and self.ground_site_for(point) is not None
 
-    def _over_pad(self, point):
-        return self.ground_base is not None and math.hypot(
-            (point[0] - self.ground_base[0]) * SCALE[0],
-            (point[1] - self.ground_base[1]) * SCALE[1]) <= self.pad_radius_m
+    def _over_site(self, point, site):
+        return math.hypot((point[0] - site[0]) * SCALE[0],
+                          (point[1] - site[1]) * SCALE[1]) <= self.pad_radius_m
+
+    def ground_site_for(self, point):
+        """Return a validated ground site beneath a point, if any."""
+        return next((site for site in self.ground_sites if self._over_site(point, site)), None)
 
     def validate_waypoint(self, point) -> list[str]:
         try:
@@ -126,8 +144,10 @@ class SafetyChecker:
         # Closed segment tests below include both endpoints.
         if not all(self._inside_bounds(point) for point in (a, b)):
             return False
-        # Low flight is confined to the base column; do not cut diagonally out of it.
-        if min(a[2], b[2]) < self.lower[2] - ALTITUDE_EPSILON and not all(self._over_pad(p) for p in (a, b)):
+        # Both endpoints must share one convex column. Merely being over two
+        # different valid sites must never permit low flight between them.
+        if min(a[2], b[2]) < self.lower[2] - ALTITUDE_EPSILON and not any(
+                self._over_site(a, site) and self._over_site(b, site) for site in self.ground_sites):
             return False
         lower = tuple(min(x, y) for x, y in zip(a, b))
         upper = tuple(max(x, y) for x, y in zip(a, b))

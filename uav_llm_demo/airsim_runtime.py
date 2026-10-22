@@ -5,7 +5,7 @@ import importlib
 import time
 from concurrent.futures import Future
 from dataclasses import dataclass
-from math import atan2, asin, copysign, pi
+from math import atan2, asin, copysign, degrees, isfinite, pi
 from queue import Queue
 from threading import Thread
 from collections.abc import Callable
@@ -281,14 +281,20 @@ class AirSimRuntime:
             telemetry["orientation"]["yaw"],
         )
 
-    def drive(self, velocity, dt):
+    def drive(self, velocity, dt, *, yaw=None):
+        if yaw is not None and (isinstance(yaw, bool) or not isinstance(yaw, (int, float)) or not isfinite(yaw)):
+            raise ValueError("Yaw must be a finite angle in radians.")
+        # Project heading already matches NED yaw: north=0, east=+90 degrees.
+        # Keep legacy north-facing behavior when no independent heading is set.
+        yaw_degrees = 0.0 if yaw is None else degrees((yaw + pi) % (2 * pi) - pi)
+
         def send():
             self._require_connection()
             # Grid-axis m/s -> world NED m/s. A short lease limits stale commands.
             self.client.moveByVelocityAsync(
                 -velocity[1], velocity[0], -velocity[2], 0.3,
                 drivetrain=self.api.DrivetrainType.MaxDegreeOfFreedom,
-                yaw_mode=self.api.YawMode(False, 0.0),
+                yaw_mode=self.api.YawMode(False, yaw_degrees),
                 vehicle_name=self.config.vehicle_name,
             )
             return self._vehicle_state()

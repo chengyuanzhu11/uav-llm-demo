@@ -54,7 +54,7 @@ class OfflineSemanticAgent(DeepSeekAgent):
         self.replies = deque(replies)
         self.inputs = []
 
-    def interpret_task(self, catalog, instruction, feedback=""):
+    def interpret_task(self, catalog, instruction, feedback="", *, repair=None):
         self.inputs.append((deepcopy(catalog), instruction, feedback))
         reply = self.replies.popleft()
         if callable(reply):

@@ -1,5 +1,5 @@
-import itertools
 import unittest
+from collections import Counter
 from copy import deepcopy
 
 from uav_llm_demo.agents import GeometricPlanner
@@ -7,6 +7,10 @@ from uav_llm_demo.campus_layout import CAMPUS_LAYOUT, campus_building_cells
 from uav_llm_demo.safety import SafetyChecker, _intersects
 from uav_llm_demo.scenarios import SCENARIOS, list_scenarios, load_scenario
 from uav_llm_demo.scene_layout import scene_layout
+from uav_llm_demo.semantic_tasks import task_catalog, semantic_plan_from_json_text
+from uav_llm_demo.spatial_motion import compile_motion
+from uav_llm_demo.semantic_navigation import validate_motion_path
+import json
 
 
 class SemanticCampusMapTests(unittest.TestCase):
@@ -31,16 +35,17 @@ class SemanticCampusMapTests(unittest.TestCase):
                 load_scenario(removed)
 
     def test_public_catalog_has_campus_capabilities_without_hidden_sensor_values(self):
-        self.assertEqual(set(self.points), {
+        self.assertTrue({
             "home", "conference", "library", "teaching", "exhibition", "research_one",
             "research_two", "laboratory", "stadium", "east_gate", "north_teaching",
-        })
+        } <= set(self.points))
+        self.assertEqual(len(self.points), 56)
         self.assertEqual(self.points["home"]["position"], self.context["base"])
         self.assertEqual(self.points["home"]["allowed_actions"], ["return_home"])
         for site in ("library", "laboratory"):
             self.assertIn("thermal_scan", self.points[site]["allowed_actions"])
         for item in self.points.values():
-            self.assertEqual(set(item), {"id", "label", "kind", "position", "allowed_actions"})
+            self.assertEqual(set(item), {"id", "label", "code", "kind", "position", "allowed_actions"})
         for recommendation in self.context["recommended_tasks"]:
             self.assertIn("返航", recommendation)
         self.assertGreater(len({point["position"]["z"] for point in self.points.values()}), 4)
@@ -56,16 +61,63 @@ class SemanticCampusMapTests(unittest.TestCase):
         self.assertEqual(self.scenario.to_dict(), original)
         self.assertEqual(self.scenario.buildings, campus_building_cells())
 
-    def test_all_sites_are_safe_and_every_ordered_pair_is_reachable(self):
+    def test_place_catalog_covers_every_model_once_and_uses_safe_arrivals(self):
+        layout = self.context["campus_layout"]
+        places = layout["places"]
+        self.assertEqual({place["id"] for place in places}, set(self.points))
+        self.assertEqual(len({place["code"] for place in places}), len(places))
+        self.assertEqual(Counter(identifier for place in places for identifier in place["building_ids"]),
+                         Counter(item["id"] for item in layout["buildings"]))
+        self.assertEqual(Counter(identifier for place in places for identifier in place["surface_ids"]),
+                         Counter(item["id"] for item in layout["surfaces"]))
+        self.assertEqual(sum(bool(place["building_ids"]) for place in places), 41)
+        checker = SafetyChecker(self.context, clearance=1.1)
+        for place in places:
+            with self.subTest(place=place["id"]):
+                point = self.points[place["id"]]
+                self.assertEqual(point["label"], place["label"])
+                self.assertEqual(point["position"], place["position"])
+                self.assertEqual(checker.validate_waypoint(point["position"]), [])
+                if place["building_ids"]:
+                    self.assertNotEqual(place["label_position"], place["position"])
+        self.assertEqual({point["id"] for point in self.points.values()
+                          if "thermal_scan" in point["allowed_actions"]}, {"library", "laboratory"})
+        self.assertEqual({point["id"]: point["code"] for point in task_catalog(self.scenario)["points_of_interest"]},
+                         {place["id"]: place["code"] for place in places})
+
+    def test_all_sites_connect_to_base_and_cross_district_routes_are_reachable(self):
         planner = GeometricPlanner()
         checker = SafetyChecker(self.context)
         for point in self.points.values():
             self.assertEqual(checker.validate_waypoint(point["position"]), [], point["id"])
-        for start, goal in itertools.permutations(self.points.values(), 2):
+        # Both directions to the same hub prove connectivity for every place.
+        # Avoid thousands of redundant full searches as the shared map grows.
+        pairs = [(self.points["home"], site) for site in self.points.values() if site["id"] != "home"]
+        pairs += [(site, self.points["home"]) for site in self.points.values() if site["id"] != "home"]
+        pairs += [(self.points[start], self.points[end]) for start, end in
+                  (("d14", "l6"), ("c4", "c8"), ("r3", "south_canteen"),
+                   ("a5", "stadium"), ("north_basketball", "laboratory"))]
+        for start, goal in pairs:
             context = {**self.context, "position": start["position"], "goal": goal["position"]}
             route = planner.plan(context)
             self.assertEqual(SafetyChecker(context).validate_path(start["position"], route.waypoints), [],
                              (start["id"], goal["id"]))
+
+    def test_every_published_default_boundary_is_safe_and_program_compatible(self):
+        catalog = task_catalog(self.scenario)
+        self.assertEqual({item["id"] for item in catalog["spatial"]["objects"]}, set(self.points) - {"home"})
+        for point in self.points.values():
+            if point["id"] == "home":
+                continue
+            node = dict(id="move", action="motion", target_id=point["id"],
+                        motion=dict(path=dict(kind="boundary")), when=None)
+            raw = dict(status="ready", summary="绕行后返航", steps=[node,
+                dict(id="home",action="return_home",target_id="home",duration_seconds=None,when=None)],
+                constraints=dict(max_altitude_m=None,avoid_regions=[]))
+            with self.subTest(place=point["id"]):
+                plan = semantic_plan_from_json_text(json.dumps(raw), catalog)
+                motion = compile_motion(plan.steps[0], self.scenario, self.scenario.base, plan.constraints)
+                validate_motion_path(motion, self.context)
 
     def test_all_outdoor_sites_remain_reachable_under_ten_metre_ceiling(self):
         for site in self.points.values():

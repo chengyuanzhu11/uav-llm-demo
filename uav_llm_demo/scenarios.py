@@ -168,36 +168,6 @@ def _parcel_buildings(parcels: tuple[UrbanParcel, ...]) -> tuple[tuple[int, int,
     return tuple((x, y, height) for (x, y), height in sorted(cells.items()))
 
 
-def _campus_point(site_id, label, kind, position, actions):
-    return dict(id=site_id, label=label, kind=kind, position=_point_to_dict(position),
-                allowed_actions=list(actions))
-
-
-_CAMPUS_POINTS = (
-    _campus_point("home", "南门起降点", "home", (48, 88, 0), ("return_home",)),
-    _campus_point("conference", "会议中心 C1", "conference", (43, 74, 3),
-                  ("visit", "inspect", "capture")),
-    _campus_point("library", "图书馆 C2", "library", (53, 74, 3),
-                  ("visit", "inspect", "thermal_scan", "capture")),
-    _campus_point("teaching", "教学一号楼 C3", "teaching", (38, 54, 2.8),
-                  ("visit", "inspect", "capture")),
-    _campus_point("exhibition", "科教美育中心 C5", "exhibition", (60, 52, 2.4),
-                  ("visit", "inspect", "capture")),
-    _campus_point("research_one", "科研一号楼 R1", "research", (36, 69, 2.5),
-                  ("visit", "inspect", "capture")),
-    _campus_point("research_two", "科研二号楼 R2", "research", (36, 35, 2.5),
-                  ("visit", "inspect", "capture")),
-    _campus_point("laboratory", "实验一号楼 L1", "laboratory", (62, 84, 3.5),
-                  ("visit", "inspect", "thermal_scan", "capture")),
-    _campus_point("stadium", "田径场 S1", "sports", (26, 84, 2.2),
-                  ("visit", "inspect", "capture")),
-    _campus_point("east_gate", "东门", "gate", (81, 26, 2),
-                  ("visit", "inspect", "capture")),
-    _campus_point("north_teaching", "教学五号楼 C9", "teaching", (53, 27, 3),
-                  ("visit", "inspect", "capture")),
-)
-
-
 _CAMPUS_REGIONS = (
     dict(id="south_plaza", label="南广场区域", bounds=[40, 57, 78, 86]),
     dict(id="south_residential", label="南区生活区", bounds=[61, 78, 56, 74]),
@@ -248,13 +218,16 @@ SCENARIOS = {
         ),
         seed=31,
         mission_mode="semantic",
-        points_of_interest=_CAMPUS_POINTS,
+        points_of_interest=tuple({key: deepcopy(place[key])
+                                  for key in ("id", "label", "code", "kind", "position", "allowed_actions")}
+                                 for place in CAMPUS_LAYOUT["places"]),
         recommended_tasks=(
-            "先巡检图书馆，再巡检教学一号楼，最后返航。",
+            "沿田径场顺时针飞行两圈，机头始终朝向场地中心，最后返航。",
+            "在田径场上空飞一个八字，飞行过程中逐渐升高4米，最后返航。",
             "检查图书馆温度，超过25摄氏度就模拟采样，否则巡检会议中心，最后返航。",
             "重复巡检图书馆和教学一号楼3次，最后返航。",
             "反复检查实验一号楼，温度低于40摄氏度或检查满5次后返航。",
-            "避开南区生活区，依次访问科教美育中心和东门，最后返航。",
+            "去北区足球场中央降落停留，不用返航。",
         ),
         semantic_regions=_CAMPUS_REGIONS,
         campus_layout=CAMPUS_LAYOUT,

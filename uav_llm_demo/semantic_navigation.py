@@ -3,8 +3,11 @@ from copy import deepcopy
 
 from .agents import GeometricPlanner, checked_plan
 from .environment import point_to_dict
-from .semantic_tasks import SemanticConstraintError, resolve_task_goal
-from .safety import SafetyChecker
+from .semantic_tasks import SemanticConstraintError, resolve_task_goal, iter_plan_actions
+from .safety import SafetyChecker, SAFETY_MARGIN, SCALE, _intersects
+from .spatial_motion import compile_motion
+from .path_tracking import PathFollower
+from .spatial_control import resolve_control_goal
 
 
 def apply_task_constraints(context, scenario, constraints):
@@ -19,6 +22,52 @@ def apply_task_constraints(context, scenario, constraints):
             min=dict(x=left, y=north, z=0),
             max=dict(x=right, y=south, z=scenario.max_altitude)))
 
+    # A previously used landing site is not a permanent exception to new constraints.
+    # Retain only sites outside the newly prohibited volume. Start validation below
+    # rejects a revision if the aircraft itself is still inside that volume.
+    for region_id in constraints.get("avoid_regions", []):
+        left, right, north, south = regions[region_id]["bounds"]
+        lower = (left - SAFETY_MARGIN / SCALE[0], north - SAFETY_MARGIN / SCALE[1], -1)
+        upper = (right + SAFETY_MARGIN / SCALE[0], south + SAFETY_MARGIN / SCALE[1], scenario.max_altitude + 1)
+        context["ground_sites"] = [site for site in context.get("ground_sites", [])
+                                   if not _intersects(tuple(site[a] for a in "xyz"),
+                                                      tuple(site[a] for a in "xyz"), lower, upper)]
+
+
+def validate_motion_path(motion, context):
+    """Validate every compiled segment, including the tracking corridor."""
+    # Tracking paths stay above cruise floor; old landing columns are irrelevant
+    # to their enlarged tracking corridor and must not invalidate unrelated paths.
+    checker = SafetyChecker({**context, "ground_sites": []}, clearance=SAFETY_MARGIN + PathFollower.CORRIDOR_M)
+    for point in motion.points:
+        # A curve can overshoot at a vertical or horizontal turn even when every
+        # reference point is in bounds. Reserve the same verified tracking corridor.
+        if any(value < checker.lower[i] + PathFollower.CORRIDOR_M / SCALE[i] - 1e-8
+               or value > checker.upper[i] - PathFollower.CORRIDOR_M / SCALE[i] + 1e-8
+               for i, value in enumerate(point)):
+            raise SemanticConstraintError("motion_path_unsafe")
+        if checker.validate_waypoint(point):
+            raise SemanticConstraintError("motion_path_unsafe")
+    for a, b in zip(motion.points, motion.points[1:]):
+        if not checker.segment_safe(a, b):
+            raise SemanticConstraintError("motion_path_unsafe")
+    return motion
+
+
+def task_ground_sites(plan, scenario):
+    sites = []
+    for step in iter_plan_actions(plan):
+        if step["action"] == "control":
+            try:
+                goal = resolve_control_goal(step, scenario, plan.constraints)
+            except ValueError:
+                raise SemanticConstraintError("control_goal_unsafe") from None
+            if goal["ground_site"] is not None:
+                site = dict(zip("xyz", goal["ground_site"]))
+                if site not in sites:
+                    sites.append(site)
+    return sites
+
 
 def validate_task_routes(plan, scenario, context):
     """Check every branch and loop transition off the control thread."""
@@ -27,6 +76,7 @@ def validate_task_routes(plan, scenario, context):
     # This public validation boundary may receive a shared or caller-owned snapshot.
     context = deepcopy(context)
     apply_task_constraints(context, scenario, plan.constraints)
+    context["ground_sites"] = [*context.get("ground_sites", []), *task_ground_sites(plan, scenario)]
     start = tuple(context["position"][axis] for axis in "xyz")
     if SafetyChecker(context).validate_waypoint(start):
         raise SemanticConstraintError("current_position_outside_constraints")
@@ -48,7 +98,20 @@ def validate_task_routes(plan, scenario, context):
                     ends = walk(step["steps"], ends)
                 origins = origins | ends if step["when"] is not None else ends
                 continue
-            goal = points[step["target_id"]]
+            if action == "review":
+                continue
+            motion = None
+            if action == "motion":
+                try:
+                    motion = validate_motion_path(
+                        compile_motion(step, scenario, start, plan.constraints), context)
+                except ValueError:
+                    raise SemanticConstraintError("motion_path_unsafe") from None
+                goal, end = motion.points[0], motion.points[-1]
+            elif action == "control":
+                goal = end = resolve_control_goal(step, scenario, plan.constraints)["position"]
+            else:
+                goal = end = points[step["target_id"]]
             for origin in origins:
                 if (origin, goal) in checked:
                     continue
@@ -58,7 +121,7 @@ def validate_task_routes(plan, scenario, context):
                 except ValueError:
                     raise SemanticConstraintError("route_unreachable") from None
                 checked.add((origin, goal))
-            origins = origins | {goal} if step["when"] is not None else {goal}
+            origins = origins | {end} if step["when"] is not None else {end}
         return origins
 
     walk(plan.steps, {start})

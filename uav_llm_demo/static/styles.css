@@ -1691,6 +1691,7 @@ dialog.control-dialog::backdrop {
 .semantic-status[data-status="interpreting"] { border-color: #4a7472; color: var(--cyan); }
 .semantic-status[data-status="completed"] { border-color: #46684c; color: var(--green); }
 .semantic-status[data-status="error"],
+.semantic-status[data-status="generation_failed"],
 .semantic-status[data-status="needs_clarification"],
 .semantic-status[data-status="safety_wait"] { border-color: #79633c; color: var(--amber); }
 .semantic-message { color: #c3d3d0; margin: 0; }

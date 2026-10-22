@@ -131,10 +131,10 @@ class SemanticSchemaTests(unittest.TestCase):
             with self.subTest(text=text[:120]), self.assertRaises(ValueError):
                 semantic_plan_from_json_text(text, catalog)
 
-    def test_only_final_unconditional_return_home_is_allowed(self):
-        variants = [proposal([step("first", "visit", "library")]),
-                    proposal([step("first", "visit", "home"), step("end", "return_home", "home")]),
-                    proposal([step("first", "return_home", "home"), step("end", "return_home", "home")]),
+    def test_return_home_is_optional_and_still_targets_home(self):
+        self.assertEqual(len(parse(proposal([step("first", "visit", "library")])).steps), 1)
+        self.assertEqual(len(parse(proposal([step("first", "return_home", "home"), step("next", "visit", "library")])).steps), 2)
+        variants = [proposal([step("first", "visit", "home"), step("end", "return_home", "home")]),
                     proposal([step("end", "return_home", "library")]),
                     proposal([step("end", "return_home", "home", 1)])]
         for data in variants:
@@ -332,14 +332,15 @@ class SemanticProviderTests(unittest.TestCase):
                 except PlannerProviderError:
                     pass
             self.assertEqual(usage.call_count, 1)
-            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v2")
+            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v5")
 
     def test_api_errors_are_sanitized_and_invalid_semantic_output_never_becomes_route(self):
         agent = DeepSeekAgent(api_key="test-credential")
         with patch("uav_llm_demo.agents._post_deepseek", return_value=self.response({})):
             with self.assertRaisesRegex(PlannerProviderError, "invalid semantic task plan") as caught:
                 agent.interpret_task(task_catalog(scene()), "检查图书馆")
-        self.assertTrue(caught.exception.retryable)
+        self.assertFalse(caught.exception.retryable)
+        self.assertTrue(caught.exception.detail)
         with patch("uav_llm_demo.agents._post_deepseek", return_value=Mock(status_code=401, text="test-credential")):
             with self.assertRaises(PlannerProviderError) as caught:
                 agent.interpret_task(task_catalog(scene()), "检查图书馆")

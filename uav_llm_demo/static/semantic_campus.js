@@ -156,14 +156,12 @@ export function buildSemanticCampus(THREE, group, scenario) {
     }
   }
 
-  function sportTexture(kind) {
+  function sportTexture(surface) {
+    const kind = surface.kind;
     const [image, ctx] = canvas(512, 768);
     const w = image.width, h = image.height;
     ctx.fillStyle = "#b4b7a3"; ctx.fillRect(0, 0, w, h);
     ctx.strokeStyle = "#eeeede"; ctx.lineWidth = 3;
-    const rounded = (x, y, width, height, radius) => {
-      ctx.beginPath(); ctx.roundRect(x, y, width, height, radius);
-    };
     function football(left, top, width, height) {
       for (let i = 0; i < 10; i++) {
         ctx.fillStyle = i % 2 ? "#7f9c59" : "#789451";
@@ -181,20 +179,43 @@ export function buildSemanticCampus(THREE, group, scenario) {
     }
     if (kind === "running_track" || kind === "stadium") {
       ctx.fillStyle = "#929e72"; ctx.fillRect(0, 0, w, h);
-      ctx.fillStyle = "#ac6552"; rounded(14, 12, w - 28, h - 24, 240); ctx.fill();
-      for (let lane = 0; lane < 7; lane++) {
-        const inset = 22 + lane * 10;
-        ctx.lineWidth = lane === 0 ? 3 : 1.7;
-        ctx.strokeStyle = "#e5c9b2";
-        rounded(inset, 20 + lane * 10, w - inset * 2, h - 40 - lane * 20, 233 - lane * 10); ctx.stroke();
+      const geometry = surface.geometry;
+      const points = geometry?.centerline_grid;
+      if (Array.isArray(points) && points.length >= 4) {
+        const [left, right, north, south] = surface.footprint;
+        const width = right - left + 0.78, depth = south - north + 0.78;
+        const centerline = points.slice(0, -1);
+        const band = geometry.lane_width_m / 3;
+        // Draw the same closed centerline used by motion planning. Canvas
+        // transforms preserve the metric band width despite texture stretching.
+        ctx.save(); ctx.scale(w / width, h / depth);
+        ctx.translate(-left + 0.39, -north + 0.39);
+        ctx.lineJoin = "round";
+        function trackPath(offset = 0) {
+          ctx.beginPath();
+          centerline.forEach(([x, y], index) => {
+            const before = centerline[(index + centerline.length - 1) % centerline.length];
+            const after = centerline[(index + 1) % centerline.length];
+            const dx = after[0] - before[0], dy = after[1] - before[1];
+            const length = Math.hypot(dx, dy) || 1;
+            const px = x - dy * offset / length, py = y + dx * offset / length;
+            if (index === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          });
+          ctx.closePath();
+        }
+        trackPath(); ctx.strokeStyle = "#ac6552"; ctx.lineWidth = band; ctx.stroke();
+        for (let lane = 0; lane <= 6; lane++) {
+          trackPath(band * (lane / 6 - 0.5));
+          ctx.strokeStyle = "#e5c9b2"; ctx.lineWidth = lane === 0 || lane === 6 ? 0.025 : 0.016; ctx.stroke();
+        }
+        ctx.restore();
+        const [cx, cy] = geometry.center_grid;
+        const fieldHalfWidth = (geometry.radius_grid - band / 2) * 0.62;
+        const fieldHalfDepth = geometry.straight_half_grid + (geometry.radius_grid - band / 2) * 0.66;
+        football((cx - fieldHalfWidth - left + 0.39) * w / width,
+          (cy - fieldHalfDepth - north + 0.39) * h / depth,
+          fieldHalfWidth * 2 * w / width, fieldHalfDepth * 2 * h / depth);
       }
-      ctx.fillStyle = "#809652"; rounded(98, 96, w - 196, h - 192, 147); ctx.fill();
-      football(110, 193, w - 220, h - 386);
-      ctx.strokeStyle = "#f2e5d5"; ctx.lineWidth = 2;
-      for (let lane = 0; lane < 6; lane++) {
-        ctx.beginPath(); ctx.moveTo(28 + lane * 10, 462 + lane * 5); ctx.lineTo(36 + lane * 10, 462 + lane * 5); ctx.stroke();
-      }
-      ctx.fillStyle = "#a2b9bf"; ctx.fillRect(219, 136, 74, 24); ctx.fillRect(219, 611, 74, 24);
     } else if (kind === "football") {
       football(18, 24, w - 36, h - 48);
     } else {
@@ -276,7 +297,7 @@ export function buildSemanticCampus(THREE, group, scenario) {
     const sport = ["running_track", "stadium", "football", "basketball", "tennis", "volleyball"].includes(surface.kind);
     const plaza = surface.kind === "plaza" || surface.kind === "south_square";
     const landscaped = ["garden", "paving"].includes(surface.kind);
-    const mat = sport || plaza || landscaped ? material("#ffffff", {map: sport ? sportTexture(surface.kind)
+    const mat = sport || plaza || landscaped ? material("#ffffff", {map: sport ? sportTexture(surface)
       : plaza ? plazaTexture() : landscapeTexture(surface.kind, surface.id), roughness: 1})
       : material(surface.color || (surface.kind === "lawn" ? colors.grass : colors.path));
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(r.width, r.depth), mat);
@@ -284,14 +305,6 @@ export function buildSemanticCampus(THREE, group, scenario) {
     mesh.position.set(r.x, surface.kind === "launch" ? 0.007 : sport ? 0.1 : 0.07, r.z);
     mesh.receiveShadow = true; mesh.name = `campus_surface_${surface.id}`;
     group.add(mesh);
-    if (surface.kind === "running_track") {
-      // The west spectator terrace stays below 2.7 m, inside the sports parcel.
-      for (let step = 0; step < 4; step++) detail(r.left + 0.22 + step * 0.4,
-        0.25 + (3 - step) * 0.19, r.z, 0.4, 0.22 + (3 - step) * 0.38, r.depth * 0.57, stone);
-      const bleachers = new THREE.Mesh(new THREE.PlaneGeometry(2.3, r.depth * 0.61), paleMetal);
-      bleachers.rotation.x = -Math.PI / 2; bleachers.position.set(r.left + 1.15, 2.55, r.z);
-      bleachers.name = "campus_stadium_stand_canopy"; group.add(bleachers);
-    }
   }
 
   // Keep facade glass behind the flush structural trim. Coincident opaque
@@ -531,14 +544,21 @@ export function buildSemanticCampus(THREE, group, scenario) {
       x, height * 0.64, z, radius, height * 0.36, radius * 0.91);
   }
 
-  // The low paired entrance piers and bridge rails echo the south gate plaza.
-  const southEntry = (layout.roads || []).find(road => road.id === "south-entry");
-  if (southEntry) {
-    for (const side of [-1, 1]) {
-      detail(X(48) + side * 3.3, 1.24, Z(91.5), 0.62, 2.4, 0.72, trim);
-      detail(X(48) + side * 3.9, 0.64, Z(92), 0.16, 0.75, 10.2, paleMetal);
-    }
-    // A low monument sign is east of the entry bridge, clear of the launch pad.
+  // Low solid structures use the same exact bounds as ground-transition safety.
+  const groundMaterials = {stone, trim, paleMetal};
+  const groundMeshes = new Map();
+  for (const obstacle of layout.ground_obstacles || []) {
+    const [left, north, bottom] = obstacle.lower_grid;
+    const [right, south, top] = obstacle.upper_grid;
+    const mesh = box(obstacle.id, X((left + right) / 2), (bottom + top) * 2.5,
+      Z((north + south) / 2), (right - left) * 3, (top - bottom) * 5,
+      (south - north) * 3, groundMaterials[obstacle.material] || stone, true);
+    mesh.userData.groundObstacle = obstacle.id;
+    groundMeshes.set(obstacle.id, mesh);
+  }
+  const sign = groundMeshes.get("campus_south_gate_sign");
+  if (sign) {
+    // Text is a decal on the shared monument solid, not separate geometry bounds.
     const [signCanvas, signContext] = canvas(1024, 256);
     signContext.fillStyle = "#e5e7df"; signContext.fillRect(0, 0, 1024, 256);
     signContext.fillStyle = "#385b76"; signContext.fillRect(28, 32, 8, 187);
@@ -548,46 +568,14 @@ export function buildSemanticCampus(THREE, group, scenario) {
     signContext.fillStyle = "#677c83";
     signContext.font = '500 49px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
     signContext.fillText("杭州国际校园", 535, 179, 780);
-    const sign = box("campus_south_gate_sign", X(54), 1.25, Z(90.7), 9.6, 2.35, 0.4, stone, true);
-    const signFace = new THREE.Mesh(new THREE.PlaneGeometry(9.6, 2.35),
+    const dimensions = sign.geometry.parameters;
+    const signFace = new THREE.Mesh(new THREE.PlaneGeometry(dimensions.width, dimensions.height),
       material("#ffffff", {map: textureFrom(signCanvas), roughness: 0.8}));
-    signFace.position.set(sign.position.x, sign.position.y, sign.position.z + 0.205);
+    signFace.position.set(sign.position.x, sign.position.y, sign.position.z + dimensions.depth / 2 + .005);
     signFace.name = "campus_south_gate_name"; group.add(signFace);
   }
 
-  function label(text, x, y, z, color, width = 0.12) {
-    const [image, ctx] = canvas(512, 100);
-    ctx.fillStyle = "rgba(247,247,238,0.9)"; ctx.beginPath(); ctx.roundRect(2, 2, 508, 96, 12); ctx.fill();
-    ctx.fillStyle = color; ctx.fillRect(13, 18, 5, 64);
-    ctx.font = '500 45px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
-    ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#304548";
-    ctx.fillText(text, 266, 53, 461);
-    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map: textureFrom(image),
-      transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false,
-      toneMapped: false}));
-    sprite.position.set(x, y, z); sprite.scale.set(width, width * 100 / 512, 1);
-    sprite.renderOrder = 4; return sprite;
-  }
-  for (const site of scenario.points_of_interest || []) {
-    const position = site.position;
-    const color = site.id === "home" ? "#3b986f" : "#466f82";
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.75, 0.88, 48),
-      new THREE.MeshBasicMaterial({color, side: THREE.DoubleSide, transparent: true, opacity: 0.8, depthWrite: false}));
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.set(X(position.x), 0.26, Z(position.y));
-    ring.name = `poi_marker_${site.id}`; group.add(ring);
-    const offset = site.id === "conference" ? -4 : site.id === "library" ? 4 : 0;
-    const annotationHeight = position.z * 5 + 2.4;
-    const annotation = label(site.label, X(position.x) + offset, annotationHeight, Z(position.y), color,
-      site.label.length > 9 ? 0.15 : 0.12);
-    annotation.name = `poi_label_${site.id}`; group.add(annotation);
-    const leader = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(X(position.x), 0.3, Z(position.y)),
-      new THREE.Vector3(X(position.x), annotationHeight - 0.5, Z(position.y)),
-      new THREE.Vector3(X(position.x) + offset, annotationHeight - 0.5, Z(position.y)),
-    ]), new THREE.LineBasicMaterial({color, transparent: true, opacity: 0.35}));
-    leader.name = `poi_leader_${site.id}`; group.add(leader);
-  }
+  group.userData.placeLabels = createCampusPlaceLabels(THREE, group, scenario);
 
   for (const batch of batches.values()) {
     if (!batch.transforms.length) continue;
@@ -598,4 +586,163 @@ export function buildSemanticCampus(THREE, group, scenario) {
     mesh.receiveShadow = true; mesh.computeBoundingSphere(); group.add(mesh);
   }
   return group;
+}
+
+// Plates stay attached to the model. Perspective and depth testing keep the
+// skyline clear; crowded labels are hidden, never displaced or linked by lines.
+export function createCampusPlaceLabels(THREE, group, scenario) {
+  const half = (scenario.grid_size - 1) / 2;
+  const world = point => new THREE.Vector3((point.x - half) * 3, point.z * 5, (point.y - half) * 3);
+  const screen = new THREE.Vector3();
+  const view = new THREE.Vector3();
+  const raycaster = new THREE.Raycaster();
+  const down = new THREE.Vector3(0, -1, 0);
+  const ringGeometry = new THREE.RingGeometry(0.65, 0.78, 32);
+  const entries = [];
+  const occluders = group.children.filter(object => object.userData.cameraOccluder
+    || object.name.startsWith("campus_skylight_"));
+  const surfaces = group.children.filter(object => object.name.startsWith("campus_surface_"));
+  group.updateMatrixWorld(true);
+  let hoveredId = null;
+  const textWidth = text => [...text].reduce((sum, character) => sum + (/[^\x00-\x7f]/.test(character) ? 14 : 8), 18);
+  function plate(text, name, color) {
+    const width = Math.ceil(Math.max(32, textWidth(text)) * 3);
+    const image = document.createElement("canvas");
+    image.width = width; image.height = 66;
+    const ctx = image.getContext("2d");
+    ctx.fillStyle = "rgba(250,251,244,0.94)";
+    ctx.beginPath(); ctx.roundRect(2, 2, width - 4, 62, 10); ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = color; ctx.stroke();
+    ctx.fillStyle = "#263e48";
+    ctx.font = '600 38px "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(text, width / 2, 35, width - 18);
+    const texture = new THREE.CanvasTexture(image);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({map: texture,
+      transparent: true, depthWrite: false, depthTest: true, sizeAttenuation: true, toneMapped: false}));
+    sprite.name = name; sprite.renderOrder = 5;
+    sprite.center.set(0.5, 0);
+    sprite.userData.labelText = text;
+    sprite.userData.widthPx = width / 3;
+    sprite.userData.heightPx = 22;
+    return sprite;
+  }
+  for (const site of scenario.campus_layout?.places || []) {
+    if (!site.position || !site.label_position || !site.code) continue;
+    const color = site.id === "home" ? "#348664" : "#4c7489";
+    const anchor = world(site.label_position);
+    const destination = world(site.position);
+    const buildings = (site.building_ids || []).map(id => group.getObjectByName(`campus_building_${id}`))
+      .filter(Boolean);
+    if (buildings.length) {
+      // A multi-wing building's centroid can lie in its courtyard. Attach its
+      // number to the nearest wing instead of suspending it over empty space.
+      const boxes = buildings.map(mesh => new THREE.Box3().setFromObject(mesh));
+      if (!boxes.some(box => anchor.x >= box.min.x && anchor.x <= box.max.x
+        && anchor.z >= box.min.z && anchor.z <= box.max.z)) {
+        boxes.sort((a, b) => Math.hypot((a.min.x + a.max.x) / 2 - anchor.x,
+          (a.min.z + a.max.z) / 2 - anchor.z) - Math.hypot((b.min.x + b.max.x) / 2 - anchor.x,
+          (b.min.z + b.max.z) / 2 - anchor.z));
+        anchor.x = (boxes[0].min.x + boxes[0].max.x) / 2;
+        anchor.z = (boxes[0].min.z + boxes[0].max.z) / 2;
+      }
+    }
+    // One construction-time ray uses the rendered roof profile, including
+    // curved canopies, rather than the conservative navigation height column.
+    raycaster.set(new THREE.Vector3(anchor.x, Math.max(200, anchor.y + 10), anchor.z), down);
+    let roof = raycaster.intersectObjects(buildings.length ? occluders : surfaces, false)[0];
+    if (buildings.length && roof?.object.userData.campusBuilding) {
+      // The center ray can pass between canopy ribs. Mount on an adjacent
+      // rib instead of letting the plate intersect the roof above the building.
+      for (const [dx, dz] of [[0, -0.45], [0, 0.45], [-0.45, 0], [0.45, 0]]) {
+        raycaster.set(new THREE.Vector3(anchor.x + dx, Math.max(200, anchor.y + 10), anchor.z + dz), down);
+        const hit = raycaster.intersectObjects(occluders, false)[0];
+        if (hit && hit.point.y > roof.point.y + 0.3) roof = hit;
+      }
+    }
+    if (roof) { anchor.copy(roof.point); anchor.y += 0.18; }
+    const code = plate(site.code, `poi_label_${site.id}`, color);
+    const fullName = site.label.includes(site.code) ? site.label : `${site.code} · ${site.label}`;
+    const name = plate(fullName, `poi_name_${site.id}`, color);
+    for (const sprite of [code, name]) {
+      sprite.position.copy(anchor);
+      sprite.userData.placeId = site.id;
+      sprite.userData.placeCode = site.code;
+      sprite.userData.placeLabel = site.label;
+      sprite.visible = false;
+      group.add(sprite);
+    }
+    const ring = new THREE.Mesh(ringGeometry, new THREE.MeshBasicMaterial({color, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.9, depthWrite: false}));
+    ring.name = `poi_marker_${site.id}`; ring.rotation.x = -Math.PI / 2;
+    ring.position.set(destination.x, 0.26, destination.z); ring.visible = false; group.add(ring);
+    entries.push({id: site.id, code, name, ring, anchor, destination, color,
+      x: 0, y: 0, width: 0, height: 0, distance: 0, eligible: false, shown: false, shownName: false});
+  }
+  const ordered = [...entries];
+  const overlaps = (a, b) => Math.abs(a.x - b.x) < (a.width + b.width) / 2 + 4
+    && Math.abs(a.y - b.y) < (a.height + b.height) / 2 + 4;
+  function update(camera, pointer, activeId, width, height) {
+    if (!(width > 0 && height > 0)) return;
+    camera.updateMatrixWorld();
+    const px = pointer ? (pointer.x + 1) * width / 2 : -1000;
+    const py = pointer ? (1 - pointer.y) * height / 2 : -1000;
+    const unitsPerPixel = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) / height;
+    const candidates = [];
+    for (const entry of entries) {
+      screen.copy(entry.anchor).project(camera);
+      view.copy(entry.anchor).applyMatrix4(camera.matrixWorldInverse);
+      entry.distance = -view.z;
+      const pixels = 6 / (unitsPerPixel * Math.max(0.1, entry.distance));
+      // Hysteresis only affects visibility, never the position of a plate.
+      entry.eligible = pixels >= (entry.eligible ? 9 : 10.5);
+      const inView = screen.z >= -1 && screen.z <= 1 && Math.abs(screen.x) <= 1 && Math.abs(screen.y) <= 1;
+      entry.x = (screen.x + 1) * width / 2;
+      entry.baseY = (1 - screen.y) * height / 2;
+      entry.height = entry.shownName ? 22 : Math.min(22, pixels);
+      entry.width = (entry.shownName ? entry.name : entry.code).userData.widthPx * entry.height / 22;
+      entry.y = entry.baseY - entry.height / 2;
+      if (inView && entry.shown && Math.abs(px - entry.x) <= entry.width / 2
+        && Math.abs(py - entry.y) <= entry.height / 2) candidates.push(entry);
+      entry.inView = inView;
+      entry.pixels = pixels;
+      entry.code.visible = entry.name.visible = entry.ring.visible = false;
+    }
+    hoveredId = null;
+    candidates.sort((a, b) => a.distance - b.distance);
+    if (candidates.length && pointer) {
+      // Only hit-test the pointed-at plate. Depth-tested plates behind a
+      // building must not expand into an invisible hover target.
+      raycaster.setFromCamera(pointer, camera);
+      for (const entry of candidates) {
+        raycaster.far = camera.position.distanceTo(entry.anchor) - 0.25;
+        if (!raycaster.intersectObjects(occluders, false).length) { hoveredId = entry.id; break; }
+      }
+      raycaster.far = Infinity;
+    }
+    ordered.sort((a, b) => Number(b.id === activeId) - Number(a.id === activeId)
+      || Number(b.id === hoveredId) - Number(a.id === hoveredId) || a.distance - b.distance || a.id.localeCompare(b.id));
+    const occupied = [];
+    for (const entry of ordered) {
+      const active = entry.id === activeId;
+      entry.shownName = active || entry.id === hoveredId;
+      entry.shown = false;
+      if (!entry.inView || (!entry.eligible && !entry.shownName)) continue;
+      const sprite = entry.shownName ? entry.name : entry.code;
+      entry.height = entry.shownName ? 22 : Math.min(22, entry.pixels);
+      entry.width = sprite.userData.widthPx * entry.height / 22;
+      entry.y = entry.baseY - entry.height / 2;
+      if (occupied.some(other => overlaps(entry, other))) continue;
+      occupied.push(entry);
+      entry.shown = sprite.visible = true;
+      const worldPerPixel = unitsPerPixel * entry.distance;
+      sprite.scale.set(entry.width * worldPerPixel, entry.height * worldPerPixel, 1);
+      sprite.material.color.set(active ? "#ffe2a0" : "#ffffff");
+      sprite.renderOrder = active ? 8 : entry.id === hoveredId ? 7 : 5;
+      entry.ring.visible = active;
+      entry.ring.material.color.set("#dc9a21");
+    }
+  }
+  return {entries, update, get hoveredId() { return hoveredId; }};
 }

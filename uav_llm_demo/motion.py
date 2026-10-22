@@ -60,15 +60,15 @@ class WaypointManager:
             return False
         remaining = self.remaining_distance(state.position)
         furthest = len(self.points) - 1
-        base = checker.ground_base
-        if base is not None and distance(self.points[-1], base) <= .18:
+        landing_site = checker.ground_site_for(self.points[-1])
+        if landing_site is not None and self.points[-1][2] < checker.lower[2]:
             # Reach and decelerate at the entrance to the landing column before
             # selecting a lower point. Intermediate collinear descents may still
             # be skipped once that approach waypoint has actually been reached.
             approach = furthest
             for index in range(furthest - 1, -1, -1):
                 point, following = self.points[index:index + 2]
-                horizontal = norm(tuple((point[i] - base[i]) * SCALE[i] for i in range(2)))
+                horizontal = norm(tuple((point[i] - landing_site[i]) * SCALE[i] for i in range(2)))
                 if horizontal > checker.pad_radius_m or point[2] < following[2]:
                     break
                 approach = index

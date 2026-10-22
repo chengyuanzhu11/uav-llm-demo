@@ -80,11 +80,10 @@ class LocalAvoidance:
                                                forecast.uncertainty_vertical_m, object_id))
         return tracks
 
-    def stalled(self, manager, state, now):
-        if manager.current is None:
+    def stalled(self, goal, remaining, now):
+        """Measure goal/path progress without assuming a skippable waypoint queue."""
+        if goal is None:
             return False
-        goal = manager.points[-1]
-        remaining = manager.remaining_distance(state.position)
         if goal != self.progress_goal:
             self.progress_goal, self.best_remaining, self.last_progress = goal, remaining, now
         elif remaining < self.best_remaining - 0.3:

@@ -106,11 +106,11 @@ class ProgramSchemaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse(program([nested]))
 
-    def test_early_return_inside_branch_or_loop_rejected(self):
+    def test_return_inside_branch_or_loop_is_composable(self):
         for nodes in ([repeat([step("land", "return_home", "home")])],
                       [branch(telemetry("battery_percent", "<", 20), [step("land", "return_home", "home")])]):
-            with self.subTest(nodes=nodes), self.assertRaises(ValueError):
-                parse(program(nodes))
+            with self.subTest(nodes=nodes):
+                self.assertEqual(parse(program(nodes)).status, "ready")
 
     def test_user_durations_are_supported_below_defaults_and_up_to_budget(self):
         value = parse(program([step("scan", "thermal_scan", "laboratory", .25),

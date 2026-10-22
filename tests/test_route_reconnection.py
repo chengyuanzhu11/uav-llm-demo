@@ -81,8 +81,8 @@ class RouteReconnectionTest(unittest.TestCase):
         manager = WaypointManager()
         manager.load([(18, 10, 2)], (1, 10, 2))
         for second in range(20):
-            self.assertFalse(local.stalled(manager, VehicleState((1 + second * .2, 10, 2)), second))
-        self.assertTrue(local.stalled(manager, VehicleState((4.8, 10, 2)), 28))
+            self.assertFalse(local.stalled(manager.points[-1], manager.remaining_distance((1 + second * .2, 10, 2)), second))
+        self.assertTrue(local.stalled(manager.points[-1], manager.remaining_distance((4.8, 10, 2)), 28))
 
     def test_position_units_are_converted_for_path_metrics(self):
         self.assertEqual(path_length([dict(x=0, y=0, z=0), dict(x=1, y=0, z=0), dict(x=1, y=0, z=1)]), 8)

@@ -13,7 +13,7 @@ const repo = path.resolve(__dirname, "..");
 const baseUrl = new URL(process.env.UAV_DEMO_URL || "http://127.0.0.1:5000");
 const captureDir = path.resolve(repo, process.env.UAV_CAPTURE_DIR || "outputs/campus-scene");
 const groupName = "beihang_hangzhou_campus";
-const expected = { buildings: 50, roofs: 4, pois: 11 };
+const expected = { buildings: 50, roofs: 4, pois: 56 };
 
 function sourceFixtures() {
   const pythonCode = String.raw`
@@ -82,6 +82,15 @@ async function inspectCampus(page) {
     if (!campus) throw new Error("Campus group is missing");
     const failures = [], count = { buildings: 0, roofs: 0, pois: 0, labels: 0, meshes: 0, instances: 0 };
     const layout = state.scenario.campus_layout;
+    const places = layout.places || [];
+    const modelIds = layout.buildings.map(item => item.id).sort();
+    const assignedIds = places.flatMap(place => place.building_ids).sort();
+    if (JSON.stringify(modelIds) !== JSON.stringify(assignedIds)) {
+      failures.push("Place labels do not cover every modeled building exactly once");
+    }
+    if (new Set(places.map(place => place.code)).size !== expected.pois) {
+      failures.push("Campus place numbers are missing or duplicated");
+    }
     const half = (state.grid_size - 1) / 2;
     campus.updateMatrixWorld(true);
     campus.traverse(object => {

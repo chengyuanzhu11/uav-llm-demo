@@ -98,6 +98,7 @@ let flightTrail = null;
 let trailHead = null;
 let cameraMode = "overview";
 let cameraObstacles = [];
+let campusPlaceLabels = null;
 let environmentReady = false;
 let displayedGridSize = 0;
 let uavGroup = null;
@@ -523,6 +524,7 @@ function buildEnvironment() {
     campus.name = "semantic-campus";
     campus.userData.environment = true;
     buildSemanticCampus(THREE, campus, state.scenario);
+    campusPlaceLabels = campus.userData.placeLabels;
     scene.add(campus);
   }
   scene.updateMatrixWorld(true);
@@ -892,7 +894,8 @@ function updateWaypoints() {
   updateAvoidanceRoute();
   const waypoints = state.flight?.waypoints || [];
   const planStart = state.flight?.plan_start;
-  const key = JSON.stringify([state.flight?.plan_id, planStart, waypoints]);
+  const continuousMotion = Boolean(state.semantic_mission?.motion_progress);
+  const key = JSON.stringify([state.flight?.plan_id, planStart, waypoints, continuousMotion]);
   if (key === plannedRouteKey) return;
   disposeRoute();
   plannedRouteKey = key;
@@ -916,7 +919,9 @@ function updateWaypoints() {
     }
   });
   plannedRoute.add(plannedTrail.object);
-  waypoints.map(toWorld).forEach(point => {
+  // Curve samples describe a continuous path; only endpoints need markers.
+  const markerPoints = continuousMotion ? [waypoints[0], waypoints[waypoints.length - 1]] : waypoints;
+  markerPoints.map(toWorld).forEach(point => {
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 10, 8),
       new THREE.MeshBasicMaterial({ color: 0xffc857, depthTest: false, depthWrite: false }),
@@ -1011,6 +1016,7 @@ function clearEnvironment() {
   });
   birdMeshes.clear();
   cameraObstacles = [];
+  campusPlaceLabels = null;
   rotorMeshes = [];
   uavGroup = null;
   pathLine = null;
@@ -1092,7 +1098,7 @@ function isSemanticScenario() {
 
 function semanticStatusLabel(status) {
   return {
-    idle: "待提交", interpreting: "解析中", needs_clarification: "待补充",
+    idle: "待提交", interpreting: "解析中", needs_clarification: "待补充", generation_failed: "生成失败",
     running: "执行中", completed: "已完成", error: "任务异常", safety_wait: "等待处理",
   }[status] || "待提交";
 }
@@ -1112,7 +1118,8 @@ async function submitSemanticTask(event) {
 
 
 const SEMANTIC_ACTION_LABELS = {
-  visit: "访问", inspect: "巡检", thermal_scan: "热观测", capture: "模拟采样", return_home: "返回并降落",
+  visit: "访问", inspect: "巡检", thermal_scan: "热观测", capture: "模拟采样", motion: "轨迹飞行",
+  control: "位置控制", review: "执行评估", return_home: "返回并降落",
 };
 const STEP_STATUS_LABELS = {
   pending: "待执行", active: "进行中", completed: "已完成",
@@ -1143,7 +1150,8 @@ function semanticConditionLabel(expression, mission, revision = mission.plan_rev
   const fields = {
     temperature_c: "温度", anomaly: "异常", captured: "采样完成", inspected: "巡检完成",
     visited: "到达地点", returned: "已返航", landed: "已降落",
-    battery_percent: "电量", elapsed_seconds: "任务用时",
+    battery_percent: "电量", elapsed_seconds: "任务用时", completed: "动作完成", reviewed: "评估完成", state: "飞行状态",
+    total_length_m: "轨迹总长", distance_m: "轨迹覆盖距离", progress: "轨迹进度",
   };
   const operator = { "<": "低于", "<=": "不超过", "==": "等于", "!=": "不等于", ">=": "至少", ">": "超过" };
   const field = fields[expression.field] || expression.field || "结果";
@@ -1154,7 +1162,8 @@ function semanticConditionLabel(expression, mission, revision = mission.plan_rev
   const location = expression.source === "telemetry" ? "" : `${pointOfInterestLabel(dependency?.target_id)} · `;
   const value = typeof expression.value === "boolean" ? (expression.value ? "是" : "否") : String(expression.value ?? "待确认");
   const unit = expression.field === "temperature_c" ? " °C"
-    : expression.field === "battery_percent" ? "%" : expression.field === "elapsed_seconds" ? " 秒" : "";
+    : expression.field === "battery_percent" ? "%" : expression.field === "elapsed_seconds" ? " 秒"
+      : ["total_length_m", "distance_m"].includes(expression.field) ? " m" : "";
   return `${location}${field}${operator[expression.op] || "等于"} ${value}${unit}`;
 }
 
@@ -1167,7 +1176,7 @@ function semanticProgramNodes(program) {
 
 
 function semanticProgramLabel(node, mission) {
-  const action = `${SEMANTIC_ACTION_LABELS[node.action] || "任务"} · ${pointOfInterestLabel(node.target_id)}`;
+  const action = semanticStepLabel(node);
   if (node.action === "repeat") {
     const progress = (mission.loops || []).find(loop => loop.id === node.id && loop.revision === (mission.plan_revision ?? mission.revision));
     const total = Number.isInteger(node.count) ? `${node.count} 次` : "持续";
@@ -1175,7 +1184,87 @@ function semanticProgramLabel(node, mission) {
     return `循环 ${total}${iteration}`;
   }
   if (node.action === "branch") return `条件分支 · ${semanticConditionLabel(node.condition, mission)}`;
+  if (node.action === "motion") return [action, semanticMotionSummary(node)].filter(Boolean).join(" · ");
+  if (node.action === "control") return [action, semanticControlSummary(node)].filter(Boolean).join(" · ");
   return action;
+}
+
+
+function semanticStepLabel(step) {
+  if (step.action === "review") return SEMANTIC_ACTION_LABELS.review;
+  const action = step.action === "control" && isRecord(step.control)
+    ? {landed: "降落停留", airborne: "定点停留"}[step.control.state] || SEMANTIC_ACTION_LABELS.control
+    : SEMANTIC_ACTION_LABELS[step.action] || "执行任务";
+  return `${action} · ${pointOfInterestLabel(step.target_id)}`;
+}
+
+
+function semanticControlSummary(step) {
+  const control = isRecord(step.control) ? step.control : {};
+  const details = [];
+  if (control.anchor === "center") details.push("场地中心");
+  if (Array.isArray(control.offset_m)) {
+    const directions = [["东", "西"], ["南", "北"], ["上", "下"]];
+    control.offset_m.slice(0, 3).forEach((distance, axis) => {
+      if (Number.isFinite(distance) && distance !== 0) details.push(`向${directions[axis][distance > 0 ? 0 : 1]} ${Math.abs(distance)} m`);
+    });
+  }
+  if (control.state === "airborne" && Number.isFinite(control.altitude_m)) details.push(`高度 ${control.altitude_m} m`);
+  if (Number.isFinite(control.duration_seconds) && control.duration_seconds > 0) details.push(`停留 ${control.duration_seconds} 秒`);
+  if (Number.isFinite(control.yaw_deg)) details.push(`朝向 ${control.yaw_deg}°`);
+  return details.join(" · ");
+}
+
+
+function semanticGoalMessage(mission) {
+  const goal = isRecord(mission.goal_state) ? mission.goal_state : {};
+  if (mission.status !== "completed" || !isRecord(mission.goal_state)) return "";
+  if (goal.satisfied !== true) return "任务结束状态尚未确认。";
+  if (!goal.target_id) return mission.message || "任务已完成，保持当前位置。";
+  const location = pointOfInterestLabel(goal.target_id);
+  if (goal.state === "landed") return `任务已完成，已在${location}降落停驻。`;
+  if (goal.state === "airborne") return `任务已完成，正在${location}上空保持位置。`;
+  return "任务结束状态尚未确认。";
+}
+
+
+function semanticMotionSummary(step) {
+  const motion = isRecord(step.motion) ? step.motion : {};
+  const path = isRecord(motion.path) ? motion.path : {};
+  const details = [];
+  if (path.kind === "boundary") {
+    const direction = path.direction === "counterclockwise" ? "逆时针" : "顺时针";
+    details.push(`${direction}${Number.isInteger(path.laps) && path.laps > 0 ? ` ${path.laps} 圈` : "沿边界飞行"}`);
+  } else if (path.kind === "curve") details.push("三维曲线");
+  else if (path.kind === "polyline") details.push("指定路径");
+  if (Number.isFinite(motion.speed_mps)) details.push(`${motion.speed_mps} m/s`);
+  if (motion.heading?.mode === "fixed" && Number.isFinite(motion.heading.yaw_deg)) {
+    details.push(`固定朝向 ${motion.heading.yaw_deg}°`);
+  } else if (motion.heading?.mode === "face_target") {
+    details.push(`朝向${pointOfInterestLabel(motion.heading.target_id)}`);
+  }
+  return details.join(" · ");
+}
+
+
+function semanticMotionProgressLabel(step, mission) {
+  const progress = mission.motion_progress;
+  if (step.action !== "motion" || step.status !== "active" || !isRecord(progress)) return "";
+  const isCurrent = mission.current_execution_id ? step.execution_id === mission.current_execution_id
+    : step.id === mission.current_step_id && step.revision === (mission.plan_revision ?? mission.revision);
+  if (!isCurrent || (progress.execution_id && progress.execution_id !== step.execution_id)) return "";
+  if (progress.phase === "transit") return "前往轨迹起点";
+  if (progress.phase === "complete") return "轨迹已通过，正在确认完成";
+  if (progress.phase !== "tracking") return "";
+  const percent = Number.isFinite(progress.progress)
+    ? ` ${Math.floor(Math.max(0, Math.min(0.99, progress.progress)) * 100)}%` : "";
+  const distance = Number.isFinite(progress.distance_m) && Number.isFinite(progress.total_length_m)
+    && progress.distance_m >= 0 && progress.total_length_m > 0
+    ? ` · ${Math.floor(progress.distance_m)} / ${Math.ceil(progress.total_length_m)} m` : "";
+  const laps = Number.isInteger(progress.completed_laps) && Number.isInteger(progress.laps)
+    && progress.completed_laps >= 0 && progress.laps > 0
+    ? ` · 已完成 ${progress.completed_laps} / ${progress.laps} 圈` : "";
+  return `轨迹进度${percent}${distance}${laps}`;
 }
 
 
@@ -1208,7 +1297,8 @@ function renderSemanticMission() {
   setText(document.getElementById("plannerProgress"), `当前任务已完成 ${revisionSteps.filter(step => step.status === "completed").length} 步 · ${state.flight?.planner_calls || 0} 次本地规划`);
   taskInstruction.disabled = commandPending;
   submitTaskBtn.disabled = commandPending || !configured || !taskInstruction.value.trim();
-  submitTaskBtn.textContent = mission.instruction || mission.revision > 0 || steps.length ? "修改任务" : "提交任务";
+  submitTaskBtn.textContent = mission.status === "generation_failed" ? "重试任务"
+    : mission.instruction || mission.revision > 0 || steps.length ? "修改任务" : "提交任务";
   setText(document.getElementById("instructionCount"), `${taskInstruction.value.length} / 2000`);
   taskForm.setAttribute("aria-busy", String(commandPending || mission.status === "interpreting"));
 
@@ -1238,14 +1328,18 @@ function renderSemanticMission() {
     idle: "暂无任务",
     interpreting: "正在解析任务指令。",
     needs_clarification: "请补充具体地点或任务要求后重新提交。",
+    generation_failed: "任务程序生成失败，可重试原指令。",
     running: "正在执行任务。",
     completed: "任务已完成。",
     error: "任务未完成，请调整指令后重新提交。",
     safety_wait: "任务已安全等待，请修改任务或提交返航指令。",
   };
   const message = document.getElementById("semanticMessage");
-  message.dataset.error = String(Boolean(commandError || mission.status === "error"));
-  const messageText = commandError || (paused ? "任务已暂停，可继续或重置。" : mission.message || defaults[mission.status] || defaults.idle);
+  message.dataset.error = String(Boolean(commandError || ["error", "generation_failed"].includes(mission.status)));
+  const feedback = Array.isArray(mission.execution_feedback)
+    ? [...mission.execution_feedback].reverse().find(entry => typeof entry?.message === "string" && entry.message.trim())?.message : "";
+  const messageText = commandError || (paused ? "任务已暂停，可继续或重置。"
+    : semanticGoalMessage(mission) || mission.message || feedback || defaults[mission.status] || defaults.idle);
   setText(message, messageText);
   const summary = document.getElementById("semanticSummary");
   const summaryText = typeof mission.summary === "string" ? mission.summary.trim() : "";
@@ -1268,7 +1362,8 @@ function renderSemanticMission() {
   }
 
   const nextStepsKey = JSON.stringify([state.scenario_id, mission.mission_id, mission.vehicle_id,
-    mission.revision, planRevision, mission.program, mission.loops, steps, mission.current_step_id, mission.current_execution_id, evidence]);
+    mission.revision, planRevision, mission.program, mission.loops, steps, mission.current_step_id, mission.current_execution_id, evidence,
+    steps.map(step => semanticMotionProgressLabel(step, mission))]);
   if (nextStepsKey !== semanticStepsKey) {
     semanticStepsKey = nextStepsKey;
     const program = semanticProgramNodes(mission.program).filter(node => ["repeat", "branch"].includes(node.action));
@@ -1306,12 +1401,16 @@ function renderSemanticMission() {
       const marker = step.status === "completed" ? "✓" : ["skipped", "cancelled"].includes(step.status) ? "−" : String(index + 1);
       item.append(semanticElement("span", "task-step-marker", marker));
       const content = semanticElement("div", "task-step-content");
-      const label = `${SEMANTIC_ACTION_LABELS[step.action] || "执行任务"} · ${pointOfInterestLabel(step.target_id)}`;
-      content.append(semanticElement("strong", "", label));
+      content.append(semanticElement("strong", "", semanticStepLabel(step)));
+      const detail = step.action === "motion" ? semanticMotionSummary(step)
+        : step.action === "control" ? semanticControlSummary(step)
+          : step.action === "review" && typeof step.instruction === "string" ? step.instruction.trim() : "";
+      if (detail) content.append(semanticElement("span", "task-step-iteration", detail));
       const status = STEP_STATUS_LABELS[step.status] || "待执行";
-      const duration = Number(step.duration_seconds) > 0 ? ` · 停留 ${step.duration_seconds} 秒` : "";
+      const duration = step.action !== "control" && Number(step.duration_seconds) > 0 ? ` · 停留 ${step.duration_seconds} 秒` : "";
       const result = semanticEvidenceForStep(step, mission);
-      content.append(semanticElement("span", "task-step-status", result ? evidenceResultLabel(result) : status + duration));
+      content.append(semanticElement("span", "task-step-status", result ? evidenceResultLabel(result)
+        : semanticMotionProgressLabel(step, mission) || status + duration));
       const iterations = Object.values(step.loop_iterations || {});
       if (iterations.length) content.append(semanticElement("span", "task-step-iteration", `循环第 ${iterations.join(" / ")} 次`));
       if (step.when) {
@@ -1327,9 +1426,22 @@ function renderSemanticMission() {
 
 function evidenceResultLabel(entry) {
   const result = isRecord(entry.result) ? entry.result : {};
+  if (entry.action === "control") {
+    if (result.completed !== true) return "目标状态尚未确认。";
+    if (result.state === "landed" && result.landed === true) return "遥测已确认降落并停驻。";
+    if (result.state === "airborne" && result.landed === false) return "遥测已确认到达并保持位置。";
+    return "目标状态尚未确认。";
+  }
+  if (entry.action === "review") return result.reviewed === true ? "执行反馈已评估。" : "正在评估执行反馈。";
   if (entry.action === "thermal_scan") {
     const temperature = Number.isFinite(result.temperature_c) ? `${result.temperature_c.toFixed(1)} °C` : "温度未记录";
     return `${temperature} · ${result.anomaly === true ? "检测到模拟异常" : result.anomaly === false ? "未检测到模拟异常" : "异常状态未确认"}`;
+  }
+  if (entry.action === "motion") {
+    if (result.completed !== true) return "轨迹完成尚未确认。";
+    const distance = Number.isFinite(result.distance_m) && result.distance_m >= 0
+      ? ` · 已覆盖 ${result.distance_m.toFixed(1)} m` : "";
+    return `已完成规定轨迹${distance}`;
   }
   if (entry.action === "capture") return result.captured === true
     ? "模拟采样记录已生成；不生成照片。" : "模拟采样未确认完成。";
@@ -1905,6 +2017,13 @@ function animate() {
   } else {
     controls.update();
   }
+
+  const mission = state?.semantic_mission;
+  const activeStep = mission?.steps?.find(step => mission.current_execution_id
+    ? step.execution_id === mission.current_execution_id
+    : step.id === mission.current_step_id && step.status === "active");
+  campusPlaceLabels?.update(camera, birdPointer, activeStep?.target_id,
+    sceneContainer.clientWidth, sceneContainer.clientHeight);
 
   renderer.render(scene, camera);
 }
