@@ -147,7 +147,7 @@ svg {
   grid-template-columns:
     minmax(138px, auto)
     minmax(120px, 188px)
-    minmax(240px, 1.35fr)
+    minmax(290px, 1.35fr)
     minmax(210px, 1.1fr)
     minmax(100px, auto)
     minmax(0, 1fr)
@@ -351,6 +351,22 @@ svg {
 .toolbar-config-button:not(:disabled):hover {
   background: var(--surface-3);
   color: var(--text-strong);
+}
+
+.toolbar-config-button.api-settings-button {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  width: auto;
+  white-space: nowrap;
+}
+
+.toolbar-config-button.api-settings-button > span {
+  clip: auto;
+  clip-path: none;
+  height: auto;
+  overflow: visible;
+  position: static;
+  width: auto;
 }
 
 .icon-button svg,
@@ -1339,9 +1355,37 @@ dialog.control-dialog::backdrop {
   margin: 12px 14px 0;
 }
 
-.control-dialog-field input {
+.control-dialog-field input,
+.control-dialog-field select {
   color: var(--text);
   width: 100%;
+}
+
+.api-model-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-model-picker .command-button {
+  padding: 0 10px;
+  width: auto;
+  white-space: nowrap;
+}
+
+.api-advanced {
+  margin: 14px 14px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.api-advanced summary {
+  cursor: pointer;
+}
+
+.api-advanced .control-dialog-field {
+  margin: 10px 0 0;
 }
 
 .control-dialog-error {
@@ -1453,7 +1497,7 @@ dialog.control-dialog::backdrop {
     grid-template-columns:
       minmax(105px, 138px)
       minmax(100px, 130px)
-      minmax(235px, 260px)
+      minmax(285px, 310px)
       minmax(210px, 230px)
       minmax(0, 1fr)
       repeat(3, auto);
@@ -1624,7 +1668,7 @@ dialog.control-dialog::backdrop {
 
 .simulator[data-mission-mode="semantic"] .app-toolbar {
   grid-template-columns: minmax(138px, auto) minmax(120px, 188px)
-    minmax(180px, 1fr) minmax(210px, 1fr) minmax(100px, auto)
+    minmax(235px, 1fr) minmax(210px, 1fr) minmax(100px, auto)
     minmax(0, 1fr) repeat(2, auto);
 }
 

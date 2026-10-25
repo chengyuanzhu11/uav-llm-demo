@@ -1,0 +1,1039 @@
+{
+  "version": "campus-semantic-v1",
+  "annotation_source": "Human-authored instruction requirements, separate from response fixtures.",
+  "split_policy": "Split by the combination field; no combination crosses dev/holdout. This small public suite is regression coverage, not a hidden test distribution.",
+  "units": {
+    "position": "grid (east,south,up), scale=(3,3,5)m",
+    "yaw": "radians",
+    "speed": "m/s",
+    "time": "simulation seconds"
+  },
+  "offline_policy": "Scripted candidate programs are deterministic fixtures, never evidence of LLM interpretation accuracy. One deliberately incorrect initial candidate must fail the oracle.",
+  "cases": [
+    {
+      "id": "dev_home_pose",
+      "split": "dev",
+      "combination": "vertical_yaw_hold_land",
+      "instruction": "在基地垂直起飞至11米，朝东停留1秒，再降落停留1秒。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "rise",
+              "action": "control",
+              "target_id": "home",
+              "when": null,
+              "control": {
+                "state": "airborne",
+                "duration_seconds": 1,
+                "altitude_m": 11,
+                "yaw_deg": 90
+              }
+            },
+            {
+              "id": "land",
+              "action": "control",
+              "target_id": "home",
+              "when": null,
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              }
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "control",
+                "target": "home",
+                "count": 1,
+                "occurrence": 1,
+                "result": {
+                  "state": "airborne"
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "control",
+                "target": "home",
+                "count": 1,
+                "occurrence": 2,
+                "result": {
+                  "state": "landed"
+                }
+              }
+            ]
+          },
+          {
+            "type": "evidence",
+            "action": "control",
+            "target": "home",
+            "count": 2
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed",
+            "dwell_seconds": 1
+          },
+          {
+            "type": "pose",
+            "target": "home",
+            "state": "airborne",
+            "altitude_m": 11,
+            "yaw_deg": 90,
+            "dwell_seconds": 1,
+            "occurrence": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "dev_east_boundary",
+      "split": "dev",
+      "combination": "boundary_clockwise_return",
+      "instruction": "沿着东侧花园顺时针转一圈然后返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "perimeter",
+              "action": "motion",
+              "target_id": "east_garden",
+              "when": null,
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "clockwise",
+                  "laps": 1
+                },
+                "speed_mps": 3.0,
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "east_garden"
+                }
+              }
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "circuit",
+                "target": "east_garden",
+                "direction": "clockwise",
+                "laps": 1
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dev_inspection_order",
+      "split": "dev",
+      "combination": "ordered_two_inspections",
+      "instruction": "先巡检图书馆，再巡检会议中心，最后返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "library",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "conference",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "library",
+                "count": 1,
+                "min_duration": 2.0
+              },
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "conference",
+                "count": 1,
+                "min_duration": 2.0
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dev_conditional_false",
+      "split": "dev",
+      "combination": "cool_scan_conditional_else",
+      "instruction": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "library",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "normal",
+                  "action": "inspect",
+                  "target_id": "conference",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "if",
+                "observation": {
+                  "type": "evidence",
+                  "action": "thermal_scan",
+                  "target": "library",
+                  "count": 1,
+                  "min_duration": 3.0
+                },
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40,
+                "then": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1,
+                      "min_duration": 1.0
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "conference",
+                      "count": 0
+                    }
+                  ]
+                },
+                "else": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "conference",
+                      "count": 1,
+                      "min_duration": 2.0
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dev_repeat_observations",
+      "split": "dev",
+      "combination": "counted_observation_sequence",
+      "instruction": "在图书馆执行两轮测温和采样，每轮先测温再采样，完成两轮后返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "repeat_inspection",
+              "action": "repeat",
+              "count": 2,
+              "until": null,
+              "steps": [
+                {
+                  "id": "scan",
+                  "action": "thermal_scan",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                },
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "when": null
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "evidence",
+            "action": "thermal_scan",
+            "target": "library",
+            "count": 2,
+            "min_duration": 3.0
+          },
+          {
+            "type": "evidence",
+            "action": "capture",
+            "target": "library",
+            "count": 2,
+            "min_duration": 1.0
+          },
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "thermal_scan",
+                "target": "library",
+                "count": 1,
+                "occurrence": 1,
+                "min_duration": 3.0
+              },
+              {
+                "type": "evidence",
+                "action": "capture",
+                "target": "library",
+                "count": 1,
+                "occurrence": 1,
+                "min_duration": 1.0
+              },
+              {
+                "type": "evidence",
+                "action": "thermal_scan",
+                "target": "library",
+                "count": 1,
+                "occurrence": 2,
+                "min_duration": 3.0
+              },
+              {
+                "type": "evidence",
+                "action": "capture",
+                "target": "library",
+                "count": 1,
+                "occurrence": 2,
+                "min_duration": 1.0
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dev_remote_landing",
+      "split": "dev",
+      "combination": "remote_land_dwell_no_return",
+      "instruction": "去北区足球场中央降落停留2秒，不用返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "land",
+              "action": "control",
+              "target_id": "north_football",
+              "when": null,
+              "control": {
+                "state": "landed",
+                "duration_seconds": 2
+              }
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "evidence",
+            "action": "control",
+            "target": "north_football",
+            "count": 1,
+            "result": {
+              "state": "landed"
+            },
+            "min_duration": 2
+          },
+          {
+            "type": "evidence",
+            "action": "return_home",
+            "target": "home",
+            "count": 0
+          },
+          {
+            "type": "goal",
+            "target": "north_football",
+            "state": "landed",
+            "dwell_seconds": 2
+          },
+          {
+            "type": "evidence",
+            "action": "control",
+            "target": "home",
+            "count": 0,
+            "result": {
+              "state": "landed"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "holdout_west_two_laps",
+      "split": "holdout",
+      "combination": "boundary_counterclockwise_two_return",
+      "instruction": "到西侧花园逆时针环绕两圈，机头保持朝向花园中心，之后回基地。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "perimeter",
+              "action": "motion",
+              "target_id": "west_garden",
+              "when": null,
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "counterclockwise",
+                  "laps": 2
+                },
+                "speed_mps": 3.0,
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "west_garden"
+                }
+              }
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "circuit",
+                "target": "west_garden",
+                "direction": "counterclockwise",
+                "laps": 2,
+                "heading": "face_center"
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "holdout_conditional_true",
+      "split": "holdout",
+      "combination": "hot_scan_conditional_then",
+      "instruction": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "laboratory",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "normal",
+                  "action": "inspect",
+                  "target_id": "conference",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "if",
+                "observation": {
+                  "type": "evidence",
+                  "action": "thermal_scan",
+                  "target": "laboratory",
+                  "count": 1,
+                  "min_duration": 3.0
+                },
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40,
+                "then": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "laboratory",
+                      "count": 1,
+                      "min_duration": 1.0
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "conference",
+                      "count": 0
+                    }
+                  ]
+                },
+                "else": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "conference",
+                      "count": 1,
+                      "min_duration": 2.0
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "laboratory",
+                      "count": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "holdout_task_update",
+      "split": "holdout",
+      "combination": "cancel_remaining_replace_target",
+      "instruction": "先巡检图书馆，再巡检实验楼，最后返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "library",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "lab",
+              "action": "inspect",
+              "target_id": "laboratory",
+              "duration_seconds": 30,
+              "when": null
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "new_capture",
+              "action": "capture",
+              "target_id": "conference",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "library",
+                "count": 1,
+                "min_duration": 2.0
+              },
+              {
+                "type": "evidence",
+                "action": "capture",
+                "target": "conference",
+                "count": 1,
+                "min_duration": 1.0
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "evidence",
+            "action": "inspect",
+            "target": "laboratory",
+            "count": 0
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "updates": [
+        {
+          "after": {
+            "type": "evidence",
+            "action": "inspect",
+            "target": "library",
+            "count": 1,
+            "min_duration": 2.0
+          },
+          "instruction": "取消尚未执行的实验楼巡检，改为到会议中心采样，然后返航。"
+        }
+      ]
+    },
+    {
+      "id": "holdout_review_omission",
+      "split": "holdout",
+      "combination": "review_drops_required_action_repair",
+      "instruction": "先根据当前观测复核安排，然后巡检图书馆并返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "assessment",
+              "action": "review",
+              "instruction": "根据当前观测复核执行安排，仍必须完成图书馆巡检并返航。",
+              "when": null
+            },
+            {
+              "id": "inspect",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "repaired",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "library",
+                "count": 1,
+                "min_duration": 2.0
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "holdout_initial_omission",
+      "split": "holdout",
+      "combination": "initial_interpretation_omission_negative",
+      "instruction": "巡检会议中心后返航。",
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "执行指定任务。",
+          "steps": [
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "conference",
+                "count": 1,
+                "min_duration": 2.0
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "offline_expected_success": false,
+      "note": "Deliberately wrong initial interpretation. Internal contract alone cannot recover intent absent independent requirements; oracle must expose false completion."
+    }
+  ],
+  "revision": "2026-10-22-r2",
+  "revision_notes": "Clarify the scope of the two-round observation loop; require return after the selected conditional branch. Previous live reports are retained unchanged."
+}

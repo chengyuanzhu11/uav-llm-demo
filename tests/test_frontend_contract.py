@@ -122,7 +122,7 @@ assert.equal(requests, 1);
         self.assertIn("vendor/lucide.min.js", html)
         self.assertNotIn("unpkg.com", html)
         self.assertNotIn("cdn.jsdelivr.net", html)
-        self.assertIn('aria-label="Configure DeepSeek API key"', html)
+        self.assertIn('aria-label="API 设置"', html)
         self.assertIn('aria-label="Configure AirSim"', html)
         self.assertNotIn("Expand decision inspector", html)
 
@@ -204,6 +204,167 @@ assert.equal(requests, 1);
         script += "\n})().catch(e => {console.error(e); process.exit(1)});"
         result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def run_agent_config_functions(self, test):
+        self.run_frontend_functions([
+            "showAgentConfigError", "agentConfigurationError", "agentConfigContext",
+            "agentProviderProfile", "agentKeyReusable", "setAgentModelOptions",
+            "refreshAgentConfigControls", "invalidateAgentModels", "selectAgentProvider",
+            "loadAgentModels", "clearAgentDialog", "closeAgentDialog", "openAgentDialog",
+            "configureDeepSeekFromDialog",
+        ], r'''
+const element = () => ({value:'', disabled:false, textContent:'', hidden:false, options:[],
+  replaceChildren() { this.options=[]; this.value=''; },
+  appendChild(option) { this.options.push(option); if(this.options.length===1) this.value=option.value; },
+  focus() {},
+});
+const agentProvider=element(), deepseekApiKey=element(), deepseekModel=element(),
+  deepseekBaseUrl=element(), saveAgentBtn=element(), agentDialogError=element(),
+  agentKeyStatus=element(), agentDialogStatus=element(), loadModelsBtn=element();
+const agentAdvanced={open:false}, agentDialog={open:true};
+const document={createElement:()=>element()};
+const setText=(node,text)=>{node.textContent=text;};
+const openDialog=dialog=>{dialog.open=true;}, closeDialog=dialog=>{dialog.open=false;};
+let commandPending=false, state={agent_provider:'deepseek', agent_backend:'deepseek'};
+let agentConfigCatalog=null, agentConfigEpoch=0, agentModelRequest=0, agentKeyRevision=0;
+let agentModelsContext='', agentConfigLoading=false, agentModelsLoading=false, agentConfigSaving=false;
+const catalog={active_provider:'deepseek', providers:[
+  {id:'deepseek',label:'DeepSeek 官方',default_base_url:'https://official.example'},
+  {id:'bailian',label:'阿里云百炼',default_base_url:'https://bailian.example/compatible-mode/v1'},
+  {id:'custom',label:'自定义兼容接口',default_base_url:''}],
+  profiles:[
+    {id:'deepseek',base_url:'https://official.example',model:'ds-official',key_configured:true},
+    {id:'bailian',base_url:'https://workspace.example/compatible-mode/v1',model:'wrong-typed-model',key_configured:true},
+  ]};
+const requests=[];
+let requestJson=async(url,options)=>{throw Error('Unexpected request: '+url);};
+const postState=async(url,body)=>requestJson(url,{method:'POST',body:JSON.stringify(body)});
+const runCommand=async(action)=>{
+  if(commandPending)return false;
+  commandPending=true;
+  try{await action();return true;}catch{return false;}finally{commandPending=false;}
+};
+const drain=async()=>{await Promise.resolve();await Promise.resolve();};
+''' + test)
+
+    def test_api_settings_are_visible_and_models_are_selected_from_live_list(self):
+        html = (ROOT / "uav_llm_demo/templates/index.html").read_text(encoding="utf-8")
+        javascript = (ROOT / "uav_llm_demo/static/app.js").read_text(encoding="utf-8")
+        self.assertIn('<span>API 设置</span>', html)
+        self.assertIn('<select id="agentProvider"', html)
+        self.assertIn('<select id="deepseekModel"', html)
+        self.assertIn('id="loadModelsBtn"', html)
+        self.assertIn('id="agentAdvanced"', html)
+        self.assertNotIn('id="deepseekModel" value=', html)
+        self.assertNotIn('value="deepseek-v4-flash"', html)
+        self.assertIn('if (backend === "deepseek") {\n      openAgentDialog();', javascript)
+        self.assertIn('addEventListener("cancel", clearAgentDialog)', javascript)
+        self.assertIn('addEventListener("close", () => { if (!agentDialog.open) clearAgentDialog(); })', javascript)
+
+    def test_api_reopen_and_provider_switch_restore_only_their_own_profile(self):
+        self.run_agent_config_functions(r'''
+requestJson=async(url,options)=>{
+  if(url==='/api/config')return catalog;
+  const body=JSON.parse(options.body);requests.push(body);
+  return {provider:body.provider, models:body.provider==='deepseek'?['ds-official']:['ds-bailian'],
+    recommended_model:'ds-bailian',current_model:'wrong-typed-model'};
+};
+deepseekApiKey.value='unsaved-secret';
+await openAgentDialog();await drain();
+assert.equal(agentDialog.open,true);
+assert.equal(deepseekApiKey.value,'');
+assert.equal(deepseekModel.value,'ds-official');
+assert.equal(saveAgentBtn.disabled,false);
+assert.equal(requests[0].api_key,undefined);
+deepseekApiKey.value='official-input-must-not-follow';
+agentProvider.value='bailian';selectAgentProvider();await drain();
+assert.equal(deepseekApiKey.value,'');
+assert.equal(deepseekBaseUrl.value,'https://workspace.example/compatible-mode/v1');
+assert.equal(deepseekModel.value,'ds-bailian');
+assert.equal(requests.at(-1).api_key,undefined);
+assert.equal(agentAdvanced.open,false);
+agentProvider.value='custom';selectAgentProvider();
+assert.equal(deepseekBaseUrl.value,'');
+assert.equal(deepseekModel.value,'');
+assert.equal(agentAdvanced.open,true);
+assert.equal(saveAgentBtn.disabled,true);
+assert.equal(loadModelsBtn.disabled,true);
+''')
+
+    def test_api_model_responses_cannot_cross_provider_or_key_changes(self):
+        self.run_agent_config_functions(r'''
+agentConfigCatalog=catalog;agentProvider.value='deepseek';
+deepseekBaseUrl.value='https://official.example';
+let resolveOld;
+requestJson=(url,options)=>{
+  const body=JSON.parse(options.body);
+  if(body.provider==='deepseek')return new Promise(resolve=>{resolveOld=resolve;});
+  return Promise.resolve({provider:'bailian',models:['ds-bailian'],recommended_model:'ds-bailian'});
+};
+const pending=loadAgentModels();
+agentProvider.value='bailian';selectAgentProvider();await drain();
+resolveOld({provider:'deepseek',models:['old-model']});await pending;
+assert.equal(deepseekModel.value,'ds-bailian');
+assert.equal(agentModelsLoading,false);
+let resolveKey;
+requestJson=()=>new Promise(resolve=>{resolveKey=resolve;});
+const oldKeyRequest=loadAgentModels();
+deepseekApiKey.value='new-key';agentKeyRevision+=1;invalidateAgentModels();refreshAgentConfigControls();
+resolveKey({provider:'bailian',models:['stale-key-model']});await oldKeyRequest;
+assert.equal(deepseekModel.value,'');assert.equal(saveAgentBtn.disabled,true);
+deepseekApiKey.value='';deepseekBaseUrl.value='https://other.example';
+invalidateAgentModels();refreshAgentConfigControls();
+assert.equal(agentKeyReusable(),false);assert.equal(loadModelsBtn.disabled,true);
+''')
+
+    def test_api_close_erases_key_and_discards_delayed_catalog_and_model_reads(self):
+        self.run_agent_config_functions(r'''
+let release;
+requestJson=()=>new Promise(resolve=>{release=resolve;});
+const pending=openAgentDialog();
+deepseekApiKey.value='must-be-erased';closeAgentDialog();
+release(catalog);await pending;
+assert.equal(agentDialog.open,false);assert.equal(deepseekApiKey.value,'');
+assert.equal(agentConfigCatalog,null);assert.equal(agentConfigLoading,false);
+agentDialog.open=true;agentConfigCatalog=catalog;agentProvider.value='deepseek';
+deepseekBaseUrl.value='https://official.example';deepseekApiKey.value='temporary-key';
+const modelPending=loadAgentModels();closeAgentDialog();
+release({provider:'deepseek',models:['late-model']});await modelPending;
+assert.equal(deepseekApiKey.value,'');assert.equal(agentModelsContext,'');
+assert.equal(agentConfigCatalog,null);assert.equal(agentModelsLoading,false);
+''')
+
+    def test_api_save_validates_without_key_echo_and_can_retry_after_failure(self):
+        self.run_agent_config_functions(r'''
+agentConfigCatalog=catalog;agentProvider.value='bailian';
+deepseekBaseUrl.value='https://workspace.example/compatible-mode/v1';
+setAgentModelOptions(['ds-bailian']);agentModelsContext=agentConfigContext();
+let fail=true;
+requestJson=async(url,options)=>{
+  assert.equal(url,'/api/config');const body=JSON.parse(options.body);requests.push(body);
+  if(fail){const error=Error('所选模型不可用，请重新读取模型。');error.code='model_unavailable';throw error;}
+  return {};
+};
+await configureDeepSeekFromDialog();
+assert.equal(agentDialog.open,true);assert.equal(agentConfigSaving,false);
+assert.equal(saveAgentBtn.disabled,false);assert.match(agentDialogError.textContent,/所选模型不可用/);
+assert.deepEqual(requests[0],{backend:'deepseek',provider:'bailian',model:'ds-bailian',
+  base_url:'https://workspace.example/compatible-mode/v1',verify:true});
+fail=false;await configureDeepSeekFromDialog();
+assert.equal(agentDialog.open,false);assert.equal(deepseekApiKey.value,'');
+assert.equal(agentConfigCatalog,null);
+assert.equal(agentConfigurationError(Error('raw secret body')), '无法读取或验证配置，请检查连接后重试。');
+''')
+
+    def test_api_save_requires_models_from_current_inputs(self):
+        self.run_agent_config_functions(r'''
+agentConfigCatalog=catalog;agentProvider.value='deepseek';deepseekBaseUrl.value='https://official.example';
+setAgentModelOptions(['ds-official']);agentModelsContext=agentConfigContext();
+deepseekApiKey.value='changed-key';agentKeyRevision+=1;
+await configureDeepSeekFromDialog();
+assert.match(agentDialogError.textContent,/请先读取可用模型/);
+assert.equal(agentConfigSaving,false);assert.equal(agentDialog.open,true);
+''')
 
     def test_star_reward_follows_milestone_once_and_resets(self):
         self.run_frontend_functions(["updateGoalStar"], r"""
@@ -442,7 +603,8 @@ assert.equal(requests, 1);
           pending = toggleMission(); release(); await pending;
           state.flight.running = false;
           pending = planMission(); release(); await pending;
-          pending = switchAgent('deepseek', true, {api_key:'test-only'});
+          state.agent_backend = 'deepseek';
+          pending = switchAgent('mock');
           assert.equal(await toggleMission(), false);
           release(); await pending;
           assert.deepEqual(urls, ['/api/mission/start', '/api/runtime/stop', '/api/mission/plan', '/api/config']);
@@ -456,7 +618,7 @@ assert.equal(requests, 1);
           state.semantic_mission = {status:'interpreting'};
           const before = urls.length;
           assert.equal(await planMission(), false);
-          assert.equal(await switchAgent('mock', true), false);
+          assert.equal(await switchAgent('mock'), false);
           assert.equal(urls.length, before);
           pending = toggleMission(); release(); await pending;
           assert.equal(urls.at(-1), '/api/mission/start');

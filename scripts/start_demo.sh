@@ -2,8 +2,13 @@
 set -euo pipefail
 
 project_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-python=${UAV_DEMO_PYTHON:-"$HOME/.venvs/uav-llm-demo/bin/python"}
+python=${UAV_DEMO_PYTHON:-"$project_root/.venv/bin/python"}
 port=${UAV_DEMO_PORT:-5000}
+
+if [[ $(uname -s) != Linux || $project_root == /mnt/* ]]; then
+    echo "Start this project from its WSL Linux directory: ~/projects/UAV_LLM" >&2
+    exit 1
+fi
 
 if [[ ! $port =~ ^[0-9]{1,5}$ ]] || (( 10#$port < 1024 || 10#$port > 65535 )); then
     echo "UAV_DEMO_PORT must be an integer between 1024 and 65535." >&2

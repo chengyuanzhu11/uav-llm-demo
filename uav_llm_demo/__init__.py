@@ -6,9 +6,11 @@ from collections.abc import Mapping
 from flask import Flask, jsonify, render_template, request
 
 from .airsim_runtime import AirSimRuntime, AirSimRuntimeConfig
+from .airsim_connection import default_airsim_host
 from .mission_service import MissionService
 from .runtime import RuntimeCapabilityError, RuntimeUnavailableError
 from .scenarios import list_scenarios
+from .provider_config import ProviderConfigError
 
 def create_app(
     *,
@@ -25,7 +27,7 @@ def create_app(
 
     @app.get("/")
     def index():
-        return render_template("index.html")
+        return render_template("index.html", airsim_defaults=_airsim_defaults())
 
     @app.get("/favicon.ico")
     def favicon():
@@ -137,11 +139,24 @@ def create_app(
         except (TypeError, ValueError) as exc:
             return jsonify(error=str(exc)), 400
 
+    @app.get("/api/config")
+    def api_read_config():
+        return jsonify(mission_service.provider_config())
+
+    @app.post("/api/config/models")
+    def api_models():
+        try:
+            return jsonify(mission_service.provider_models(request.get_json(silent=True)))
+        except ProviderConfigError as exc:
+            return jsonify(error=str(exc), error_code=exc.error_code), 400
+
     @app.post("/api/config")
     def api_config():
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
         try:
             return jsonify(mission_service.configure_agent(data))
+        except ProviderConfigError as exc:
+            return jsonify(error=str(exc), error_code=exc.error_code), 400
         except (TypeError, ValueError) as exc:
             return jsonify(error=str(exc)), 400
 
@@ -167,7 +182,7 @@ def _build_runtime(
         raise ValueError(f"Unsupported external runtime '{backend}'.")
     return AirSimRuntime(
         AirSimRuntimeConfig(
-            host=str(config.get("host") or os.getenv("AIRSIM_HOST", "127.0.0.1")),
+            host=str(config.get("host") or default_airsim_host()),
             port=_bounded_int(
                 config.get("port"),
                 int(os.getenv("AIRSIM_PORT", "41451")),
@@ -198,6 +213,11 @@ def _build_runtime(
             ),
         )
     )
+
+
+def _airsim_defaults():
+    return dict(host=default_airsim_host(), port=os.getenv("AIRSIM_PORT", "41451"),
+                vehicle_name=os.getenv("AIRSIM_VEHICLE_NAME", "Drone1"))
 
 
 def _bounded_float(

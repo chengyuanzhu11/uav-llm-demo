@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 import secrets
 import os
@@ -15,6 +16,9 @@ from types import SimpleNamespace
 from threading import Event, RLock, Thread
 
 from .agents import DeepSeekAgent, GeometricPlanner, MockLLMAgent, PlannerProviderError, SemanticPlanError, PlanValidationError, build_agent, checked_plan
+from .agents import _redact_task_data, MAX_REPAIR_CANDIDATE_CHARS
+from .task_contract import TaskContractError
+from .provider_config import ProviderConfigError, ProviderProfiles, discover_models
 from .avoidance import LocalAvoidance
 from .environment import UAVEnvironment, point_to_dict
 from .evaluation import EvaluationLog, MissionEvidence
@@ -31,7 +35,7 @@ from .scene_layout import scene_layout
 from .traffic_motion import ContinuousTraffic, TRAFFIC_POLICIES, TRAFFIC_MODEL_VERSION
 from .traffic_observation import TrafficObserver, TrafficObservationConfig
 from .dynamic_risk import envelope_fields, risk_levels
-from .semantic_tasks import SemanticConstraintError, SemanticExecutionError, SemanticMission, task_catalog, plan_goal_contract, PROGRAM_LIMITS
+from .semantic_tasks import SemanticConstraintError, SemanticExecutionError, SemanticMission, task_catalog, PROGRAM_LIMITS
 from .semantic_navigation import apply_task_constraints, validate_task_routes, validate_motion_path, task_ground_sites
 from .spatial_motion import compile_motion
 from .path_tracking import PathFollower
@@ -64,6 +68,7 @@ class MissionService:
         if semantic and self.agent.backend_name != "deepseek":
             raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
         self._deepseek_config = self._capture_deepseek_config(self.agent)
+        self._provider_profiles = ProviderProfiles(self._deepseek_config)
         self.runtime = runtime or HtmlRuntime()
         if semantic and self.runtime.backend_name != "html":
             raise ValueError("园区任务的观测技能目前仅支持 HTML 仿真。")
@@ -112,8 +117,7 @@ class MissionService:
         self._semantic_schema_failures = 0
         self._semantic_repair = None
         self._autonomous_reviews = 0
-        self._review_goal = None
-        self._review_constraints = None
+        self._semantic_review_pending = False
         self._clear_motion()
         self._semantic_interpretation_pending = False
         self._semantic_revision_started_at = None
@@ -155,7 +159,8 @@ class MissionService:
             steps = [step for step in snapshot["steps"]
                      if step.get("revision") == snapshot["revision"] and step["status"] != "cancelled"]
             visits = [step for step in steps if step["action"] != "return_home"]
-            completed = self.semantic.status == "completed"
+            contract = snapshot["task_contract"]
+            completed = self.semantic.status == "completed" and bool(contract and contract["satisfied"])
             current = self.semantic.current_step
             reached = bool(visits) and bool(completed or (self.semantic.status == "running" and current
                                                          and current["action"] == "return_home"))
@@ -318,6 +323,8 @@ class MissionService:
                 traffic_observation=asdict(self._observation_config),
                 scene_layout=self._scene_layout,
                 agent_backend=self.agent.backend_name, agent_model=getattr(self.agent, "model", None),
+                agent_provider=self._provider_profiles.active,
+                agent_base_url=self._deepseek_config.get("base_url"),
                 deepseek_key_configured=bool(self._deepseek_config.get("api_key")),
                 runtime_backend=self.runtime.backend_name, runtime=runtime_status,
                 flight=dict(stage=("landed" if self._environment.position[2] * SCALE[2] <= 0.18 and speed <= 0.02
@@ -455,7 +462,7 @@ class MissionService:
             self._hold_target = self._control_yaw = None
             self._semantic_schema_failures = self._autonomous_reviews = 0
             self._semantic_repair = None
-            self._review_goal = self._review_constraints = None
+            self._semantic_review_pending = False
             self._invalidate_planning()
             if self._future is not None:
                 self._future.cancel()
@@ -490,6 +497,7 @@ class MissionService:
         catalog["mission_context"]["position"] = point_to_dict(self._vehicle.position)
         catalog["mission_context"]["observations"] = self._observation().to_dict()
         catalog["mission_context"]["autonomous_reviews_used"] = self._autonomous_reviews
+        catalog["mission_context"]["autonomous_review"] = self._semantic_review_pending
         context = deepcopy(self._context(semantic_constraints=False))
         agent, instruction, feedback = self.agent, self.semantic.instruction, self._feedback
         repair = deepcopy(self._semantic_repair)
@@ -514,9 +522,8 @@ class MissionService:
         try:
             plan = future.result()
             if plan.status == "ready":
-                if self._review_constraints is not None and (plan.constraints != self._review_constraints
-                        or (self._review_goal is not None and plan_goal_contract(plan, self._environment.scenario) != self._review_goal)):
-                    raise SemanticConstraintError("review_goal_changed")
+                if self._semantic_review_pending:
+                    self.semantic.task_contract.validate_revision(plan, self._semantic_telemetry(), after_review=True)
                 # Local avoidance can move the aircraft while interpretation is
                 # pending. Never switch to constraints excluding its latest pose.
                 candidate = self._context(semantic_constraints=False)
@@ -537,18 +544,24 @@ class MissionService:
                                      position=point_to_dict(self._vehicle.position))
                     return
             telemetry = self._semantic_telemetry()
-            if plan.status == "ready":
+            if plan.status == "ready" and not self._semantic_review_pending:
                 telemetry["elapsed_seconds"] = 0.0
-            if self._review_constraints is not None and plan.status == "ready":
-                if self.semantic.complete_review(self._vehicle.position, self._time):
+            if self._semantic_review_pending and plan.status == "ready":
+                if self.semantic.complete_review(self._vehicle.position, self._time, telemetry=telemetry):
                     self.trace.event("semantic_evidence", self._time, evidence=self.semantic.evidence[-1])
                 self._semantic_feedback("review_accepted", "已根据执行观测更新后续任务。")
-            self.semantic.accept(plan, preserve_evidence=self.semantic.plan is not None, telemetry=telemetry)
+            self.semantic.accept(plan, preserve_evidence=self.semantic.plan is not None, telemetry=telemetry,
+                                 autonomous=self._semantic_review_pending)
             if plan.status == "ready":
                 for site in task_ground_sites(plan, self._environment.scenario):
                     if site not in self._ground_sites:
                         self._ground_sites.append(site)
-        except SemanticPlanError as exc:
+        except (SemanticPlanError, TaskContractError) as exc:
+            if isinstance(exc, TaskContractError):
+                candidate = json.dumps(_redact_task_data(plan.to_dict(), getattr(self.agent, "api_key", None)),
+                                       ensure_ascii=False, allow_nan=False)
+                candidate = candidate if len(candidate) <= MAX_REPAIR_CANDIDATE_CHARS else None
+                exc = SemanticPlanError(exc.diagnostic["message"], candidate=candidate, diagnostic=exc.diagnostic)
             self._semantic_schema_failures += 1
             self._semantic_repair = {"candidate": exc.candidate, "diagnostic": deepcopy(exc.diagnostic)}
             self._feedback = "Correct the locally rejected program: " + exc.detail
@@ -594,13 +607,15 @@ class MissionService:
         self.recovery.accepted()
         self.trace.event("semantic_accepted", self._time, request_id=request_id, status=plan.status,
                          steps=plan.to_dict()["steps"], constraints=plan.constraints,
-                         revision=self.semantic.revision)
+                         revision=self.semantic.revision, task_contract=self.semantic.task_contract.snapshot()
+                         if self.semantic.task_contract else None)
         if plan.status != "ready":
             self._hold_semantic_task(self.semantic.message)
             return
         self._semantic_interpretation_pending = False
-        self._review_goal = self._review_constraints = None
-        self._semantic_revision_started_at = self._time
+        if not self._semantic_review_pending:
+            self._semantic_revision_started_at = self._time
+        self._semantic_review_pending = False
         if self.semantic.status == "completed":
             self.semantic.goal_state = {"target_id": None, "position": point_to_dict(self._vehicle.position),
                                         "state": "landed" if self._vehicle.position[2] * SCALE[2] <= .05 else "airborne",
@@ -637,8 +652,7 @@ class MissionService:
             self._hold_semantic_task("本次任务已达到自主评估预算，保持安全等待，请提交后续任务。", status="safety_wait")
             return
         self._autonomous_reviews += 1
-        self._review_goal = plan_goal_contract(self.semantic.plan, self._environment.scenario)
-        self._review_constraints = deepcopy(self.semantic.plan.constraints)
+        self._semantic_review_pending = True
         self._invalidate_planning()
         self._clear_motion()
         self.waypoints = WaypointManager()
@@ -649,7 +663,9 @@ class MissionService:
         self._semantic_repair = None
         self._request_replan("semantic_execution_review")
         self._feedback = ("Execution review: " + instruction +
-                          " Use measured mission_context evidence and observations; preserve the final goal and constraints.")
+                          " Use measured mission_context evidence and observations. Preserve every outstanding "
+                          "obligation in mission_context.task_contract.remaining_steps, including order, repetitions, "
+                          "conditions, geometry, dwell and final state, and retain the contract constraints.")
         self._semantic_feedback("review_requested", self.semantic.message)
 
     def _activate_semantic_step(self):
@@ -675,6 +691,8 @@ class MissionService:
         self._motion = self._motion_follower = self._motion_controller = None
         self._motion_phase = self._motion_execution_id = None
         self._motion_duration = 0.0
+        self._motion_heading_samples = 0
+        self._motion_max_heading_error_deg = 0.0
 
     def _motion_progress(self):
         if self._motion_follower is None:
@@ -695,6 +713,13 @@ class MissionService:
             dx, dy = point[0] - state.position[0], point[1] - state.position[1]
             return math.atan2(dx, -dy) if math.hypot(dx, dy) > 1e-9 else state.yaw
         return None
+
+    def _record_motion_heading(self):
+        desired = self._motion_yaw(self._vehicle)
+        if desired is not None:
+            error = abs((self._vehicle.yaw - desired + math.pi) % (2 * math.pi) - math.pi)
+            self._motion_heading_samples += 1
+            self._motion_max_heading_error_deg = max(self._motion_max_heading_error_deg, math.degrees(error))
 
     def _collect_motion_route(self, future):
         try:
@@ -743,7 +768,18 @@ class MissionService:
             if self._motion is None:
                 return
             if self._motion_phase == "transit" and ready:
+                entry = self.waypoints.points[-1]
+                if distance(self._vehicle.position, entry) > .18:
+                    self._environment.target = entry
+                    self._request_replan("motion_entry_position_lost")
+                    return
+                desired = self._motion_yaw(self._vehicle)
+                yaw_error = (abs((self._vehicle.yaw - desired + math.pi) % (2 * math.pi) - math.pi)
+                             if desired is not None else 0.0)
+                if norm(self._vehicle.velocity) > .02 or yaw_error > math.radians(2):
+                    return
                 self._motion_phase = "tracking"
+                self._record_motion_heading()
                 self._environment.target = self._motion.points[-1]
                 self._plan_id += 1
                 self.trace.event("motion_tracking", self._time, execution_id=self._motion_execution_id)
@@ -766,10 +802,13 @@ class MissionService:
                     execution_id=self._motion_execution_id, completed=True,
                     covered_distance_m=self._motion_follower.progress_m,
                     total_length_m=self._motion_follower.total_length_m,
-                    duration_seconds=self._motion_duration), telemetry=self._semantic_telemetry())
+                    duration_seconds=self._motion_duration,
+                    heading_samples=self._motion_heading_samples,
+                    max_heading_error_deg=self._motion_max_heading_error_deg), telemetry=self._semantic_telemetry())
             else:
                 changed = self.semantic.observe(self._vehicle.position, norm(self._vehicle.velocity), dt,
-                                                self._time, enabled=ready, telemetry=self._semantic_telemetry())
+                                                self._time, enabled=ready, telemetry=self._semantic_telemetry(),
+                                                measured_yaw_deg=math.degrees(self._vehicle.yaw))
         except SemanticExecutionError as exc:
             execution_error = exc
             changed = False
@@ -789,6 +828,11 @@ class MissionService:
             self._activate_semantic_step()
 
     def _finish_semantic_task(self):
+        acceptance = self.semantic.task_contract.verdict() if self.semantic.task_contract else None
+        if not acceptance or not acceptance["satisfied"]:
+            self._hold_semantic_task(SemanticExecutionError("task_contract_failed").user_message, status="safety_wait")
+            self.trace.event("semantic_acceptance_failed", self._time, task_contract=acceptance)
+            return
         self._running = False
         landed = self.semantic.goal_state["state"] == "landed"
         self._safety_armed = not landed
@@ -1042,10 +1086,15 @@ class MissionService:
                 self.evidence.static_blocked = True
                 self._fail("Safety Checker blocked the next control segment.")
                 return
-            if target is not None or speed > 0.0001 or (active_motion and self._control_yaw is not None):
+            aligning_motion = (self._motion is not None and self._motion_phase == "transit"
+                               and bool(self.waypoints.points) and self.waypoints.current is None)
+            # A pause brakes translation; it must not silently rotate an
+            # independently commanded heading to the residual velocity vector.
+            yaw = (self._motion_yaw(self._vehicle) if self._motion is not None and (tracking or aligning_motion)
+                   else self._control_yaw)
+            if target is not None or speed > 0.0001 or (active_motion and yaw is not None):
                 try:
                     with self.trace.stage("runtime"):
-                        yaw = self._motion_yaw(self._vehicle) if tracking and active_motion else self._control_yaw
                         vehicle = (self.runtime.drive(velocity, dt, yaw=yaw) if yaw is not None
                                    else self.runtime.drive(velocity, dt))
                 except Exception:
@@ -1054,6 +1103,7 @@ class MissionService:
                 self._commit_vehicle(vehicle, dt)
                 self._runtime_status = self.runtime.status()
                 if tracking and active_motion and not self._plan_requested:
+                    self._record_motion_heading()
                     self._motion_follower.update(vehicle, dt, avoiding=self.avoidance.active or was_avoiding)
                 final_waypoint = self.waypoints.index == len(self.waypoints.points) - 1
                 next_segment_safe = (final_waypoint or self.waypoints.current is None
@@ -1215,8 +1265,7 @@ class MissionService:
         self._control_yaw = None
         self._semantic_schema_failures = 0
         self._autonomous_reviews = 0
-        self._review_goal = None
-        self._review_constraints = None
+        self._semantic_review_pending = False
         self._publish_state()
 
     def reset(self):
@@ -1282,7 +1331,7 @@ class MissionService:
             # Closing a previous AirSim instance releases control of the same vehicle.
             self._close_quietly(previous)
             if backend == "airsim" and previous.backend_name == "airsim":
-                candidate.connect()
+                candidate.acquire_control()
             self._environment.reset()
             self._reset_control()
             return self.state()
@@ -1340,6 +1389,17 @@ class MissionService:
                          dynamic_incidents=self._evaluation.dynamic_incidents)
         self._close_quietly(self.runtime)
 
+    def provider_config(self):
+        with self._lock:
+            return self._provider_profiles.public(self.agent.backend_name)
+
+    def provider_models(self, config):
+        if not isinstance(config, Mapping):
+            raise ProviderConfigError("configuration_invalid", "请提交有效的 API 配置。")
+        with self._lock:
+            candidate = self._provider_profiles.prepare(config)
+        return discover_models(candidate)
+
     def configure_agent(self, config: Mapping[str, object]) -> dict[str, object]:
         if not isinstance(config, Mapping):
             raise TypeError("Agent config must be an object.")
@@ -1350,38 +1410,37 @@ class MissionService:
                 "The OpenAI backend is not implemented in this demo."
             )
 
+        if type(config.get("verify", False)) is not bool:
+            raise ProviderConfigError("configuration_invalid", "配置校验开关格式无效。")
         with self._lock:
-            was_requested = self._plan_requested
             if self.semantic is not None and backend != "deepseek":
                 raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
+            revision = self._provider_profiles.revision
             if backend == "deepseek":
-                next_config = dict(self._deepseek_config)
-                provided_key = self._optional_text(config.get("api_key"), "api_key")
-                if provided_key:
-                    next_config["api_key"] = provided_key
-                provided_model = self._optional_text(config.get("model"), "model")
-                if provided_model:
-                    next_config["model"] = provided_model
-                provided_base_url = self._optional_text(
-                    config.get("base_url"), "base_url"
-                )
-                if provided_base_url:
-                    next_config["base_url"] = provided_base_url
-
-                api_key = next_config.get("api_key")
-                if not api_key:
-                    raise ValueError(
-                        "A DeepSeek API key is required before selecting the API agent."
-                    )
-                candidate = DeepSeekAgent(
-                    api_key=api_key,
-                    model=next_config.get("model"),
-                    base_url=next_config.get("base_url"),
-                )
+                profile = self._provider_profiles.prepare(config)
+        if backend == "deepseek":
+            # Remote metadata lookup must never hold the flight/control lock.
+            # No live configuration is replaced until the complete check passes.
+            if config.get("verify"):
+                discovery = discover_models(profile)
+                if profile["model"] not in discovery["models"]:
+                    raise ProviderConfigError("model_unavailable", "所选模型不在当前服务商列表中，请重新读取并选择模型。")
+            candidate = DeepSeekAgent(api_key=profile["api_key"], model=profile["model"] or None,
+                                      base_url=profile["base_url"])
+            next_config = dict(api_key=candidate.api_key, model=candidate.model, base_url=candidate.base_url)
+        with self._lock:
+            if revision != self._provider_profiles.revision:
+                raise ProviderConfigError("provider_changed", "配置已在另一次操作中更新，请重新打开设置。")
+            if self.semantic is not None and backend != "deepseek":
+                raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
+            was_requested = self._plan_requested
+            if backend == "deepseek":
+                self._provider_profiles.commit({**profile, **next_config})
                 self._deepseek_config = next_config
                 self.agent = candidate
             else:
                 self.agent = build_agent(backend)
+                self._provider_profiles.revision += 1
             self._invalidate_planning()
             if self.semantic is not None:
                 # Editing a key must not resume an explicitly paused paid request.
@@ -1398,20 +1457,11 @@ class MissionService:
             return self.state()
 
     @staticmethod
-    def _optional_text(value: object, field_name: str) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise ValueError(f"{field_name} must be a string.")
-        value = value.strip()
-        return value or None
-
-    @staticmethod
     def _capture_deepseek_config(agent) -> dict[str, str | None]:
         return {
             "api_key": getattr(agent, "api_key", None) or os.getenv("DEEPSEEK_API_KEY"),
             "model": getattr(agent, "model", None)
-            or os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+            or os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
             "base_url": getattr(agent, "base_url", None)
             or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         }

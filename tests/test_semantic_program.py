@@ -170,8 +170,8 @@ class ProgramExecutionTests(unittest.TestCase):
     def test_until_is_evaluated_after_body_and_uses_latest_iteration(self):
         value = mission([repeat([step("scan", "thermal_scan", "library")], count=5,
                                  until=compare("scan", value=40))])
-        with patch.object(SemanticMission, "_result", side_effect=[({"temperature_c": 20.0}, "test_sensor"),
-                                                                 ({"temperature_c": 45.0}, "test_sensor")]):
+        with patch.object(SemanticMission, "_result", side_effect=[({"temperature_c": 20.0}, "simulated_thermal_sensor"),
+                                                                 ({"temperature_c": 45.0}, "simulated_thermal_sensor")]):
             finish(value)
             self.assertEqual(value.current_step["loop_iterations"], {"loop": 2})
             finish(value)

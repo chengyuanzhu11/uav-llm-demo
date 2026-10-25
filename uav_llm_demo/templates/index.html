@@ -45,8 +45,9 @@
             <span>DeepSeek API</span>
           </button>
         </div>
-        <button id="agentKeyBtn" type="button" class="icon-button toolbar-config-button" aria-label="Configure DeepSeek API key" title="Configure DeepSeek API key">
-          <i data-lucide="key-round" aria-hidden="true"></i>
+        <button id="agentKeyBtn" type="button" class="command-button toolbar-config-button api-settings-button" aria-label="API 设置" title="API 设置">
+          <i data-lucide="settings-2" aria-hidden="true"></i>
+          <span>API 设置</span>
         </button>
       </div>
 
@@ -281,30 +282,45 @@
       <form id="agentForm" method="dialog">
         <header class="control-dialog-header">
           <div>
-            <span>Agent backend</span>
-            <h2 id="agentDialogTitle">DeepSeek API</h2>
+            <h2 id="agentDialogTitle">API 设置</h2>
           </div>
-          <button id="closeAgentBtn" type="button" class="icon-button" aria-label="Close DeepSeek API dialog" title="Close dialog">
+          <button id="closeAgentBtn" type="button" class="icon-button" aria-label="关闭 API 设置" title="关闭">
             <i data-lucide="x" aria-hidden="true"></i>
           </button>
         </header>
-        <p class="control-dialog-note">The key is sent to Flask over this local page and kept only in the current process memory. It is never returned to the page.</p>
         <label class="control-dialog-field">
-          <span>API key</span>
-          <input id="deepseekApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Enter a new key, or leave blank to reuse the process key">
+          <span>服务提供方</span>
+          <select id="agentProvider" disabled>
+            <option value="deepseek">DeepSeek 官方</option>
+            <option value="bailian">阿里云百炼（北京）</option>
+            <option value="bailian-intl">阿里云百炼（新加坡）</option>
+            <option value="custom">自定义兼容接口</option>
+          </select>
         </label>
         <label class="control-dialog-field">
-          <span>Model</span>
-          <input id="deepseekModel" value="deepseek-v4-flash" autocomplete="off">
+          <span>API Key</span>
+          <input id="deepseekApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="输入此服务的 API Key" disabled>
         </label>
-        <label class="control-dialog-field">
-          <span>Endpoint</span>
-          <input id="deepseekBaseUrl" value="https://api.deepseek.com" autocomplete="off">
-        </label>
+        <p id="agentKeyStatus" class="control-dialog-note">Key 仅保存在当前服务进程内。</p>
+        <div class="control-dialog-field">
+          <label for="deepseekModel">模型</label>
+          <div class="api-model-picker">
+            <select id="deepseekModel" disabled><option value="">请先读取可用模型</option></select>
+            <button id="loadModelsBtn" type="button" class="command-button secondary" disabled>读取模型</button>
+          </div>
+        </div>
+        <details id="agentAdvanced" class="api-advanced">
+          <summary>高级设置</summary>
+          <label class="control-dialog-field">
+            <span>接口地址</span>
+            <input id="deepseekBaseUrl" type="url" autocomplete="off" spellcheck="false" disabled>
+          </label>
+        </details>
+        <p id="agentDialogStatus" class="control-dialog-note" role="status" aria-live="polite"></p>
         <p id="agentDialogError" class="control-dialog-error" role="alert" hidden></p>
         <footer class="control-dialog-footer">
-          <button id="cancelAgentBtn" type="button" class="command-button secondary">Cancel</button>
-          <button id="saveAgentBtn" type="submit" class="command-button primary">Use DeepSeek API</button>
+          <button id="cancelAgentBtn" type="button" class="command-button secondary">取消</button>
+          <button id="saveAgentBtn" type="submit" class="command-button primary" disabled>验证并保存</button>
         </footer>
       </form>
     </dialog>
@@ -329,15 +345,15 @@
           <div class="simulator-grid">
             <label>
               <span>Vehicle</span>
-              <input id="vehicleName" value="Drone1">
+              <input id="vehicleName" value="{{ airsim_defaults.vehicle_name }}">
             </label>
             <label>
               <span>Host</span>
-              <input id="airsimHost" value="127.0.0.1">
+              <input id="airsimHost" value="{{ airsim_defaults.host }}">
             </label>
             <label>
               <span>Port</span>
-              <input id="airsimPort" type="number" min="1" max="65535" value="41451">
+              <input id="airsimPort" type="number" min="1" max="65535" value="{{ airsim_defaults.port }}">
             </label>
           </div>
           <button id="reconnectAirSimBtn" type="button" class="command-button secondary simulator-command">

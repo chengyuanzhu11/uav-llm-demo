@@ -68,7 +68,7 @@ class SemanticMotionServiceTests(unittest.TestCase):
         self.assertLess(winding, 4.1*pi)
         self.assertEqual(progresses, sorted(progresses))
         self.assertLess(sum(v < .25 for v in speeds[30:-30]) / max(1,len(speeds)-60), .05)
-        self.assertLess(max(heading_errors[50:]), .15)
+        self.assertLess(max(heading_errors), .15)
         evidence = state["semantic_mission"]["evidence"]
         self.assertEqual([e["action"] for e in evidence], ["motion", "return_home"])
         self.assertTrue(evidence[0]["result"]["completed"])
@@ -98,7 +98,7 @@ class SemanticMotionServiceTests(unittest.TestCase):
         self.assertEqual(state["status"], "completed", service.semantic.message)
         self.assertGreater(top, 17)
         self.assertTrue(headings)
-        self.assertLess(max(abs(y) for y in headings[30:]), .05)
+        self.assertLess(max(abs(y) for y in headings), .05)
         self.assertEqual([e["action"] for e in service.semantic.evidence], ["motion","motion","return_home"])
 
     def test_pause_resume_preserves_path_progress_and_user_update_cancels_remainder(self):

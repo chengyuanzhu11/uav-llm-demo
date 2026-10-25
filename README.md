@@ -48,11 +48,11 @@ HTML 飞行保护启用后，`metrics.collision_or_separation_events` 根据连�
 
 AirSim 模式下，浏览器 Three.js 只保留静态任务地图、目标和基地，不显示 UAV、动态飞行物，也不回放 AirSim 返回的轨迹。实际飞行只发生在 Blocks 中；浏览器继续显示 AirSim 遥测、Planner 决策和执行结果。HTML 与 AirSim 是同一个控制层的两个 Runtime，不是先执行 HTML 再同步到 AirSim。
 
-AirSim 会执行 NED 路径并返回位置、姿态、线速度、角速度、线加速度和角加速度。短航段速度上限、实际位置重定基准和稳定到达判定仍由 `airsim_runtime.py` 负责。
+AirSim 会执行 NED 路径并返回位置、姿态、线速度、角速度、线加速度和角加速度。短航段速度上限、实际位置重定基准和稳定到达判定由 `airsim_runtime.py` 负责。重置后先等待机体静止；基地半径 0.75 米范围内不超过 10 厘米的 Unreal 地面接触误差在控制坐标中归零，原始 NED 遥测仍保留，其他位置及超出容差的负高度仍由安全检查拒绝。
 
-`Urban Crossing` 使用 40×40 格（117×117 米）的任务地图，保留近端街区，并向远端扩展为 32 个地块、4 个十字路口；道路、街树、建筑和安全检查使用相同场景数据。起终点以同色的透明方形光柱标记，可透过建筑辨认位置。HTML 使用高低错落的现代楼群（最高 65 米），包括矩形、圆柱塔楼及局部斜撑立面，配合细密窗格、屋顶设备、道路纹理和暖色侧光；街树低于最低飞行高度。建筑造型及屋顶细节均限制在共享障碍包围体内，圆柱的碰撞检查采用保守包围体；任务边界外的楼群只作视觉背景。AirSim 仍按 `scene_layout.py` 将同一占地单元显示为简化方盒，本轮未进行 AirSim 联机建模或验证。水平每格 3 米，高度每层 5 米。
+`Urban Crossing` 使用 40×40 格（117×117 米）的任务地图，保留近端街区，并向远端扩展为 32 个地块、4 个十字路口；道路、街树、建筑和安全检查使用相同场景数据。起终点以同色的透明方形光柱标记，可透过建筑辨认位置。HTML 使用高低错落的现代楼群（最高 65 米），包括矩形、圆柱塔楼及局部斜撑立面，配合细密窗格、屋顶设备、道路纹理和暖色侧光；街树低于最低飞行高度。建筑造型及屋顶细节均限制在共享障碍包围体内，圆柱的碰撞检查采用保守包围体；任务边界外的楼群只作视觉背景。AirSim 仍按 `scene_layout.py` 将同一占地单元显示为简化方盒，实际联调方法见下方 AirSim 说明。水平每格 3 米，高度每层 5 米。
 
-切入 AirSim 或切换场景时，程序用本机 Blocks 的 Cube 资源生成地图并加载纯色贴图。共享地图位于 NED `(500, 500, -100)` 的独立区域，避免与原装 Blocks 建筑重叠；飞行指令和遥测统一加减该偏移。Reset 将无人机放回该地图基地。原装 Blocks 地图保留，仅更新 `UAVDemo_` 前缀的对象。目前共享贴图要求 Blocks 与 Flask 同机运行；动态飞行物的真实 Unreal 运动/碰撞仍属于独立功能，不由静态地图统一提供。
+切入 AirSim 或切换场景时，程序用 Windows Blocks 的 Cube 资源生成地图并加载纯色贴图。共享地图位于 NED `(500, 500, -100)` 的独立区域，避免与原装 Blocks 建筑重叠；飞行指令和遥测统一加减该偏移。Reset 将无人机放回该地图基地。原装 Blocks 地图保留，仅更新 `UAVDemo_` 前缀的对象。Flask 在 WSL 运行，贴图写入 Windows 的 `%LOCALAPPDATA%\UAV_LLM\AirSim\textures`，经路径转换交给 Blocks 读取；资源准备成功后才替换场景。动态飞行物的真实 Unreal 运动/碰撞仍属于独立功能，不由静态地图统一提供。
 
 HTML 中 UAV 和鸟类共用仿真时钟，页面只读取快照；暂停任务或等待 API 时，控制循环仍更新交通和本地保护。慢帧最多推进 0.1 仿真秒，因此两者一起减慢；超过 0.3 秒记录延迟而不中断 HTML 任务，AirSim 保留超时保护。页面分别显示去程到达、返航完成和重试状态；只有实际位置及速度满足条件才确认任务阶段。
 
@@ -62,26 +62,26 @@ Follow UAV 使用带时间戳的实际控制采样，画面缓冲约 0.35 秒后
 
 在 VS Code 中打开 WSL / Ubuntu（Bash）终端；如果当前是 PowerShell，先输入 `wsl`。运行以下命令无需额外插件。
 
-需要已安装 WSL / Ubuntu。首次使用时准备 Git 和 Python，并克隆仓库（示例放在 WSL 的 `~/code` 目录）：
+需要已安装 WSL / Ubuntu。首次使用时准备 Git 和 Python，并将仓库放在 WSL Linux 文件系统：
 
 ```bash
 sudo apt update
 sudo apt install -y git python3 python3-venv python3-pip
-mkdir -p ~/code
-cd ~/code
-git clone https://github.com/chengyuanzhu11/uav-llm-demo.git
-cd uav-llm-demo
+mkdir -p ~/projects
+cd ~/projects
+git clone https://github.com/chengyuanzhu11/uav-llm-demo.git UAV_LLM
+cd UAV_LLM
 bash scripts/setup_wsl.sh
 ```
 
-已有仓库时，直接进入仓库目录运行 `bash scripts/setup_wsl.sh`。Linux 环境位于 `~/.venvs/uav-llm-demo`，无需手动激活；项目内的 Windows `.venv` / `.venv-airsim` 不用于 WSL。
+已有仓库时，直接进入仓库目录运行 `bash scripts/setup_wsl.sh`。Linux 环境位于项目内 `.venv`，无需手动激活。VS Code 使用“WSL: Open Folder in WSL”打开该目录，解释器选择 `.venv/bin/python`。
 
 ## 启动（WSL）
 
 在 WSL 终端进入克隆的仓库目录（若克隆在其他位置，请使用实际目录）：
 
 ```bash
-cd ~/code/uav-llm-demo
+cd ~/projects/UAV_LLM
 bash scripts/start_demo.sh
 ```
 
@@ -107,17 +107,19 @@ Urban Crossing 默认往返：到达目标并减速稳定后自动进入 `Return
 
 DeepSeek 可组合共享边界、参数曲线和相对折线路径，设置速度、升降及机头朝向，无需为每种飞行形状新增业务技能。田径场显示与规划使用同一份跑道中心线；任务轨迹按顺序连续跟踪，不能抄近道或仅靠回到终点确认圈数。支持数值条件、分支和循环；空间表达式、全部路径与避让约束均需通过本地校验。详见[校园任务框架](docs/task-program.md)。
 
-修改任务时先制动并保持本地避障，DeepSeek 结合当前位置、原任务和已完成记录解释新的剩余任务；校验通过后切换，保留位置、轨迹、电量、交通时间及历史记录。新要求不可执行时安全等待，旧任务不会自动继续；迟到的旧回复不能覆盖新指令。普通航段重规划、轨迹跟踪及循环执行在本地完成；任务需要依据新观测作进一步判断时，执行评估节点会调用 DeepSeek 更新剩余程序，并保留明确的结束要求与安全约束。
+修改任务时先制动并保持本地避障，DeepSeek 结合当前位置、原任务和已完成记录解释新的剩余任务；校验通过后切换，保留位置、轨迹、电量、交通时间及历史记录。新要求不可执行时安全等待，旧任务不会自动继续；迟到的旧回复不能覆盖新指令。普通航段重规划、轨迹跟踪及循环执行在本地完成；任务需要依据新观测作进一步判断时，执行评估节点会调用 DeepSeek 更新剩余程序，并保留完整的未完成要求、顺序、次数、条件和安全约束。
 
-完成记录绑定任务、步骤、无人机、地点和仿真时间：观测动作须实际到达并满足驻留要求，运动动作须验证规定轨迹的覆盖进度，整项任务以实际满足所要求的结束位置、降落或悬停状态为完成依据。热读数是执行到现场后生成的仿真数据，模拟拍照保存结构化观测记录，**不生成照片，也不执行真实视觉识别或热成像**。初始提示不包含隐藏观测结果；已完成的历史证据会保留，暂停/偏离观测点会重新计时当前驻留。当前只有 `uav-1`，尚未实现多机分配。
+完成记录绑定任务、步骤、无人机、地点和仿真时间：观测动作须实际到达并满足驻留要求，运动动作须验证规定轨迹的覆盖进度，整项任务须通过独立任务契约验收：所需动作、条件分支、循环、轨迹及结束状态全部有执行证据，不能仅靠到达终点判成功。自主复核遗漏要求会自动纠错，用户主动修改任务则建立新契约。热读数是执行到现场后生成的仿真数据，模拟拍照保存结构化观测记录，**不生成照片，也不执行真实视觉识别或热成像**。初始提示不包含隐藏观测结果；已完成的历史证据会保留，暂停/偏离观测点会重新计时当前驻留。当前只有 `uav-1`，尚未实现多机分配。
 
 ## Agent
 
 Urban Crossing 默认使用离线 `mock`，DeepSeek 可驱动 HTML 或 AirSim；园区固定使用 DeepSeek 解释任务和 HTML 执行。
 
-不要把 API key 写入代码或提交到 Git。推荐在页面工具栏点击 `DeepSeek API`，再点击钥匙按钮输入 key。key 只保存在当前 Flask 进程内存，重启 Flask 后清除；页面、日志和 API 响应不会回显 key。
+点击工具栏 **API 设置**，选择 DeepSeek 官方或阿里云百炼，填写对应 Key，读取模型列表后选择模型并保存。接口地址自动填写，业务空间地址等特殊配置在“高级设置”中修改。配置失败后可直接修改重试，无需重启；更换配置后重新提交任务即可。
 
-DeepSeek 请求失败时，页面只显示不含响应正文的 HTTP 状态码或网络故障类别。认证失败、余额不足和参数错误会立即停止，不再重复请求；网络故障（含 TLS）、超时、限流及服务端错误按 2、4、8、16、30 秒退避并持续重试，成功后重置间隔。原始响应正文和异常文本不会写入任务轨迹。当前默认模型名 `deepseek-v4-flash` 仍被官方接受；新推荐名是 `deepseek-flash`，可通过 `DEEPSEEK_MODEL` 设置。
+两家服务的 Key、模型和地址分别保存在当前 Flask 进程内存，同一服务商同一地址可留空复用 Key；切换服务商不会混用密钥。重启后需重新配置（启动环境预置除外）。Key 不写入浏览器存储、日志或 API 响应，也不要写入代码或 Git。模型列表校验不发起推理；目录可见不等于拥有该模型的推理权限，仍需任务实测。百炼地域、权限与学生券说明见[百炼接入](docs/bailian-api.md)。
+
+DeepSeek 请求失败时，页面只显示不含响应正文的 HTTP 状态码或网络故障类别。认证失败、余额不足和参数错误会立即停止，不再重复请求；网络故障（含 TLS）、超时、限流及服务端错误按 2、4、8、16、30 秒退避并持续重试，成功后重置间隔。原始响应正文和异常文本不会写入任务轨迹。官方默认模型为 `deepseek-flash`，页面以服务商实际返回的模型列表为准。
 
 DeepSeek 路线未通过安全检查时，使用最新观测和拒绝原因继续请求，不自动切换 Mock。等待期间保持本地避障；持续重试可能增加 API 用量，可在页面暂停或 Reset 取消。
 
@@ -128,11 +130,11 @@ WSL 下 DeepSeek 请求由 Linux `requests` 发出，网络与代理设置应在
 ```bash
 read -rsp 'DeepSeek API key: ' DEEPSEEK_API_KEY; echo
 export DEEPSEEK_API_KEY
-export DEEPSEEK_MODEL='deepseek-v4-flash'
+export DEEPSEEK_MODEL='deepseek-flash'
 bash scripts/start_demo.sh
 ```
 
-输入 key 时不会回显，也不会将 key 写入命令历史。使用环境变量预置的 key 会保留在当前终端中，需要清除时执行 `unset DEEPSEEK_API_KEY`。
+输入 key 时不会回显，也不会将 key 写入命令历史。使用环境变量预置的 key 会保留在当前终端中，需要清除时执行 `unset DEEPSEEK_API_KEY`。启动脚本也会加载项目根目录的 `.env`；该文件已被 Git 忽略，界面中填写的 Key 仍只保存在进程内存。
 
 ## DeepSeek Prompt Cache
 
@@ -143,7 +145,7 @@ bash scripts/start_demo.sh
 统计连续请求时使用加权命中率 `sum(hit) / sum(prompt_tokens)`：
 
 ```bash
-~/.venvs/uav-llm-demo/bin/python scripts/audit_prompt_cache.py --usage-log logs/deepseek_usage.log
+.venv/bin/python scripts/audit_prompt_cache.py --usage-log logs/deepseek_usage.log
 ```
 
 脚本按模型及 Prompt 版本汇总，并列出最后 12 条请求；只纳入 token 数完整且 `hit + miss == prompt_tokens` 的样本。缓存落盘需要时间，新前缀应观察至少 3 次连续请求，不能把第一次冷启动或离线字符串相似度当成实测命中率。详细排查见 [Prompt Cache 报告](docs/prompt-cache-audit.md)。
@@ -171,7 +173,6 @@ AirSim 切换请求示例：
 {
   "backend": "airsim",
   "config": {
-    "host": "127.0.0.1",
     "port": 41451,
     "vehicle_name": "Drone1",
     "wind_ned": {"north": 0, "east": 0, "down": 0}
@@ -184,13 +185,13 @@ AirSim 切换请求示例：
 在项目目录使用上述 Linux 环境：
 
 ```bash
-~/.venvs/uav-llm-demo/bin/python -m unittest discover -s tests -v
+.venv/bin/python -m unittest discover -s tests -v
 ```
 
 Follow UAV 浏览器回归需 Node.js、Playwright 及其 Chromium；使用离线 Mock 数据，不操作正在运行的服务，也不调用 DeepSeek：
 
 ```bash
-~/.venvs/uav-llm-demo/bin/python scripts/capture_follow_fixture.py
+.venv/bin/python scripts/capture_follow_fixture.py
 node scripts/verify_follow_camera.cjs
 ```
 
@@ -198,47 +199,47 @@ node scripts/verify_follow_camera.cjs
 
 ## 评测与复盘
 
+校园语义任务基准使用人工标注的要求，独立检查巡检、顺序、次数、条件、实际环绕轨迹和结束状态；离线运行不会调用 API，也不操作当前服务：
+
+```bash
+.venv/bin/python scripts/run_semantic_benchmark.py
+```
+
+真实 API 评测需显式选择，运行方式、预算及结果边界见[校园语义任务基准](docs/semantic-benchmark.md)。离线回复只验证执行与验收链路，不能当作 DeepSeek 的理解准确率。
+
 以下基准和航路回放针对 Urban Crossing；园区通过任务 API 运行，任务与证据写入同一运行日志，尚不支持该航路回放器。固定种子的离线回归不调用 API：
 
 ```bash
-~/.venvs/uav-llm-demo/bin/python scripts/run_benchmark.py --mode virtual --scenario urban_crossing --seed 7 --seed 11 --seed 23 --output results.json
+.venv/bin/python scripts/run_benchmark.py --mode virtual --scenario urban_crossing --seed 7 --seed 11 --seed 23 --output results.json
 ```
 
 真实 DeepSeek 评测使用 `--mode realtime --backend deepseek`，需要终端环境变量中的 key；页面内存中的 key 不会传给独立脚本。实时模式计入 API 等待，`--max-seconds` 限制墙钟时间；虚拟模式限制仿真时间，只允许本地或录制的规划响应。超时明确标为 `timeout`。
 
 每轮记录完成证据、延迟、调用量、场景种子及源码指纹。配对比较、离线响应回放和可选费用估算见 [评测与运行日志](docs/evaluation-and-recovery.md)。
 
-## 可选：Windows 本机 AirSim 验证
+## 可选：WSL 连接 Windows Blocks
 
-AirSim 本身支持 Linux；本项目现有 Windows Blocks 与共享贴图入口要求 Flask 在 Windows 运行，以下步骤用于该配置。
+Blocks 保留在 Windows；Flask、Python 和测试统一在 WSL。先安装可选依赖：
 
-在项目目录的 PowerShell 终端指定已安装的 Windows Python 并安装依赖（将示例路径替换为实际解释器）：
-
-```powershell
-$env:UAV_DEMO_PYTHON = 'C:\path\to\python.exe'
-& $env:UAV_DEMO_PYTHON -m pip install -r requirements.txt -r requirements-airsim.txt
+```bash
+bash scripts/setup_wsl.sh --airsim
+bash scripts/start_airsim.sh
+.venv/bin/python scripts/verify_airsim.py
 ```
 
-确保 5000 端口空闲，再启动 Windows Flask 和 Blocks：
+启动器读取 Windows `Documents/AirSim/settings.json`，在 `%LOCALAPPDATA%\UAV_LLM\AirSim\settings-wsl.json` 生成专用配置，保留原文件。NAT 模式仅监听当前 WSL 虚拟网卡，镜像网络使用 localhost；不绑定所有网卡。Blocks 路径不同时，可向启动器传入 `-BlocksExe 'C:\path\to\Blocks.exe'`。启动器仅支持 SimpleFlight 仿真。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start_demo.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\start_airsim.ps1
+如 Windows 防火墙拦截，仅针对实际 Blocks 程序、TCP 41451、`vEthernet (WSL)` 和 `LocalSubnet` 添加入站许可；管理员操作独立于正常启动，脚本不会自动修改防火墙。不要向 Wi-Fi 或其他局域网接口开放该端口。
+
+后端和连接面板使用同一默认地址；可用 `AIRSIM_HOST`、`AIRSIM_PORT`、`AIRSIM_VEHICLE_NAME` 覆盖。Host 仅接受本机或当前 WSL 的 Windows 网关。共享贴图默认由 WSL 写入 `/mnt/c/.../AppData/Local/UAV_LLM/AirSim/textures`，Blocks 收到对应的 `C:\...` 路径；也可设置 `AIRSIM_TEXTURE_DIR` 为 Windows 挂载目录，不能使用 Linux 私有临时目录。
+
+`verify_airsim.py` **只读检查** RPC、车辆、遥测和 Cube 资源，不解锁、不起飞、不移动。通过后在页面切换 `AirSim Validation` 才会加载共享地图并重置仿真无人机；点击 Start 才执行飞行任务。地图和贴图加载可单独验证：
+
+```bash
+.venv/bin/python scripts/verify_shared_scene.py
 ```
 
-打开 [http://127.0.0.1:5000](http://127.0.0.1:5000)，等待 Blocks 的 RPC 就绪后，在页面选择 `AirSim Validation`。该入口默认仍使用 HTML Runtime 和 Mock Agent；Windows 下的 DeepSeek 请求使用系统 HTTP 代理设置（包括 PAC），key 可在页面输入。
-
-Windows 本机测试使用与安装依赖相同的解释器：
-
-```powershell
-& $env:UAV_DEMO_PYTHON -m unittest discover -s tests -v
-```
-
-独立 AirSim 验证：
-
-```powershell
-& $env:UAV_DEMO_PYTHON .\scripts\verify_airsim.py
-```
+此流程仅面向 Windows Blocks 仿真，不连接真实无人机。校园任务仍使用 HTML 仿真。
 
 ## 项目结构
 

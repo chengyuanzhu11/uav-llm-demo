@@ -22,7 +22,7 @@ GET `/api/state` 不推进时间、不生成鸟类路线、不查询 Runtime，�
 
 每轮 run_id 关联场景、目标/交通种子、控制参数、源码指纹、数值航点、拒绝原因、重试、阶段完成、每秒遥测和控制延迟。Reset 建立新 run_id，旧日志保留。进程内最多保留 200 条规划记录，累计调用/拒绝/错误计数不随截断丢失。日志不保存 key、请求头、原始 Prompt、原始响应或自由文本模型推理。DeepSeek 数值用量日志包含同一 run_id/request_id；未返回 usage 与尚未返回的请求会明确标记，不计为零用量。
 
-园区额外记录 `semantic_requested / semantic_accepted / semantic_rejected / semantic_provider_failed / semantic_evidence`，格式纠错记录 `semantic_schema_rejected`，任务调整记录 `semantic_update_submitted`，执行预算或缺观测的安全等待记录 `semantic_execution_waiting`。语义解释次数在 `semantic_mission.provider_calls`，本地航段规划次数在 `flight.planner_calls`；当前提示版本 `semantic-tasks-v5` 与 Urban 的 `static-prefix-v1` 分开统计，历史记录保留原标记。循环、普通子任务切换和几何重规划不重复调用 DeepSeek；每次任务修改及执行评估会解释剩余任务，记录修订号及唯一执行实例。
+园区额外记录 `semantic_requested / semantic_accepted / semantic_rejected / semantic_provider_failed / semantic_evidence`，格式或任务漏项纠错记录 `semantic_schema_rejected`，任务调整记录 `semantic_update_submitted`，执行预算或缺观测的安全等待记录 `semantic_execution_waiting`。语义解释次数在 `semantic_mission.provider_calls`，本地航段规划次数在 `flight.planner_calls`；当前提示版本 `semantic-tasks-v6` 与 Urban 的 `static-prefix-v1` 分开统计，历史记录保留原标记。循环、普通子任务切换和几何重规划不重复调用 DeepSeek；每次任务修改及执行评估会解释剩余任务，记录修订号及唯一执行实例。
 
 源码指纹用于比较当前 Python 实现，不能代替依赖环境归档。任务日志保存几何场景和结构化规划响应，不是操作系统调度、图像或真实传感器的完整录制。
 
@@ -38,9 +38,9 @@ GET `/api/state` 不推进时间、不生成鸟类路线、不查询 Runtime，�
 两种计时协议的批量评测都默认使用 `--traffic-policy fixed`，固定交通不随 UAV 重规划改变。页面使用同一固定交通协议，鸟群运动不随任务和无人机航线改变。观测、预测与风险指标见[动态障碍物说明](dynamic-traffic.md)；比较脚本检查交通策略、交通版本及观测配置，避免混合不同实验条件。
 
 ```bash
-~/.venvs/uav-llm-demo/bin/python scripts/run_benchmark.py --mode virtual --scenario urban_crossing --seed 7 --seed 11 --seed 23 --planner-latency 1 --output before.json
-~/.venvs/uav-llm-demo/bin/python scripts/run_benchmark.py --mode realtime --backend deepseek --scenario urban_crossing --seed 7 --max-seconds 120 --output live.json
-~/.venvs/uav-llm-demo/bin/python scripts/compare_benchmarks.py before.json after.json --output comparison.json
+.venv/bin/python scripts/run_benchmark.py --mode virtual --scenario urban_crossing --seed 7 --seed 11 --seed 23 --planner-latency 1 --output before.json
+.venv/bin/python scripts/run_benchmark.py --mode realtime --backend deepseek --scenario urban_crossing --seed 7 --max-seconds 120 --output live.json
+.venv/bin/python scripts/compare_benchmarks.py before.json after.json --output comparison.json
 ```
 
 真实 API 脚本需要 `DEEPSEEK_API_KEY` 环境变量，不读取 Flask 的内存 key。实时评测会消耗用户配置的 API 额度；默认命令为离线 Mock。
@@ -54,7 +54,9 @@ GET `/api/state` 不推进时间、不生成鸟类路线、不查询 Runtime，�
 ## 离线规划响应回放
 
 ```bash
-~/.venvs/uav-llm-demo/bin/python scripts/replay_run.py --journal logs/mission_runs.jsonl --run-id RUN_ID --max-seconds 120 --output replay.json
+.venv/bin/python scripts/replay_run.py --journal logs/mission_runs.jsonl --run-id RUN_ID --max-seconds 120 --output replay.json
 ```
 
 从日志还原初始场景、交通种子、结构化方案和记录中的仿真交付延迟，交给当前控制器重新执行，不调用 API。用于固定失败案例和成功回归案例，源码指纹不同时会在输出中标明。只支持没有手动改目标、切 Agent、暂停的单轮 HTML 导航任务；语义任务、跨轮转文件缺少记录、手动操作或响应耗尽时明确报错/失败，不偷偷补调 API。回放不保证复现原机的 CPU 调度和网络抖动。
+
+校园完整任务验收与人工标注语义基准见[任务框架](task-program.md)及[校园语义基准](semantic-benchmark.md)。服务成功与人工要求达成分开统计，超时、澄清及生成失败均保留在分母。

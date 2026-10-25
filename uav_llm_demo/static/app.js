@@ -43,11 +43,16 @@ const agentDialog = document.getElementById("agentDialog");
 const agentForm = document.getElementById("agentForm");
 const closeAgentBtn = document.getElementById("closeAgentBtn");
 const cancelAgentBtn = document.getElementById("cancelAgentBtn");
+const agentProvider = document.getElementById("agentProvider");
 const deepseekApiKey = document.getElementById("deepseekApiKey");
 const deepseekModel = document.getElementById("deepseekModel");
 const deepseekBaseUrl = document.getElementById("deepseekBaseUrl");
 const saveAgentBtn = document.getElementById("saveAgentBtn");
 const agentDialogError = document.getElementById("agentDialogError");
+const agentKeyStatus = document.getElementById("agentKeyStatus");
+const agentDialogStatus = document.getElementById("agentDialogStatus");
+const agentAdvanced = document.getElementById("agentAdvanced");
+const loadModelsBtn = document.getElementById("loadModelsBtn");
 const airsimDialog = document.getElementById("airsimDialog");
 const closeAirSimBtn = document.getElementById("closeAirSimBtn");
 const closeAirSimFooterBtn = document.getElementById("closeAirSimFooterBtn");
@@ -125,6 +130,14 @@ let scenariosLoaded = false;
 let renderedMissionMode = null;
 let recommendationKey = "";
 let semanticStepsKey = "";
+let agentConfigCatalog = null;
+let agentConfigEpoch = 0;
+let agentModelRequest = 0;
+let agentKeyRevision = 0;
+let agentModelsContext = "";
+let agentConfigLoading = false;
+let agentModelsLoading = false;
+let agentConfigSaving = false;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0xbfc5c6, 0.002);
@@ -178,6 +191,7 @@ async function requestJson(url, options = {}) {
   if (!response.ok) {
     const error = new Error(payload.error || `Request failed: ${response.status}`);
     error.status = response.status;
+    error.code = payload.error_code;
     throw error;
   }
 
@@ -301,52 +315,57 @@ async function switchScenario(scenarioId) {
 }
 
 
-async function switchAgent(backend, force = false, config = {}) {
+async function switchAgent(backend) {
   if (!state || commandPending) return false;
   const normalized = String(backend || "").trim().toLowerCase();
   if (!["mock", "deepseek"].includes(normalized)) return false;
   if (isSemanticScenario() && normalized !== "deepseek") return false;
-  if (!force && normalized === state.agent_backend) return true;
-  if (normalized === "deepseek" && !config.api_key && !state.deepseek_key_configured) {
+  if (normalized === "deepseek") {
     openAgentDialog();
     return false;
   }
-  const switched = await runCommand(async () => {
-    // Config preserves the route and running state in the backend, including
-    // invalidating any old planner generation. No frontend pause/resume race.
-    await postState("/api/config", { backend: normalized, ...config });
-    closeDialog(agentDialog);
-  });
-  if (!switched && agentDialogError) {
-    setText(agentDialogError, commandError);
-    agentDialogError.hidden = false;
-  }
-  return switched;
+  if (normalized === state.agent_backend) return true;
+  return runCommand(() => postState("/api/config", { backend: normalized }));
 }
 
 
 async function configureDeepSeekFromDialog(event) {
   event?.preventDefault();
-  if (commandPending) {
+  if (commandPending || agentConfigLoading || agentModelsLoading || agentConfigSaving) return;
+  if (!deepseekModel.value || agentModelsContext !== agentConfigContext()) {
+    showAgentConfigError("请先读取可用模型，再选择模型保存。");
     return;
   }
+  const epoch = agentConfigEpoch;
   const config = {
-    model: deepseekModel?.value.trim(),
-    base_url: deepseekBaseUrl?.value.trim(),
+    backend: "deepseek",
+    provider: agentProvider.value,
+    model: deepseekModel.value,
+    base_url: deepseekBaseUrl.value.trim(),
+    verify: true,
   };
-  const apiKey = deepseekApiKey?.value.trim();
-  if (apiKey) {
-    config.api_key = apiKey;
-  }
-  const switched = await switchAgent("deepseek", true, config);
-  if (switched) {
-    if (deepseekApiKey) {
-      deepseekApiKey.value = "";
+  if (deepseekApiKey.value.trim()) config.api_key = deepseekApiKey.value.trim();
+  let configurationError = "";
+  agentConfigSaving = true;
+  showAgentConfigError("");
+  setText(agentDialogStatus, "正在验证配置…");
+  refreshAgentConfigControls();
+  const saved = await runCommand(async () => {
+    try {
+      await postState("/api/config", config);
+    } catch (error) {
+      configurationError = agentConfigurationError(error);
+      throw error;
     }
-    if (agentDialogError) {
-      agentDialogError.hidden = true;
-      agentDialogError.textContent = "";
-    }
+  });
+  if (epoch !== agentConfigEpoch || !agentDialog.open) return;
+  agentConfigSaving = false;
+  if (saved) {
+    closeAgentDialog();
+  } else {
+    agentDialogStatus.textContent = "";
+    showAgentConfigError(configurationError || "配置未保存，请重试。");
+    refreshAgentConfigControls();
   }
 }
 
@@ -488,7 +507,7 @@ function buildEnvironment() {
   state.scene_layout.forEach((item) => {
     if ((semantic || urbanParcels.length) && item.name.startsWith("building_")) return;
     // Campus architecture and landscape are drawn from the shared campus layout.
-    if (semantic && item.name !== "ground" && item.name !== "base_pad" && item.name !== "target_pad") return;
+    if (semantic && item.name !== "ground" && item.name !== "base_pad") return;
     let map = null;
     if (urbanParcels.length && ((!semantic && item.name === "ground") || item.name.startsWith("road_")
         || item.name.startsWith("sidewalk_"))) {
@@ -1678,22 +1697,190 @@ function closeDialog(dialog) {
 }
 
 
-function openAgentDialog() {
-  if (commandPending) {
+function showAgentConfigError(message) {
+  agentDialogError.textContent = message;
+  agentDialogError.hidden = !message;
+}
+
+
+function agentConfigurationError(error) {
+  // Only these endpoints' fixed, server-curated errors may reach this form.
+  const safeCodes = new Set(["authentication_failed", "model_unavailable",
+    "endpoint_unreachable", "configuration_invalid", "missing_key",
+    "provider_changed", "models_unavailable"]);
+  return safeCodes.has(error?.code) ? error.message : "无法读取或验证配置，请检查连接后重试。";
+}
+
+
+function agentConfigContext() {
+  return JSON.stringify([agentProvider.value, deepseekBaseUrl.value.trim().replace(/\/+$/, ""), agentKeyRevision]);
+}
+
+
+function agentProviderProfile() {
+  return agentConfigCatalog?.profiles?.find(profile => profile.id === agentProvider.value) || null;
+}
+
+
+function agentKeyReusable() {
+  const profile = agentProviderProfile();
+  return Boolean(profile?.key_configured && profile.base_url?.replace(/\/+$/, "")
+    === deepseekBaseUrl.value.trim().replace(/\/+$/, ""));
+}
+
+
+function setAgentModelOptions(models, selected = "") {
+  deepseekModel.replaceChildren();
+  for (const model of models.length ? models : [""]) {
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model || "请先读取可用模型";
+    deepseekModel.appendChild(option);
+  }
+  if (models.includes(selected)) deepseekModel.value = selected;
+}
+
+
+function refreshAgentConfigControls() {
+  const unavailable = agentConfigLoading || agentConfigSaving || !agentConfigCatalog;
+  agentProvider.disabled = unavailable;
+  deepseekApiKey.disabled = unavailable;
+  deepseekBaseUrl.disabled = unavailable;
+  const ready = agentModelsContext === agentConfigContext() && Boolean(deepseekModel.value);
+  deepseekModel.disabled = unavailable || agentModelsLoading || !ready;
+  loadModelsBtn.disabled = unavailable || agentModelsLoading || !deepseekBaseUrl.value.trim()
+    || (!deepseekApiKey.value.trim() && !agentKeyReusable());
+  saveAgentBtn.disabled = unavailable || agentModelsLoading || !ready;
+  loadModelsBtn.textContent = agentModelsLoading ? "读取中…" : "读取模型";
+  saveAgentBtn.textContent = agentConfigSaving ? "验证中…" : "验证并保存";
+  deepseekApiKey.placeholder = agentKeyReusable() ? "已保存此服务 Key；留空复用" : "输入此服务的 API Key";
+  setText(agentKeyStatus, agentKeyReusable()
+    ? "已保存此服务的 Key；填写新 Key 可替换。" : "Key 仅保存在当前服务进程内。");
+}
+
+
+function invalidateAgentModels() {
+  agentModelRequest += 1;
+  agentModelsContext = "";
+  agentModelsLoading = false;
+  setAgentModelOptions([]);
+  agentDialogStatus.textContent = "";
+  showAgentConfigError("");
+}
+
+
+function selectAgentProvider() {
+  deepseekApiKey.value = "";
+  agentKeyRevision += 1;
+  invalidateAgentModels();
+  const provider = agentConfigCatalog?.providers?.find(entry => entry.id === agentProvider.value);
+  deepseekBaseUrl.value = agentProviderProfile()?.base_url || provider?.default_base_url || "";
+  agentAdvanced.open = agentProvider.value === "custom";
+  refreshAgentConfigControls();
+  if (agentKeyReusable()) void loadAgentModels();
+}
+
+
+async function loadAgentModels() {
+  if (agentConfigLoading || agentConfigSaving || !agentConfigCatalog) return;
+  const context = agentConfigContext();
+  const epoch = agentConfigEpoch;
+  const request = ++agentModelRequest;
+  const body = {provider: agentProvider.value, base_url: deepseekBaseUrl.value.trim()};
+  if (deepseekApiKey.value.trim()) body.api_key = deepseekApiKey.value.trim();
+  if (!body.base_url || (!body.api_key && !agentKeyReusable())) {
+    showAgentConfigError("请填写此服务的 API Key 和接口地址。");
     return;
   }
-  if (deepseekApiKey) {
-    deepseekApiKey.value = "";
+  agentModelsLoading = true;
+  agentModelsContext = "";
+  showAgentConfigError("");
+  setText(agentDialogStatus, "正在读取可用模型…");
+  refreshAgentConfigControls();
+  try {
+    const payload = await requestJson("/api/config/models", {method: "POST", body: JSON.stringify(body)});
+    if (epoch !== agentConfigEpoch || request !== agentModelRequest || !agentDialog.open
+      || context !== agentConfigContext()) return;
+    if (payload.provider !== body.provider) throw new Error("Provider changed");
+    const models = [...new Set((Array.isArray(payload.models) ? payload.models : [])
+      .filter(model => typeof model === "string" && model.trim()))];
+    if (!models.length) {
+      setAgentModelOptions([]);
+      agentDialogStatus.textContent = "";
+      showAgentConfigError("此接口未返回可用模型，请检查 Key、地域和高级设置中的地址。");
+      return;
+    }
+    const preferred = [agentProviderProfile()?.model, payload.current_model, payload.recommended_model]
+      .find(model => models.includes(model)) || models[0];
+    setAgentModelOptions(models, preferred);
+    agentModelsContext = context;
+    setText(agentDialogStatus, "已读取可用模型，请确认后保存。");
+  } catch (error) {
+    if (epoch !== agentConfigEpoch || request !== agentModelRequest || !agentDialog.open) return;
+    setAgentModelOptions([]);
+    agentDialogStatus.textContent = "";
+    showAgentConfigError(agentConfigurationError(error));
+  } finally {
+    if (epoch === agentConfigEpoch && request === agentModelRequest && agentDialog.open) {
+      agentModelsLoading = false;
+      refreshAgentConfigControls();
+    }
   }
-  if (deepseekModel && state?.agent_model) {
-    deepseekModel.value = String(state.agent_model);
-  }
-  if (agentDialogError) {
-    agentDialogError.hidden = true;
-    agentDialogError.textContent = "";
-  }
+}
+
+
+function clearAgentDialog() {
+  deepseekApiKey.value = "";
+  agentConfigEpoch += 1;
+  agentModelRequest += 1;
+  agentKeyRevision += 1;
+  agentModelsContext = "";
+  agentConfigCatalog = null;
+  agentConfigLoading = false;
+  agentModelsLoading = false;
+  agentConfigSaving = false;
+}
+
+
+function closeAgentDialog() {
+  clearAgentDialog();
+  closeDialog(agentDialog);
+}
+
+
+async function openAgentDialog() {
+  if (commandPending) return;
+  clearAgentDialog();
+  const epoch = agentConfigEpoch;
+  agentConfigLoading = true;
+  showAgentConfigError("");
+  setAgentModelOptions([]);
+  setText(agentDialogStatus, "正在读取配置…");
   openDialog(agentDialog);
-  window.setTimeout(() => deepseekApiKey?.focus(), 0);
+  refreshAgentConfigControls();
+  try {
+    const catalog = await requestJson("/api/config");
+    if (epoch !== agentConfigEpoch || !agentDialog.open) return;
+    agentConfigCatalog = catalog;
+    agentProvider.replaceChildren();
+    for (const provider of catalog.providers || []) {
+      const option = document.createElement("option");
+      option.value = provider.id;
+      option.textContent = provider.label;
+      agentProvider.appendChild(option);
+    }
+    const selected = catalog.active_provider || state?.agent_provider || "deepseek";
+    if ((catalog.providers || []).some(provider => provider.id === selected)) agentProvider.value = selected;
+    agentConfigLoading = false;
+    selectAgentProvider();
+    deepseekApiKey.focus({preventScroll: true});
+  } catch (error) {
+    if (epoch !== agentConfigEpoch || !agentDialog.open) return;
+    agentConfigLoading = false;
+    agentDialogStatus.textContent = "";
+    showAgentConfigError(agentConfigurationError(error));
+    refreshAgentConfigControls();
+  }
 }
 
 
@@ -2082,7 +2269,7 @@ followBtn.addEventListener("click", () => setCameraMode("follow"));
 agentButtons.forEach((button) => {
   button.addEventListener("click", () => {
     const backend = button.dataset.agent;
-    if (backend === "deepseek" && !state?.deepseek_key_configured) {
+    if (backend === "deepseek") {
       openAgentDialog();
       return;
     }
@@ -2097,8 +2284,21 @@ airsimConfigBtn?.addEventListener("click", openAirSimDialog);
 reconnectAirSimBtn.addEventListener("click", () => switchRuntime("airsim", true));
 applyWindBtn.addEventListener("click", applyWind);
 agentForm?.addEventListener("submit", configureDeepSeekFromDialog);
-closeAgentBtn?.addEventListener("click", () => closeDialog(agentDialog));
-cancelAgentBtn?.addEventListener("click", () => closeDialog(agentDialog));
+closeAgentBtn?.addEventListener("click", closeAgentDialog);
+cancelAgentBtn?.addEventListener("click", closeAgentDialog);
+agentDialog?.addEventListener("cancel", clearAgentDialog);
+agentDialog?.addEventListener("close", () => { if (!agentDialog.open) clearAgentDialog(); });
+agentProvider?.addEventListener("change", selectAgentProvider);
+loadModelsBtn?.addEventListener("click", loadAgentModels);
+deepseekApiKey?.addEventListener("input", () => {
+  agentKeyRevision += 1;
+  invalidateAgentModels();
+  refreshAgentConfigControls();
+});
+deepseekBaseUrl?.addEventListener("input", () => {
+  invalidateAgentModels();
+  refreshAgentConfigControls();
+});
 closeAirSimBtn?.addEventListener("click", () => closeDialog(airsimDialog));
 closeAirSimFooterBtn?.addEventListener("click", () => closeDialog(airsimDialog));
 window.addEventListener("resize", onResize);

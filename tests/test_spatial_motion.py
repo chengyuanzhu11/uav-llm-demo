@@ -206,6 +206,7 @@ class MotionEvidenceTests(unittest.TestCase):
                                "duration_seconds": None,
                                "when": {"step_id": "movement", "field": "progress", "op": "==", "value": 1}})
         plan = semantic_plan_from_json_text(json.dumps(data), task_catalog(scene))
+        compiled = compile_motion(plan.steps[0]["steps"][0], scene, scene.base, plan.constraints)
         mission = SemanticMission(scene)
         mission.accept(plan)
         identities = []
@@ -213,9 +214,10 @@ class MotionEvidenceTests(unittest.TestCase):
             step = mission.current_step
             identities.append(step["execution_id"])
             self.assertEqual(step["loop_iterations"], {"repeat_motion": i + 1})
-            self.assertTrue(mission.complete_motion((27.8, 82.5, 2.2), 100 + i,
+            self.assertTrue(mission.complete_motion(compiled.points[-1], 100 + i,
                             {"execution_id": step["execution_id"], "completed": True,
-                             "covered_distance_m": 80, "total_length_m": 80, "duration_seconds": 32}))
+                             "covered_distance_m": compiled.length_m,
+                             "total_length_m": compiled.length_m, "duration_seconds": 32}))
         self.assertNotEqual(*identities)
         self.assertEqual(mission.current_step["id"], "inspect")
         self.assertEqual(len(mission.evidence), 2)

@@ -3,27 +3,28 @@
 from .scenarios import ScenarioDefinition
 from pathlib import Path
 import struct
-import tempfile
 import zlib
+from .airsim_connection import texture_directory, windows_path
 
 METERS_PER_CELL = 3.0
 METERS_PER_LEVEL = 5.0
 AIRSIM_ORIGIN = (500.0, 500.0, -100.0)
 
 
-def color_texture(color: str) -> str:
-    folder = Path(tempfile.gettempdir()) / "uav-demo-materials"
-    folder.mkdir(exist_ok=True)
+def color_texture(color: str, folder: Path | None = None) -> str:
+    folder = folder if folder is not None else texture_directory()
     path = folder / (color.lstrip("#") + ".png")
     def chunk(kind, data):
         return (struct.pack(">I", len(data)) + kind + data
                 + struct.pack(">I", zlib.crc32(kind + data)))
     rgb = bytes.fromhex(color.lstrip("#"))
-    path.write_bytes(b"\x89PNG\r\n\x1a\n"
+    content = (b"\x89PNG\r\n\x1a\n"
                      + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
                      + chunk(b"IDAT", zlib.compress((b"\0" + rgb * 4) * 4))
                      + chunk(b"IEND", b""))
-    return str(path)
+    if not path.is_file() or path.read_bytes() != content:
+        path.write_bytes(content)
+    return windows_path(path)
 
 
 def scene_layout(scenario: ScenarioDefinition) -> list[dict]:
@@ -113,6 +114,9 @@ def scene_layout(scenario: ScenarioDefinition) -> list[dict]:
             height * METERS_PER_LEVEL, colors[index % len(colors)])
     for name, point, color in (("base", scenario.base, "#4fd477"),
                                ("target", scenario.target, "#f2b84b")):
+        # Semantic missions choose their destinations per step, not a fixed pad.
+        if campus and name == "target":
+            continue
         # The ground launch marker must not become a raised collision block.
         pad_height = -0.014 if name == "base" and point[2] == 0 else 0.025
         box(name + "_pad", point[0], point[1], pad_height, 2.5, 2.5, 0.15, color)

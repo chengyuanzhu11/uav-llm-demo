@@ -13,7 +13,8 @@ from uav_llm_demo.agents import DeepSeekAgent, PlannerProviderError, SemanticPla
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import distance, norm, VehicleState
 from uav_llm_demo.scenarios import load_scenario
-from uav_llm_demo.semantic_tasks import SemanticMission, semantic_plan_from_json_text, task_catalog, plan_goal_contract
+from uav_llm_demo.task_contract import TaskContractMonitor, TaskContractError
+from uav_llm_demo.semantic_tasks import SemanticMission, semantic_plan_from_json_text, task_catalog
 from uav_llm_demo.semantic_navigation import apply_task_constraints
 
 
@@ -126,12 +127,13 @@ class GenericControlServiceTests(TestCase):
 
     def test_review_cannot_replace_landing_with_hovering(self):
         service = self.service(program([review(), control("home")]),
-                               program([control("home", "airborne")]))
+                               *[program([control("home", "airborne")]) for _ in range(3)])
         service.submit_task("评估当前情况后基地降落。", background=False)
-        state = pump(service, lambda s: s["semantic_mission"]["status"] == "needs_clarification")
+        state = pump(service, lambda s: s["semantic_mission"]["status"] == "generation_failed")
         self.assertFalse(state["milestones"]["task_completed"])
         self.assertEqual(service._vehicle.position, service._environment.base)
-        self.assertIn("原定终点", service.semantic.message)
+        self.assertIn("自动修正仍未通过", service.semantic.message)
+        self.assertEqual(len(service.agent.inputs), 4)
         self.assertEqual(service.semantic.evidence, [])
 
     def test_review_budget_prevents_recursive_paid_requests(self):
@@ -208,15 +210,17 @@ class GenericControlServiceTests(TestCase):
 
     def test_review_contract_keeps_heading_dwell_and_motion_path(self):
         catalog = task_catalog(compact_campus())
-        def contract(nodes):
-            plan = semantic_plan_from_json_text(json.dumps(program(nodes)), catalog)
-            return plan_goal_contract(plan, compact_campus())
-        initial = contract([control("home", yaw_deg=90, duration_seconds=5)])
-        self.assertNotEqual(initial, contract([control("home", yaw_deg=0, duration_seconds=5)]))
-        self.assertNotEqual(initial, contract([control("home", yaw_deg=90, duration_seconds=1)]))
-        node = dict(id="path",action="motion",target_id="library",when=None,
-                    motion=dict(path=dict(kind="polyline",points_m=[[0,0,0],[3,0,0]])))
-        self.assertNotEqual(contract([node]), contract([home()]))
+        def parsed(nodes):
+            return semantic_plan_from_json_text(json.dumps(program(nodes)), catalog)
+        initial = TaskContractMonitor(parsed([control("home", yaw_deg=90, duration_seconds=5)]), "test")
+        for modified in (control("home", yaw_deg=0, duration_seconds=5),
+                         control("home", yaw_deg=90, duration_seconds=1)):
+            with self.assertRaises(TaskContractError):
+                initial.validate_revision(parsed([modified]), after_review=False)
+        node = dict(id="path", action="motion", target_id="library", when=None,
+                    motion=dict(path=dict(kind="polyline", points_m=[[0,0,0],[3,0,0]])))
+        with self.assertRaises(TaskContractError):
+            TaskContractMonitor(parsed([node]), "test").validate_revision(parsed([home()]), after_review=False)
 
     def test_hover_above_ground_does_not_produce_landing_evidence(self):
         scene = load_scenario("semantic_campus")

@@ -1,42 +1,17 @@
-# Cosys-AirSim Configuration
+# AirSim 配置
 
-当前安装使用：
+项目使用 Windows Cosys-AirSim 5.5-v3.3 Blocks、Linux `cosysairsim==3.3.0` 客户端和 SimpleFlight 仿真。Blocks 不随源码迁移。
 
-```text
-Cosys-AirSim 5.5-v3.3 packaged Blocks
-cosysairsim Python client 3.3.0
-SimpleFlight
-RPC 127.0.0.1:41451
+`settings.simpleflight.json` 是原始配置示例。启动器读取 Windows `Documents/AirSim/settings.json`，生成独立的 Windows 缓存配置，将监听地址设为当前 WSL 虚拟网卡；镜像网络使用 localhost。原始配置保留。
+
+在 WSL 项目目录运行：
+
+```bash
+bash scripts/setup_wsl.sh --airsim
+bash scripts/start_airsim.sh
+.venv/bin/python scripts/verify_airsim.py
 ```
 
-`settings.simpleflight.json` 已复制到：
+验证脚本只读 RPC。加载地图、重置以及飞行分别通过页面控件执行；共享贴图位于 Windows 本地缓存，Linux 与 Windows 各使用对应路径。防火墙如需调整，应单独授权并仅开放 WSL 接口的 TCP 41451。
 
-```text
-C:\Users\kyrie\Documents\AirSim\settings.json
-```
-
-它启用 Multirotor、FastPhysicsEngine、RPC、碰撞和 NED 风场。
-
-`settings.px4.json` 仅用于后续 PX4 SITL。PX4 在 Windows 上通常需要
-WSL2 或 Linux 环境；当前安装没有启用 PX4。
-
-启动：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start_demo.ps1
-```
-
-独立联机验证：
-
-```powershell
-& '.\.venv-airsim\Scripts\python.exe' .\scripts\verify_airsim.py
-```
-
-风场采用 NED 坐标：
-
-- `north`: 北向速度，m/s。
-- `east`: 东向速度，m/s。
-- `down`: 向下速度，m/s。
-
-AirSim 仍需要根据真实无人机的质量、惯量、动力系统、气动数据和传感器
-噪声进行标定，不能直接等同于现实飞行试验。
+`settings.px4.json` 仅保留为后续 PX4 SITL 参考，当前启动器不会使用它。完整说明见 [README](../README.md#可选wsl-连接-windows-blocks)。

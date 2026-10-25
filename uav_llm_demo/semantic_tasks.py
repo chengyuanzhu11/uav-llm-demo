@@ -11,6 +11,7 @@ from .safety import _point, metric_distance
 from .spatial_motion import MOTION_DEFAULTS, MOTION_LIMITS, MotionConstraintError, normalize_motion, spatial_catalog
 from .spatial_control import CONTROL_DEFAULTS, control_catalog, normalize_control, resolve_control_goal
 from .task_protocol import PROTOCOL_VERSION, TaskProtocolError, task_program_schema, validate_structure
+from .task_contract import TaskContractError, TaskContractMonitor
 
 
 ACTION_DURATIONS = {"visit": 0.0, "inspect": 2.0, "thermal_scan": 3.0,
@@ -96,8 +97,14 @@ A review node is exactly {id,action:"review",instruction:string,when:null}. Inse
 new observations require reasoning beyond typed predicates: the executor supplies measured
 telemetry, evidence, remaining steps and the review instruction to you again. Return a complete
 remaining program without replaying completed actions. A review may be the last node when the
-user leaves the continuation open; do not invent a mandatory return or landing goal. Preserve any established final goal and
-hard constraints during autonomous review. Use existing branches for fully specified predicates.
+user leaves the continuation open; do not invent a mandatory return or landing goal.
+During autonomous review, mission_context.task_contract records the accepted specification;
+its remaining_steps lists obligations still to execute. Preserve all required actions, targets,
+order, conditions, repetitions, motion geometry/direction/heading, dwell and terminal state, as well
+as hard constraints. Additional useful actions are allowed before the required final action;
+never discard a required inspection just because the final landing remains unchanged.
+Only a new explicit user instruction may replace this contract. Do not replay completed actions;
+use their evidence_id when referring to historical observations. Use existing branches for fully specified predicates.
 Do not insert needless reviews into simple transit/landing tasks. Reviews are bounded by
 catalog.limits.max_autonomous_reviews. Never claim a review, visit or model response proves landing.
 Stay within catalog.limits; budgets are safety boundaries, not successful completion.
@@ -216,7 +223,6 @@ class SemanticConstraintError(ValueError):
     """An understood task conflicts with the scene and needs clarification."""
     _MESSAGES = {
         "control_goal_unsafe": "目标位置或着陆区域未通过净空、地表及飞行边界检查，请调整位置或任务要求。",
-        "review_goal_changed": "执行评估改变了原定终点或硬约束，已保持安全等待。",
         "motion_path_unsafe": "任务轨迹超出允许范围或穿过建筑、避让区域，请调整轨迹位置或高度。",
         "altitude_out_of_range": "高度上限超出地图允许的飞行范围，请调整高度要求。",
         "target_in_avoided_region": "任务地点位于指定的避让区域内，请调整任务地点或避让区域。",
@@ -234,7 +240,8 @@ class SemanticExecutionError(ValueError):
     """A program cannot safely progress; the service must hold instead of claiming success."""
     _MESSAGES = {"execution_budget": "任务达到安全执行预算，已暂停任务推进，请修改任务或安排返航。",
                  "missing_observation": "任务条件缺少有效观测，已暂停任务推进，请修改任务。",
-                 "missing_telemetry": "任务条件缺少有效遥测，已暂停任务推进，请检查状态后修改任务。"}
+                 "missing_telemetry": "任务条件缺少有效遥测，已暂停任务推进，请检查状态后修改任务。",
+                 "task_contract_failed": "完整任务验收未通过，仍有要求未完成或证据不符，已保持安全等待。"}
 
     def __init__(self, code="execution_budget"):
         self.code = code
@@ -455,23 +462,6 @@ def plan_goal_state(plan, scenario):
     return None
 
 
-def plan_goal_contract(plan, scenario):
-    """Freeze explicit terminal requirements across autonomous reviews.
-
-    Geometry-derived goals compare measured-state requirements. For a terminal
-    motion or conditional program, preserve its task expression as well; a model
-    must not replace an unfinished path with arrival at the same endpoint.
-    """
-    if plan.steps[-1]["action"] == "review":
-        # An open-ended assessment may choose the continuation. Explicit terminal
-        # controls/paths are frozen below; hard constraints always remain fixed.
-        return None
-    goal = plan_goal_state(plan, scenario)
-    if goal is not None:
-        return {"action": plan.steps[-1]["action"], **goal}
-    return {key: deepcopy(value) for key, value in plan.steps[-1].items() if key != "id"}
-
-
 class SemanticMission:
     """Bounded interpreter: stationary observations or verified path traversal produce evidence."""
 
@@ -489,42 +479,63 @@ class SemanticMission:
         self.goal_state = None
         self.execution_feedback = []
         self._control_goals = {}
+        self.task_contract = None
         self._targets = {point["id"]: deepcopy(point) for point in scenario.points_of_interest}
 
-    def accept(self, plan: SemanticPlan, preserve_evidence=False, telemetry=None):
+    def accept(self, plan: SemanticPlan, preserve_evidence=False, telemetry=None, *, autonomous=False):
         catalog = task_catalog(self.scenario)
         if preserve_evidence:
             catalog["mission_context"] = self.catalog_context()
         validated = semantic_plan_from_json_text(json.dumps(plan.to_dict(), ensure_ascii=False, allow_nan=False), catalog)
+        revision = self.revision + 1 if preserve_evidence else 1
+        values = (self._normalized_telemetry(telemetry) if telemetry is not None else
+                  deepcopy(self._telemetry) if preserve_evidence else {})
+        contract, control_goals, goal = self.task_contract, {}, None
+        if validated.status == "ready":
+            # Prepare everything before cancelling old records or replacing the
+            # execution stack. A rejected autonomous revision leaves both intact.
+            control_goals = {node["id"]: resolve_control_goal(node, self.scenario, validated.constraints)
+                             for node in iter_plan_actions(validated) if node["action"] == "control"}
+            goal = plan_goal_state(validated, self.scenario)
+            if autonomous:
+                if self.task_contract is None:
+                    raise TaskContractError("contract_missing", "Autonomous revision requires an existing task contract.")
+                contract = deepcopy(self.task_contract, {id(self.scenario): self.scenario})
+                contract.accept_revision(validated, revision, telemetry=values)
+            else:
+                contract = TaskContractMonitor(validated, self.mission_id, self.vehicle_id, revision,
+                    telemetry=values, evidence=self.evidence if preserve_evidence else (), scenario=self.scenario)
         if not preserve_evidence:
             self.evidence, self._steps, self._loops = [], [], []
             self._action_count, self._loop_count = 0, 0
-            self.revision = 0
-            self._telemetry = {}
-        self.revision += 1
+        self.revision, self._telemetry = revision, values
         self._current, self._dwell, self._stack = None, 0.0, []
-        if telemetry is not None:
-            self._set_telemetry(telemetry)
         self.status, self.message = validated.status, validated.summary
         if validated.status == "needs_clarification":
             if not preserve_evidence:
-                self.plan = validated
-                self._plan_revision = self.revision
+                self.plan, self._plan_revision = validated, revision
+                self.task_contract = None
             return
+        self.task_contract = contract
         for item in self._steps:
             if item["status"] in ("pending", "active"):
                 item["status"] = "cancelled"
         for item in self._loops:
             if item["status"] == "running":
                 item["status"] = "cancelled"
-        self.plan, self._plan_revision = validated, self.revision
-        self._control_goals = {node["id"]: resolve_control_goal(node, self.scenario, validated.constraints)
-                               for node in iter_plan_actions(validated) if node["action"] == "control"}
-        self.goal_state = plan_goal_state(validated, self.scenario)
+        self.plan, self._plan_revision = validated, revision
+        self._control_goals, self.goal_state = control_goals, goal
         self.accepted_instruction = self.instruction
         self.status = "running"
         self._push_sequence(list(validated.steps), (), {})
         self._select_current()
+        # Match the interpreter's initial decision boundary, before flight or
+        # dwell can change elapsed time. Missing live inputs remain execution
+        # waits, not model-format failures that would trigger paid corrections.
+        if contract.verdict(values)["diagnostics"]:
+            self.status = "safety_wait"
+            self.message = SemanticExecutionError("task_contract_failed").user_message
+            raise SemanticExecutionError("task_contract_failed")
 
     def suspend(self):
         """Reset partial dwell before an asynchronous task modification is interpreted."""
@@ -546,14 +557,18 @@ class SemanticMission:
             return self._control_goals[step["id"]]["position"]
         return resolve_task_goal(self._targets[step["target_id"]], self.plan.constraints)
 
-    def _set_telemetry(self, telemetry):
+    @staticmethod
+    def _normalized_telemetry(telemetry):
         if not isinstance(telemetry, dict):
             raise ValueError("Telemetry must be an object.")
         values = {}
         for field in TELEMETRY_FIELDS:
             if field in telemetry:
                 values[field] = _number(telemetry[field], 0, 100 if field == "battery_percent" else math.inf)
-        self._telemetry = values
+        return values
+
+    def _set_telemetry(self, telemetry):
+        self._telemetry = self._normalized_telemetry(telemetry)
 
     def _record(self, node, path, iterations):
         item = {**deepcopy(node), "status": "pending", "execution_id": uuid.uuid4().hex,
@@ -665,7 +680,7 @@ class SemanticMission:
         self.status = "completed"
         self.message = "任务已按实际执行结果完成。"
 
-    def observe(self, position, speed, dt, now, enabled=True, telemetry=None):
+    def observe(self, position, speed, dt, now, enabled=True, telemetry=None, *, measured_yaw_deg=None):
         """Only bound arrival and continuous stationary dwell can complete a skill."""
         if not enabled:
             self._dwell = 0.0
@@ -700,7 +715,8 @@ class SemanticMission:
             self.message = "正在执行：" + self._targets[step["target_id"]]["label"]
             return False
         result, source = self._result(step)
-        return self._complete(position, now, self._dwell, result, source)
+        return self._complete(position, now, self._dwell, result, source,
+                              measured_yaw_deg=measured_yaw_deg, measured_speed_mps=speed)
 
     def complete_motion(self, position, now, metrics, telemetry=None):
         """Accept controller-bound completion, never infer traversal from an endpoint."""
@@ -720,16 +736,22 @@ class SemanticMission:
         if telemetry is not None:
             self._set_telemetry(telemetry)
         result = {"completed": True, "distance_m": travelled, "total_length_m": total, "progress": 1.0}
+        for field in ("heading_samples", "max_heading_error_deg"):
+            if field in metrics:
+                result[field] = metrics[field]
         return self._complete(position, now, duration, result, "runtime_trajectory_tracking")
 
-    def complete_review(self, position, now):
+    def complete_review(self, position, now, telemetry=None):
         """Record an accepted, locally checked review before replacing its continuation."""
         if self._current is None or self._current["action"] != "review":
             return False
+        if telemetry is not None:
+            self._set_telemetry(telemetry)
         return self._complete(position, now, 0.0, {"reviewed": True},
                               "validated_execution_review", advance=False)
 
-    def _complete(self, position, now, duration, result, source, *, advance=True):
+    def _complete(self, position, now, duration, result, source, *, advance=True,
+                  measured_yaw_deg=None, measured_speed_mps=None):
         step = self._current
         self.evidence.append({"evidence_id": uuid.uuid4().hex, "mission_id": self.mission_id,
                               "step_id": step["id"], "execution_id": step["execution_id"], "revision": self.revision,
@@ -737,11 +759,22 @@ class SemanticMission:
                               "target_id": step.get("target_id"), "action": step["action"], "source": source,
                               "simulation_time": now, "position": dict(zip("xyz", position)),
                               "duration_seconds": duration, "result": result})
+        if measured_yaw_deg is not None:
+            self.evidence[-1]["measured_yaw_deg"] = measured_yaw_deg
+        if measured_speed_mps is not None:
+            self.evidence[-1]["measured_speed_mps"] = measured_speed_mps
+        try:
+            self.task_contract.record(step, self.evidence[-1], telemetry=self._telemetry)
+        except TaskContractError as exc:
+            raise SemanticExecutionError("task_contract_failed") from exc
         step["status"], self._dwell = "completed", 0.0
         if not advance:
             return True
         self._select_current()
         if self.status == "completed":
+            if not self.task_contract.verdict(self._telemetry)["satisfied"]:
+                self.status, self.message = "safety_wait", SemanticExecutionError("task_contract_failed").user_message
+                return True
             state = "landed" if result.get("landed") else "airborne"
             expected = self.goal_state
             if expected is not None:
@@ -785,6 +818,7 @@ class SemanticMission:
                 "instruction": self.instruction, "accepted_instruction": self.accepted_instruction,
                 "plan_revision": self._plan_revision,
                 "plan": self.plan.to_dict() if self.plan else None,
+                "task_contract": self.task_contract.context() if self.task_contract else None,
                 "goal_state": deepcopy(self.goal_state), "execution_feedback": deepcopy(self.execution_feedback),
                 "current_step": self._public_step(active) if active else None,
                 "uncompleted_steps": [self._public_step(item) for item in self._steps
@@ -799,6 +833,7 @@ class SemanticMission:
         return {"mission_id": self.mission_id, "vehicle_id": self.vehicle_id, "revision": self.revision,
                 "plan_revision": self._plan_revision, "instruction": self.instruction, "accepted_instruction": self.accepted_instruction,
                 "summary": self.plan.summary if self.plan else "",
+                "task_contract": self.task_contract.snapshot() if self.task_contract else None,
                 "goal_state": deepcopy(self.goal_state), "execution_feedback": deepcopy(self.execution_feedback),
                 "status": self.status, "message": self.message, "steps": [self._public_step(item) for item in ordered],
                 "program": deepcopy(list(self.plan.steps)) if self.plan else [], "loops": deepcopy(self._loops),

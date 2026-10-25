@@ -332,7 +332,7 @@ class SemanticProviderTests(unittest.TestCase):
                 except PlannerProviderError:
                     pass
             self.assertEqual(usage.call_count, 1)
-            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v5")
+            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v6")
 
     def test_api_errors_are_sanitized_and_invalid_semantic_output_never_becomes_route(self):
         agent = DeepSeekAgent(api_key="test-credential")

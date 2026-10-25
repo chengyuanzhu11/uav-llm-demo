@@ -4,7 +4,7 @@ import asyncio
 import importlib
 import time
 from concurrent.futures import Future
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import atan2, asin, copysign, degrees, isfinite, pi
 from queue import Queue
 from threading import Thread
@@ -15,6 +15,7 @@ from .environment import BASE, point_to_dict
 from .runtime import RuntimeUnavailableError
 from .motion import VehicleState
 from .scene_layout import AIRSIM_ORIGIN, scene_layout, color_texture
+from .airsim_connection import default_airsim_host, validate_airsim_host, texture_directory
 
 class AirSimRuntimeError(RuntimeUnavailableError):
     pass
@@ -73,13 +74,16 @@ class AirSimRpcWorker:
 
 @dataclass(frozen=True)
 class AirSimRuntimeConfig:
-    host: str = "127.0.0.1"
+    host: str = field(default_factory=default_airsim_host)
     port: int = 41451
     vehicle_name: str = "Drone1"
     velocity_mps: float = 4.0
     meters_per_cell: float = 3.0
     meters_per_altitude_level: float = 5.0
     command_timeout: float = 8.0
+
+    def __post_init__(self):
+        object.__setattr__(self, "host", validate_airsim_host(self.host))
 
 
 class AirSimRuntime:
@@ -91,6 +95,7 @@ class AirSimRuntime:
         self.client = None
         self.connected = False
         self.armed = False
+        self._owns_control = False
         self.wind_ned = (0.0, 0.0, 0.0)
         self.last_error: str | None = None
         self.last_telemetry: dict[str, object] | None = None
@@ -107,18 +112,19 @@ class AirSimRuntime:
 
     def _configure_scene(self, scenario) -> None:
         self._require_connection()
-        if self.config.host not in {"127.0.0.1", "localhost"}:
-            raise AirSimRuntimeError("Shared map textures require local Blocks (127.0.0.1).")
         if (self.config.meters_per_cell, self.config.meters_per_altitude_level) != (3.0, 5.0):
             raise AirSimRuntimeError("Shared map uses 3 metres per cell and 5 metres per altitude level.")
         if "Cube" not in self.client.simListAssets():
             raise AirSimRuntimeError("Blocks must provide the Cube asset for the shared map.")
+        layout = scene_layout(scenario)
+        folder = texture_directory()
+        materials = {color: color_texture(color, folder) for color in {item["color"] for item in layout}}
         self._origin = AIRSIM_ORIGIN
         # Only replace objects owned by this demo; retain the packaged Blocks map.
         for name in self.client.simListSceneObjects("UAVDemo_.*"):
             if not self.client.simDestroyObject(name):
                 raise AirSimRuntimeError(f"Cannot replace shared scene object {name}.")
-        for item in scene_layout(scenario):
+        for item in layout:
             point = as_grid_tuple(item["position"])
             position = self._grid_to_ned(point)
             size = item["size"]
@@ -130,7 +136,7 @@ class AirSimRuntime:
             )
             if not name:
                 raise AirSimRuntimeError(f"Cannot spawn shared scene object {item['name']}.")
-            if not self.client.simSetObjectMaterialFromTexture(name, color_texture(item["color"])):
+            if not self.client.simSetObjectMaterialFromTexture(name, materials[item["color"]]):
                 raise AirSimRuntimeError(f"Cannot apply shared map material to {name}.")
         self._scene = scenario
 
@@ -152,10 +158,7 @@ class AirSimRuntime:
             )
             if not self.client.ping():
                 raise AirSimRuntimeError("AirSim RPC server did not answer ping().")
-            self.client.enableApiControl(True, vehicle_name=self.config.vehicle_name)
-            self.client.armDisarm(True, vehicle_name=self.config.vehicle_name)
             self.connected = True
-            self.armed = True
             self.last_error = None
             self.last_telemetry = self._read_telemetry()
             return self.status()
@@ -178,7 +181,7 @@ class AirSimRuntime:
 
     def _disconnect(self) -> None:
         if self.client:
-            if self.connected and hasattr(self.client, "enableApiControl"):
+            if self.connected and self._owns_control and hasattr(self.client, "enableApiControl"):
                 try:
                     self.client.enableApiControl(
                         False,
@@ -191,6 +194,17 @@ class AirSimRuntime:
                 rpc_client.close()
         self.connected = False
         self.armed = False
+        self._owns_control = False
+
+    def acquire_control(self):
+        self._worker.call(self._acquire_control)
+
+    def _acquire_control(self):
+        self._require_connection()
+        self.client.enableApiControl(True, vehicle_name=self.config.vehicle_name)
+        self._owns_control = True
+        self.client.armDisarm(True, vehicle_name=self.config.vehicle_name)
+        self.armed = True
 
     def reset(
         self,
@@ -214,15 +228,23 @@ class AirSimRuntime:
         if target_grid[2] > 0:
             self._ensure_airborne(target_grid)
         self.last_telemetry = self._read_telemetry()
+        if self._scene is not None and target_grid[2] == 0:
+            # Teleporting after reset can retain a falling velocity for a few
+            # physics frames. Do not hand that transient to the safety checker.
+            deadline = time.monotonic() + 3.0
+            while (self.last_telemetry["landed_state"] != str(self.api.LandedState.Landed)
+                   or any(abs(value) > 0.1 for value in self.last_telemetry["linear_velocity"].values())):
+                if time.monotonic() >= deadline:
+                    raise AirSimRuntimeError("Blocks did not settle on the launch surface after reset.")
+                time.sleep(0.05)
+                self.last_telemetry = self._read_telemetry()
         return self.status()
 
     def _reset(self) -> None:
         self._require_connection()
         self.client.reset()
         time.sleep(0.3)
-        self.client.enableApiControl(True, vehicle_name=self.config.vehicle_name)
-        self.client.armDisarm(True, vehicle_name=self.config.vehicle_name)
-        self.armed = True
+        self._acquire_control()
 
     def ensure_airborne(self, target_grid: tuple[float, float, float] = BASE) -> None:
         self._worker.call(lambda: self._ensure_airborne(target_grid))
@@ -274,9 +296,12 @@ class AirSimRuntime:
         telemetry = self._read_telemetry()
         velocity = telemetry["linear_velocity"]
         acceleration = telemetry["linear_acceleration"]
+        vertical_velocity = -velocity["z"]
+        if telemetry["ground_contact_adjusted"]:
+            vertical_velocity = max(0.0, vertical_velocity)
         return VehicleState(
             as_grid_tuple(telemetry["position_grid"]),
-            (velocity["y"], -velocity["x"], -velocity["z"]),
+            (velocity["y"], -velocity["x"], vertical_velocity),
             (acceleration["y"], -acceleration["x"], -acceleration["z"]),
             telemetry["orientation"]["yaw"],
         )
@@ -309,15 +334,21 @@ class AirSimRuntime:
         kinematics = state.kinematics_estimated
         position = vector_tuple(kinematics.position)
         orientation = quaternion_to_euler(kinematics.orientation)
+        grid = ned_to_grid(tuple(position[i] - self._origin[i] for i in range(3)),
+                           self.config.meters_per_cell, self.config.meters_per_altitude_level)
+        # SimpleFlight reports Flying as soon as a velocity command is sent,
+        # even while the body still touches the pad. Resolve Unreal's bounded
+        # contact penetration only inside the known launch/landing column.
+        contact_adjusted = (self._scene is not None and self._scene.base[2] == 0
+                            and sum(((grid[i] - self._scene.base[i]) * self.config.meters_per_cell) ** 2
+                                    for i in range(2)) <= 0.75 ** 2
+                            and -0.1 <= grid[2] * self.config.meters_per_altitude_level < 0)
+        if contact_adjusted:
+            grid = (grid[0], grid[1], 0.0)
         telemetry = {
             "position_ned": vector_to_dict(position),
-            "position_grid": point_to_dict(
-                ned_to_grid(
-                    tuple(position[i] - self._origin[i] for i in range(3)),
-                    self.config.meters_per_cell,
-                    self.config.meters_per_altitude_level,
-                )
-            ),
+            "ground_contact_adjusted": contact_adjusted,
+            "position_grid": point_to_dict(grid),
             "orientation": {
                 "roll": orientation[0],
                 "pitch": orientation[1],
