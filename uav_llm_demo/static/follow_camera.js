@@ -3,6 +3,7 @@ const BASE = [9, 7, 12];
 const MIN_BOOM = 0.35;
 const LOOKAHEAD_MARGIN = 2;
 const CAMERA_MARGIN = 0.18;
+const EXTENSION_DELAY = 1.2;
 
 export class FollowCameraRig {
   constructor(THREE) {
@@ -20,7 +21,9 @@ export class FollowCameraRig {
     this.elapsed = 0;
     this.nextChoice = 0;
     this.radialVelocity = 0;
-    this.turnVelocity = 0;
+    this.angularVelocity = new THREE.Vector3();
+    this.heldLength = this.length;
+    this.extensionClearSince = null;
     this.initialized = false;
     this._diagnostics = { emergencyClamps: 0, sweepClamps: 0, directionChanges: 0 };
   }
@@ -68,13 +71,51 @@ export class FollowCameraRig {
     return points;
   }
 
-  clearance(points, direction, length = this.baseLength) {
+  clearance(points, direction, length = this.baseLength, physical = false) {
     let distance = length;
     for (const point of points) {
       distance = Math.min(distance,
-        this.freeLength(point, direction, length, this.expanded, this.obstacles));
+        this.freeLength(point, direction, length, physical ? this.physical : this.expanded,
+          this.obstacles, physical ? CAMERA_MARGIN : LOOKAHEAD_MARGIN));
     }
     return distance >= length ? length : Math.max(MIN_BOOM, distance - 0.1);
+  }
+
+  turnClearance(points, candidate, length) {
+    const axis = this.direction.clone().cross(candidate);
+    const angle = Math.atan2(axis.length(), this.direction.dot(candidate));
+    axis.normalize();
+    const count = Math.max(1, Math.ceil(angle * length / 0.5));
+    let available = length;
+    const directions = [];
+    for (let i = 0; i <= count; i += 1) {
+      const direction = this.direction.clone().applyAxisAngle(axis, angle * i / count);
+      available = Math.min(available, this.clearance(points, direction, length, true));
+      directions.push(direction);
+    }
+    // A blocked long sightline already determines a smaller radius. Testing
+    // the hypothetical long camera arc inside that wall would incorrectly
+    // discard all the usable space before it.
+    if (available < length - 1e-6) return available;
+    let previous = directions[0].clone().multiplyScalar(length);
+    for (let i = 1; i < directions.length; i += 1) {
+      const direction = directions[i];
+      const offset = direction.clone().multiplyScalar(length);
+      // Visibility at the arc samples alone does not protect the camera's
+      // movement between them, particularly near a thin building corner.
+      const segment = offset.clone().sub(previous);
+      const distance = segment.length();
+      if (distance > 1e-8) {
+        segment.divideScalar(distance);
+        for (const point of points) {
+          const origin = point.clone().add(previous);
+          if (this.freeLength(origin, segment, distance, this.physical,
+            this.obstacles, CAMERA_MARGIN) < distance - 1e-6) return 0;
+        }
+      }
+      previous = offset;
+    }
+    return available;
   }
 
   candidates() {
@@ -91,33 +132,44 @@ export class FollowCameraRig {
   }
 
   chooseDirection(points, initializing = false) {
-    const available = this.clearance(points, this.preferredDirection);
-    if (!initializing && (available >= 6 || this.elapsed < this.nextChoice)) return;
+    const available = Math.min(this.clearance(points, this.preferredDirection),
+      this.clearance(points, this.direction));
+    if (!initializing && available >= this.baseLength - 0.2) return;
+    if (!initializing && this.elapsed < this.nextChoice
+        && this.clearance(points, this.direction, this.length, true) >= this.length) return;
+    if (!initializing && this.clearance(points, this.preferredDirection) >= this.baseLength
+        && this.turnClearance(points, this.preferredDirection, this.length) >= this.length) {
+      this.nextChoice = this.elapsed + 0.25;
+      return;
+    }
     let choice = this.preferredDirection;
-    let score = -Infinity;
-    for (const candidate of this.candidates()) {
-      const distance = this.clearance(points, candidate);
-      // A new direction must offer useful space; this prevents tie-driven oscillation.
-      if (!initializing && distance < Math.max(8, available + 3)) continue;
-      if (!initializing) {
-        let corridorClear = true;
-        for (let j = 1; j <= 8; j += 1) {
-          const intermediate = this.direction.clone().lerp(candidate, j / 8).normalize();
-          if (this.clearance(points, intermediate) < Math.min(this.length, 5)) {
-            corridorClear = false;
-            break;
-          }
-        }
-        if (!corridorClear) continue;
+    const candidates = [this.preferredDirection, ...this.candidates()]
+      .map(direction => ({ direction, distance: this.clearance(points, direction, this.baseLength, initializing) }))
+      .sort((a, b) => b.direction.dot(this.direction) - a.direction.dot(this.direction));
+    // First find a connected orbit with the normal radius. Retraction is only
+    // considered when no such direction is reachable at the current radius.
+    let full = false;
+    for (const candidate of candidates) {
+      if (candidate.distance < this.baseLength) continue;
+      if (!initializing && this.turnClearance(points, candidate.direction, this.length) < this.length) continue;
+      choice = candidate.direction;
+      full = true;
+      break;
+    }
+    if (!full) {
+      let score = available;
+      for (const candidate of candidates) {
+        const distance = initializing ? candidate.distance : Math.min(candidate.distance,
+          this.turnClearance(points, candidate.direction, Math.min(this.length, candidate.distance)));
+        const candidateScore = distance - 2 * (1 - candidate.direction.dot(this.direction));
+        if (candidateScore > score + 0.5) { score = candidateScore; choice = candidate.direction; }
       }
-      const candidateScore = distance - 5 * (1 - candidate.dot(this.direction));
-      if (candidateScore > score) { score = candidateScore; choice = candidate; }
     }
     if (choice.angleTo(this.preferredDirection) > 0.01) {
       this.preferredDirection.copy(choice);
       if (!initializing) this._diagnostics.directionChanges += 1;
     }
-    this.nextChoice = this.elapsed + 2;
+    this.nextChoice = this.elapsed + 0.25;
   }
 
   reset(target, obstacles = []) {
@@ -125,7 +177,7 @@ export class FollowCameraRig {
     this.elapsed = 0;
     this.nextChoice = 0;
     this.radialVelocity = 0;
-    this.turnVelocity = 0;
+    this.angularVelocity.set(0, 0, 0);
     this._diagnostics = { emergencyClamps: 0, sweepClamps: 0, directionChanges: 0 };
     this.direction.set(...BASE).normalize();
     this.preferredDirection.copy(this.direction);
@@ -133,7 +185,9 @@ export class FollowCameraRig {
       this.chooseDirection([target], true);
       this.direction.copy(this.preferredDirection);
     }
-    this.length = Math.min(this.baseLength, this.clearance([target], this.direction));
+    this.length = Math.min(this.baseLength, this.clearance([target], this.direction, this.baseLength, true));
+    this.heldLength = this.length;
+    this.extensionClearSince = null;
     this.position.copy(target).addScaledVector(this.direction, this.length);
     this.initialized = true;
     return this.position;
@@ -148,17 +202,29 @@ export class FollowCameraRig {
     const points = this.previewPoints(target, previewTargets);
     this.chooseDirection(points);
 
-    const angle = this.direction.angleTo(this.preferredDirection);
-    const desiredTurnSpeed = Math.min(0.8, Math.sqrt(2 * 2.4 * angle));
-    this.turnVelocity += Math.max(-2.4 * dt, Math.min(2.4 * dt, desiredTurnSpeed - this.turnVelocity));
-    const turn = Math.min(1, this.turnVelocity * dt / Math.max(angle, 1e-9));
-    const nextDirection = this.direction.clone().lerp(this.preferredDirection, turn).normalize();
-    // Reserve the full near-term turn corridor before rotating a long boom around a wall.
-    let desiredLength = this.clearance(points, this.direction);
-    for (let i = 1; i <= 4; i += 1) {
-      const intermediate = this.direction.clone().lerp(this.preferredDirection, i / 4).normalize();
-      desiredLength = Math.min(desiredLength, this.clearance(points, intermediate));
+    const axis = this.direction.clone().cross(this.preferredDirection);
+    const angle = Math.atan2(axis.length(), this.direction.dot(this.preferredDirection));
+    const desiredTurnSpeed = Math.min(0.8, Math.sqrt(2 * 2.4 * angle), angle * 4);
+    const previousAngularVelocity = this.angularVelocity.clone();
+    const desiredAngularVelocity = axis.normalize().multiplyScalar(desiredTurnSpeed);
+    this.angularVelocity.add(desiredAngularVelocity.sub(this.angularVelocity).clampLength(0, 2.4 * dt));
+    // Preserve the turning velocity vector when choosing a different route.
+    // Keeping only its magnitude would instantly change the camera's velocity.
+    const rotation = previousAngularVelocity.add(this.angularVelocity).multiplyScalar(dt * 0.5);
+    const nextDirection = this.direction.clone().applyAxisAngle(rotation.clone().normalize(), rotation.length()).normalize();
+    // The warning envelope selects an orbit early. Only the immediate physical
+    // corridor may shorten the boom; a distant turn must not cause zooming now.
+    const safeLength = this.turnClearance(points, nextDirection, this.baseLength);
+    if (safeLength < this.heldLength) {
+      this.heldLength = Math.max(MIN_BOOM, safeLength);
+      this.extensionClearSince = null;
+    } else if (safeLength >= this.heldLength + 0.2 && angle < 0.1) {
+      this.extensionClearSince ??= this.elapsed;
+      if (this.elapsed - this.extensionClearSince >= EXTENSION_DELAY) this.heldLength = safeLength;
+    } else {
+      this.extensionClearSince = null;
     }
+    const desiredLength = this.heldLength;
     const error = desiredLength - this.length;
     const stoppingSpeed = Math.sqrt(2 * 60 * Math.abs(error));
     const desiredSpeed = Math.sign(error) * Math.min(error < 0 ? 24 : 8, stoppingSpeed, Math.abs(error) * (error < 0 ? 4 : 1.4));
@@ -193,6 +259,10 @@ export class FollowCameraRig {
     this.position.copy(next);
     this.direction.copy(next).sub(target);
     this.length = this.direction.length();
+    if (physicalLength < nextLength - 1e-6 || this.length < nextLength - 1e-6) {
+      this.heldLength = Math.min(this.heldLength, this.length);
+      this.extensionClearSince = null;
+    }
     if (this.length > 1e-8) this.direction.divideScalar(this.length);
     else this.direction.copy(this.preferredDirection);
     return this.position;

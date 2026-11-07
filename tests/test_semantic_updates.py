@@ -8,11 +8,14 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tests.scenario_fixtures import empty_airspace
-from uav_llm_demo.agents import DeepSeekAgent, PlannerProviderError
+from tests.semantic_fixtures import fixture_requirements
+from uav_llm_demo.agents import DeepSeekAgent, PlannerProviderError, SemanticPlanError
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import VehicleState, distance, norm
 from uav_llm_demo.semantic_navigation import validate_task_routes
 from uav_llm_demo.semantic_tasks import semantic_plan_from_json_text, task_catalog
+from uav_llm_demo.task_requirements import audit_requirements_from_json_text
+from uav_llm_demo.task_observation import TaskObservationWorld
 
 
 def skill(name, action, target, duration=None, when=None):
@@ -48,13 +51,30 @@ def compact_campus():
 
 
 class OfflineSemanticAgent(DeepSeekAgent):
-    """A test response source; all navigation and execution remain production code."""
-    def __init__(self, replies):
+    """Executor fixtures only; navigation and all three semantic phases are real."""
+    def __init__(self, replies, *, requirements=None):
         super().__init__(api_key="offline-program-test-key")
         self.replies = deque(replies)
+        self.requirements = requirements
         self.inputs = []
+        self.stage_inputs = []
 
-    def interpret_task(self, catalog, instruction, feedback="", *, repair=None):
+    def extract_task_requirements(self, catalog, instruction, feedback="", *, repair=None):
+        self.stage_inputs.append(("requirements", deepcopy(catalog), instruction, feedback))
+        source = self.requirements(instruction) if self.requirements else self.replies[0]
+        if not isinstance(source, dict):
+            raise AssertionError("Delayed/error execution fixtures require an explicit requirements callable")
+        if self.requirements is None and source["status"] == "needs_clarification":
+            self.replies.popleft()  # This fixture terminates at requirements, before planning.
+        return fixture_requirements(source, catalog, instruction)
+
+    def audit_task_requirements(self, catalog, instruction, requirements, feedback="", *, repair=None):
+        self.stage_inputs.append(("audit", deepcopy(catalog), instruction, feedback))
+        return audit_requirements_from_json_text(json.dumps(dict(
+            status="approved", summary="执行器测试的要求由测试作者预置。", issues=[])), requirements, instruction)
+
+    def interpret_task(self, catalog, instruction, feedback="", *, repair=None, planning=None):
+        self.stage_inputs.append(("plan", deepcopy(catalog), instruction, feedback))
         self.inputs.append((deepcopy(catalog), instruction, feedback))
         reply = self.replies.popleft()
         if callable(reply):
@@ -72,9 +92,8 @@ def pump(service, predicate, seconds=150):
             except Exception:
                 pass
         service.advance(.1)
-        state = service.state()
-        if predicate(state):
-            return state
+        if predicate(service._snapshot):
+            return service.state()
     raise AssertionError("Task did not reach its expected state: " + str(service.semantic.to_dict()))
 
 
@@ -84,9 +103,10 @@ class SemanticUpdateTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def service(self, *replies):
-        service = MissionService(scenario=compact_campus(), agent=OfflineSemanticAgent(replies),
-                                 planner_latency_seconds=.01, traffic_seed=17)
+    def service(self, *replies, requirements=None):
+        service = MissionService(scenario=compact_campus(), agent=OfflineSemanticAgent(replies, requirements=requirements),
+                                 planner_latency_seconds=.01, traffic_seed=17,
+                                 task_world=TaskObservationWorld.demonstration(compact_campus()))
         self.addCleanup(service.close)
         return service
 
@@ -193,11 +213,14 @@ class SemanticUpdateTests(unittest.TestCase):
 
     def test_latest_pose_is_checked_after_asynchronous_interpretation(self):
         entered, release = Event(), Event()
+        first = program([skill("old", "inspect", "library", 60), home()])
+        revised = program([skill("new", "visit", "conference"), home()], ceiling=15)
         def delayed():
             entered.set()
             release.wait(5)
-            return program([skill("new", "visit", "conference"), home()], ceiling=15)
-        service = self.service(program([skill("old", "inspect", "library", 60), home()]), delayed)
+            return revised
+        service = self.service(first, delayed, requirements=lambda instruction:
+                               first if instruction == "先检查图书馆。" else revised)
         self.addCleanup(release.set)
         service.submit_task("先检查图书馆。", background=False)
         pump(service, lambda s: s["uav"]["z"] > 2.1)
@@ -218,14 +241,21 @@ class SemanticUpdateTests(unittest.TestCase):
 
     def test_newest_instruction_wins_over_late_older_response(self):
         entered, release = Event(), Event()
+        original = program([skill("obsolete", "visit", "laboratory"), home()])
+        revised = program([skill("latest", "visit", "conference"), home()])
         def delayed():
             entered.set()
             release.wait(5)
-            return program([skill("obsolete", "visit", "laboratory"), home()])
-        service = self.service(delayed, program([skill("latest", "visit", "conference"), home()]))
+            return original
+        service = self.service(delayed, revised, requirements=lambda instruction:
+                               original if instruction == "去实验楼。" else revised)
         self.addCleanup(release.set)
         service.submit_task("去实验楼。", background=False)
-        self.assertTrue(entered.wait(2))
+        for _ in range(100):
+            service.advance(.05)
+            if entered.wait(.005):
+                break
+        self.assertTrue(entered.is_set())
         service.submit_task("改去会议中心。", background=False)
         release.set()
         ready = pump(service, lambda s: s["semantic_mission"]["status"] == "running")
@@ -234,9 +264,12 @@ class SemanticUpdateTests(unittest.TestCase):
         self.assertEqual(ready["semantic_mission"]["revision"], 1)
 
     def test_retrying_rejected_update_does_not_resume_old_plan(self):
-        service = self.service(program([skill("old", "inspect", "library", 60), home()]),
+        first = program([skill("old", "inspect", "library", 60), home()])
+        revised = program([skill("new", "visit", "conference"), home()])
+        service = self.service(first,
                                PlannerProviderError("DeepSeek HTTP 401", retryable=False),
-                               program([skill("new", "visit", "conference"), home()]))
+                               revised, requirements=lambda instruction:
+                               first if instruction == "检查图书馆。" else revised)
         service.submit_task("检查图书馆。", background=False)
         pump(service, lambda s: s["uav"]["z"] > 2)
         service.submit_task("改去会议中心。", background=False)
@@ -282,28 +315,37 @@ class SemanticUpdateTests(unittest.TestCase):
         self.assertLess(len(calls), 12)
 
     def test_truncated_model_program_has_specific_safe_retry_feedback(self):
-        response = Mock(status_code=200)
-        response.json.return_value = {"choices": [{"finish_reason": "length", "message": {"content": "{partial"}}]}
-        with patch("uav_llm_demo.agents._post_deepseek", return_value=response) as post:
-            with self.assertRaisesRegex(PlannerProviderError, "response length limit") as caught:
-                DeepSeekAgent(api_key="offline-program-test-key").interpret_task(
-                    task_catalog(compact_campus()), "重复执行巡检，最后返航。")
-        self.assertTrue(caught.exception.retryable)
-        self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 12000)
-        self.assertNotIn("{partial", str(caught.exception))
-        response.close.assert_called_once_with()
+        catalog, instruction = task_catalog(compact_campus()), "巡检图书馆。"
+        requirements = fixture_requirements(program([skill("inspect", "inspect", "library")]), catalog, instruction)
+        for stage in ("extract_task_requirements", "audit_task_requirements", "interpret_task"):
+            with self.subTest(stage=stage):
+                response = Mock(status_code=200)
+                response.json.return_value = {"choices": [{"finish_reason": "length", "message": {"content": "{partial"}}]}
+                args = (catalog, instruction, requirements) if stage == "audit_task_requirements" else (catalog, instruction)
+                with patch("uav_llm_demo.agents._post_deepseek", return_value=response) as post:
+                    with self.assertRaises(SemanticPlanError) as caught:
+                        getattr(DeepSeekAgent(api_key="offline-program-test-key"), stage)(*args)
+                self.assertFalse(caught.exception.retryable)
+                self.assertIn("response length limit", caught.exception.detail)
+                self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 12000)
+                self.assertNotIn("{partial", str(caught.exception))
+                response.close.assert_called_once_with()
 
     def test_malformed_model_choice_keeps_safe_retry_contract(self):
-        for choice in (None, [], "unexpected"):
-            with self.subTest(choice=choice):
-                response = Mock(status_code=200)
-                response.json.return_value = {"choices": [choice]}
-                with patch("uav_llm_demo.agents._post_deepseek", return_value=response):
-                    with self.assertRaisesRegex(PlannerProviderError, "invalid semantic task plan") as caught:
-                        DeepSeekAgent(api_key="offline-program-test-key").interpret_task(
-                            task_catalog(compact_campus()), "巡检图书馆。")
-                self.assertTrue(caught.exception.retryable)
-                response.close.assert_called_once_with()
+        catalog, instruction = task_catalog(compact_campus()), "巡检图书馆。"
+        requirements = fixture_requirements(program([skill("inspect", "inspect", "library")]), catalog, instruction)
+        for stage in ("extract_task_requirements", "audit_task_requirements", "interpret_task"):
+            for choice in (None, [], "unexpected"):
+                with self.subTest(stage=stage, choice=choice):
+                    response = Mock(status_code=200)
+                    response.json.return_value = {"choices": [choice]}
+                    args = (catalog, instruction, requirements) if stage == "audit_task_requirements" else (catalog, instruction)
+                    with patch("uav_llm_demo.agents._post_deepseek", return_value=response):
+                        with self.assertRaises(SemanticPlanError) as caught:
+                            getattr(DeepSeekAgent(api_key="offline-program-test-key"), stage)(*args)
+                    self.assertFalse(caught.exception.retryable)
+                    self.assertIn("invalid", caught.exception.detail)
+                    response.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

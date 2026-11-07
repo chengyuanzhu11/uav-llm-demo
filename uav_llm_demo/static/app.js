@@ -6,6 +6,7 @@ import { MotionTimeline } from "./render_motion.js";
 import { FlightTrail } from "./flight_trail.js";
 import { FollowCameraRig } from "./follow_camera.js";
 import { AvoidanceView } from "./avoidance_view.js";
+import { OnboardCamera } from "./onboard_camera.js";
 
 
 const sceneContainer = document.getElementById("sceneContainer");
@@ -18,15 +19,11 @@ const followBtn = document.getElementById("followBtn");
 const agentButtons = [...document.querySelectorAll("[data-agent]")];
 const runtimeButtons = [...document.querySelectorAll("[data-runtime]")];
 const agentKeyBtn = document.getElementById("agentKeyBtn");
-const airsimConfigBtn = document.getElementById("airsimConfigBtn");
+const gazeboConfigBtn = document.getElementById("gazeboConfigBtn");
 const vehicleName = document.getElementById("vehicleName");
-const airsimHost = document.getElementById("airsimHost");
-const airsimPort = document.getElementById("airsimPort");
-const reconnectAirSimBtn = document.getElementById("reconnectAirSimBtn");
-const windNorth = document.getElementById("windNorth");
-const windEast = document.getElementById("windEast");
-const windDown = document.getElementById("windDown");
-const applyWindBtn = document.getElementById("applyWindBtn");
+const gazeboWorld = document.getElementById("gazeboWorld");
+const gazeboPort = document.getElementById("gazeboPort");
+const reconnectGazeboBtn = document.getElementById("reconnectGazeboBtn");
 const scenarioSelect = document.getElementById("scenarioSelect");
 const semanticPanel = document.getElementById("semanticPanel");
 const taskForm = document.getElementById("semanticTaskForm");
@@ -53,9 +50,9 @@ const agentKeyStatus = document.getElementById("agentKeyStatus");
 const agentDialogStatus = document.getElementById("agentDialogStatus");
 const agentAdvanced = document.getElementById("agentAdvanced");
 const loadModelsBtn = document.getElementById("loadModelsBtn");
-const airsimDialog = document.getElementById("airsimDialog");
-const closeAirSimBtn = document.getElementById("closeAirSimBtn");
-const closeAirSimFooterBtn = document.getElementById("closeAirSimFooterBtn");
+const gazeboDialog = document.getElementById("gazeboDialog");
+const closeGazeboBtn = document.getElementById("closeGazeboBtn");
+const closeGazeboFooterBtn = document.getElementById("closeGazeboFooterBtn");
 const currentStepValue = document.getElementById("currentStepValue");
 const goalDirectionValue = document.getElementById("goalDirectionValue");
 const goalDistanceValue = document.getElementById("goalDistanceValue");
@@ -130,6 +127,7 @@ let scenariosLoaded = false;
 let renderedMissionMode = null;
 let recommendationKey = "";
 let semanticStepsKey = "";
+let semanticStepStatuses = [];
 let agentConfigCatalog = null;
 let agentConfigEpoch = 0;
 let agentModelRequest = 0;
@@ -162,6 +160,51 @@ renderer.shadowMap.type = THREE.PCFShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
+const onboardCamera = new OnboardCamera(THREE, renderer, scene);
+let onboardPending = false;
+let onboardCaptured = null;
+const onboardPanel = document.createElement("details");
+onboardPanel.hidden = true;
+const onboardTitle = document.createElement("summary");
+onboardTitle.textContent = "机载观测";
+const onboardImage = document.createElement("img");
+onboardImage.width = 320; onboardImage.height = 240;
+onboardImage.alt = "当前机载传感器视图";
+const onboardStatus = document.createElement("p");
+onboardStatus.hidden = true;
+onboardPanel.append(onboardTitle, onboardImage, onboardStatus);
+semanticPanel?.appendChild(onboardPanel);
+
+async function captureOnboardObservation() {
+  const request = state?.onboard?.request;
+  const wasHidden = onboardPanel.hidden;
+  onboardPanel.hidden = !state?.onboard || state.onboard.status === "idle";
+  if (wasHidden && !onboardPanel.hidden) onboardPanel.open = true;
+  if (state?.runtime_backend === "gazebo") {
+    onboardStatus.hidden = true;
+    const frame = state.onboard?.frame;
+    if (frame && onboardCaptured !== frame.frame_id) {
+      onboardImage.src = `/api/onboard/image?frame_id=${encodeURIComponent(frame.frame_id)}`;
+      onboardCaptured = frame.frame_id;
+    }
+    return;
+  }
+  if (!request || !environmentReady || onboardPending || onboardCaptured === request.frame_id) return;
+  onboardPending = true;
+  onboardStatus.hidden = false;
+  try {
+    const packet = onboardCamera.capture(request, state.grid_size);
+    onboardImage.src = packet.rgb;
+    const reason = state.onboard.history?.at(-1)?.reason || "正在获取当前视角。";
+    onboardStatus.textContent = reason;
+    const response = await fetch("/api/onboard/frame", {method: "POST",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(packet)});
+    onboardCaptured = request.frame_id;
+    if (!response.ok) onboardStatus.textContent = "本次图像已失效，等待下一次观测。";
+  } catch (_) {
+    onboardStatus.textContent = "机载图像传输失败，正在重试。";
+  } finally { onboardPending = false; }
+}
 sceneContainer.appendChild(renderer.domElement);
 renderer.domElement.addEventListener("pointermove", (event) => {
   const bounds = renderer.domElement.getBoundingClientRect();
@@ -251,11 +294,18 @@ async function runCommand(action, { semanticValidation = false } = {}) {
     await action();
     return true;
   } catch (error) {
-    // Only the task endpoint's curated validation messages are safe to display.
+    // Only known state conflicts and task validation expose curated messages.
     // Provider and transport failures never expose their raw exception text.
-    commandError = semanticValidation && error.status === 400
-      ? error.message
-      : isSemanticScenario() ? "请求未成功，请检查连接和 API 配置。" : "Request failed. Check the connection and configuration.";
+    const stateConflicts = new Set(["runtime_requires_landed", "runtime_requires_home", "runtime_world_mismatch"]);
+    if (stateConflicts.has(error.code) || (semanticValidation && error.status === 400)) {
+      commandError = error.message;
+    } else if (error.code === "runtime_unavailable") {
+      commandError = "仿真连接不可用，请检查 Gazebo／PX4 是否正在运行及连接设置。";
+    } else if (!error.status) {
+      commandError = "无法连接本地服务，请检查服务是否正在运行后重试。";
+    } else {
+      commandError = "操作未成功，请重试；若仍失败，请检查本地服务日志。";
+    }
     return false;
   } finally {
     commandPending = false;
@@ -376,36 +426,17 @@ function sleep(milliseconds) {
 
 
 async function switchRuntime(backend, force = false) {
-  if (isSemanticScenario() && backend !== "html") return false;
   if (commandPending || !state || (!force && backend === state.runtime_backend)) return;
   if (!window.confirm(`Switch to ${backend.toUpperCase()} and reset the mission?`)) return;
   return runCommand(() => postState("/api/runtime", {
     backend,
-    config: backend === "airsim" ? airsimConfig() : {},
+    config: backend === "gazebo" ? gazeboConfig() : {},
   }));
 }
 
 
-async function applyWind() {
-  return runCommand(() => postState("/api/runtime/wind", {
-    north: Number(windNorth.value),
-    east: Number(windEast.value),
-    down: Number(windDown.value),
-  }));
-}
-
-
-function airsimConfig() {
-  return {
-    host: airsimHost.value.trim(),
-    port: Number(airsimPort.value),
-    vehicle_name: vehicleName.value.trim(),
-    wind_ned: {
-      north: Number(windNorth.value),
-      east: Number(windEast.value),
-      down: Number(windDown.value),
-    },
-  };
+function gazeboConfig() {
+  return {world: state.scenario.gazebo_world, port: Number(gazeboPort.value), vehicle_name: vehicleName.value.trim()};
 }
 
 
@@ -472,6 +503,7 @@ function buildEnvironment() {
   }
 
   const semantic = isSemanticScenario();
+  const detailedCampus = Boolean(state.scenario?.campus_layout);
   setupAtmosphere(semantic);
   const sunlight = scene.children.find(object => object.isDirectionalLight);
   sunlight.color.set(semantic ? 0xf5f5ed : 0xffdfae);
@@ -507,7 +539,7 @@ function buildEnvironment() {
   state.scene_layout.forEach((item) => {
     if ((semantic || urbanParcels.length) && item.name.startsWith("building_")) return;
     // Campus architecture and landscape are drawn from the shared campus layout.
-    if (semantic && item.name !== "ground" && item.name !== "base_pad") return;
+    if (detailedCampus && item.name !== "ground" && item.name !== "base_pad") return;
     let map = null;
     if (urbanParcels.length && ((!semantic && item.name === "ground") || item.name.startsWith("road_")
         || item.name.startsWith("sidewalk_"))) {
@@ -520,15 +552,20 @@ function buildEnvironment() {
       }
       map = surfaceTextures.get(key);
     }
+    const geometry = item.shape === "ellipsoid"
+      ? new THREE.SphereGeometry(1, 24, 16).scale(item.size.x / 2, item.size.z / 2, item.size.y / 2)
+      : item.shape === "cylinder"
+        ? new THREE.CylinderGeometry(item.size.x / 2, item.size.x / 2, item.size.z, 20)
+        : new THREE.BoxGeometry(item.size.x, item.size.z, item.size.y);
     const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(item.size.x, item.size.z, item.size.y),
+      geometry,
       new THREE.MeshStandardMaterial({ color: map ? "#ffffff" : item.color, map, roughness: 0.9 }),
     );
     mesh.position.copy(toWorld(item.position));
-    mesh.castShadow = item.name.startsWith("building_");
+    mesh.castShadow = item.name.startsWith("building_") || Boolean(state.scenario?.asset_scene && item.name !== "ground");
     mesh.receiveShadow = true;
     mesh.userData.environment = true;
-    mesh.userData.cameraOccluder = item.name.startsWith("building_");
+    mesh.userData.cameraOccluder = mesh.castShadow;
     scene.add(mesh);
     if (!semantic && (item.name === "base_pad" || item.name === "target_pad")) {
       scene.add(createEndpointBeacon(item, beaconHeight));
@@ -538,7 +575,7 @@ function buildEnvironment() {
     const roads = state.scene_layout.filter(item => item.name.startsWith("road_"));
     scene.add(buildUrbanCity(state.scenario, toWorld, WORLD_SCALE, ALTITUDE_SCALE, roads));
   }
-  if (semantic) {
+  if (detailedCampus) {
     const campus = new THREE.Group();
     campus.name = "semantic-campus";
     campus.userData.environment = true;
@@ -853,7 +890,7 @@ function dynamicDistanceM(obstacle) {
 function syncScene(initial) {
   buildEnvironment();
 
-  const htmlRuntimeActive = state.runtime_backend === "html";
+  const telemetryVisible = ["html", "gazebo"].includes(state.runtime_backend);
   if (initial) motionTimeline.reset();
   motionTimeline.ingest(state.motion_samples, performance.now() / 1000);
   if (initial) uavGroup.position.copy(toWorld(state.uav));
@@ -874,12 +911,12 @@ function syncScene(initial) {
 
   updatePath();
   updateWaypoints();
-  setSceneActorVisibility(htmlRuntimeActive);
+  setSceneActorVisibility(telemetryVisible);
 }
 
 
 function updatePath() {
-  if (state.runtime_backend !== "html") return;
+  if (!["html", "gazebo"].includes(state.runtime_backend)) return;
   if (!flightTrail) {
     flightTrail = new FlightTrail(THREE, toWorld);
     pathLine = flightTrail.object;
@@ -979,19 +1016,19 @@ function renderAvoidanceStatus(sample) {
   avoidanceStatus.dataset.violation = String(Number.isFinite(clearance) && clearance < 0);
 }
 
-function setSceneActorVisibility(htmlRuntimeActive) {
-  if (plannedRoute) plannedRoute.visible = htmlRuntimeActive;
-  if (avoidanceView && !htmlRuntimeActive) avoidanceView.object.visible = false;
+function setSceneActorVisibility(telemetryVisible) {
+  if (plannedRoute) plannedRoute.visible = telemetryVisible;
+  if (avoidanceView && !telemetryVisible) avoidanceView.object.visible = false;
   if (uavGroup) {
-    uavGroup.visible = htmlRuntimeActive;
+    uavGroup.visible = telemetryVisible;
   }
   birdMeshes.forEach((bird) => {
-    bird.visible = htmlRuntimeActive;
+    bird.visible = telemetryVisible;
   });
   if (pathLine) {
-    pathLine.visible = htmlRuntimeActive;
+    pathLine.visible = telemetryVisible;
   }
-  if (trailHead && !htmlRuntimeActive) trailHead.visible = false;
+  if (trailHead && !telemetryVisible) trailHead.visible = false;
 }
 
 
@@ -1070,7 +1107,7 @@ function renderToolbarState() {
   simulator?.setAttribute("data-mission-mode", semantic ? "semantic" : "navigation");
   simulator?.setAttribute("data-operation", commandError ? "error" : state?.flight?.mode || "idle");
 
-  const missionPhase = semantic ? "校园任务" : { fly_to_target: "Outbound", returning_home: "Returning", completed: "Completed" }[state?.phase] || "--";
+  const missionPhase = semantic ? "语言任务" : { fly_to_target: "Outbound", returning_home: "Returning", completed: "Completed" }[state?.phase] || "--";
   setText(phaseValue, `${missionPhase} / ${state?.flight?.stage || "--"} / ${state?.flight?.mode || "idle"}`);
   const traceDecision = getHistoryEntries()[0]?.decision;
   const traceBackend = semantic ? "DeepSeek" : traceDecision?.agent_backend || state?.agent_backend;
@@ -1123,6 +1160,19 @@ function semanticStatusLabel(status) {
 }
 
 
+function semanticCompletionLabel(mission, includeHistory = false) {
+  const steps = Array.isArray(mission?.steps) ? mission.steps : [];
+  const completed = steps.filter(step => step.status === "completed");
+  const matched = mission?.task_contract?.matched_occurrences;
+  const revision = mission?.plan_revision ?? mission?.revision;
+  const current = completed.filter(step => !revision || step.revision === revision).length;
+  const verified = Number.isInteger(matched) && matched >= 0;
+  const count = verified ? matched : current;
+  const text = verified ? `本次任务已验证 ${count} 项要求` : `当前方案已完成 ${count} 步`;
+  return text + (includeHistory && completed.length !== count ? ` · 历史累计 ${completed.length} 个执行步骤` : "");
+}
+
+
 async function submitSemanticTask(event) {
   event?.preventDefault();
   if (!isSemanticScenario() || commandPending) return false;
@@ -1136,9 +1186,17 @@ async function submitSemanticTask(event) {
 }
 
 
+function handleTaskInstructionKeydown(event) {
+  // Enter used to confirm a Chinese IME candidate must never submit the task.
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+  event.preventDefault();
+  if (!event.repeat) taskForm.requestSubmit();
+}
+
+
 const SEMANTIC_ACTION_LABELS = {
   visit: "访问", inspect: "巡检", thermal_scan: "热观测", capture: "模拟采样", motion: "轨迹飞行",
-  control: "位置控制", review: "执行评估", return_home: "返回并降落",
+  control: "位置控制", review: "执行评估", return_home: "返回并降落", visual: "视觉寻找与确认",
 };
 const STEP_STATUS_LABELS = {
   pending: "待执行", active: "进行中", completed: "已完成",
@@ -1171,6 +1229,7 @@ function semanticConditionLabel(expression, mission, revision = mission.plan_rev
     visited: "到达地点", returned: "已返航", landed: "已降落",
     battery_percent: "电量", elapsed_seconds: "任务用时", completed: "动作完成", reviewed: "评估完成", state: "飞行状态",
     total_length_m: "轨迹总长", distance_m: "轨迹覆盖距离", progress: "轨迹进度",
+    observed: "视觉目标已确认", range_m: "观测距离", confidence: "视觉置信度",
   };
   const operator = { "<": "低于", "<=": "不超过", "==": "等于", "!=": "不等于", ">=": "至少", ">": "超过" };
   const field = fields[expression.field] || expression.field || "结果";
@@ -1214,7 +1273,7 @@ function semanticStepLabel(step) {
   const action = step.action === "control" && isRecord(step.control)
     ? {landed: "降落停留", airborne: "定点停留"}[step.control.state] || SEMANTIC_ACTION_LABELS.control
     : SEMANTIC_ACTION_LABELS[step.action] || "执行任务";
-  return `${action} · ${pointOfInterestLabel(step.target_id)}`;
+  return `${action} · ${step.target_ref ? "已识别目标" : pointOfInterestLabel(step.target_id)}`;
 }
 
 
@@ -1240,7 +1299,7 @@ function semanticGoalMessage(mission) {
   if (mission.status !== "completed" || !isRecord(mission.goal_state)) return "";
   if (goal.satisfied !== true) return "任务结束状态尚未确认。";
   if (!goal.target_id) return mission.message || "任务已完成，保持当前位置。";
-  const location = pointOfInterestLabel(goal.target_id);
+  const location = goal.target_ref ? "已识别目标附近" : pointOfInterestLabel(goal.target_id);
   if (goal.state === "landed") return `任务已完成，已在${location}降落停驻。`;
   if (goal.state === "airborne") return `任务已完成，正在${location}上空保持位置。`;
   return "任务结束状态尚未确认。";
@@ -1261,6 +1320,8 @@ function semanticMotionSummary(step) {
     details.push(`固定朝向 ${motion.heading.yaw_deg}°`);
   } else if (motion.heading?.mode === "face_target") {
     details.push(`朝向${pointOfInterestLabel(motion.heading.target_id)}`);
+  } else if (motion.heading?.mode === "face_reference") {
+    details.push("朝向已识别目标");
   }
   return details.join(" · ");
 }
@@ -1312,8 +1373,7 @@ function renderSemanticMission() {
   const evidence = Array.isArray(mission.evidence) ? mission.evidence : [];
   const configured = Boolean(state.deepseek_key_configured);
   const planRevision = mission.plan_revision ?? mission.revision;
-  const revisionSteps = steps.filter(step => !planRevision || step.revision === planRevision);
-  setText(document.getElementById("plannerProgress"), `当前任务已完成 ${revisionSteps.filter(step => step.status === "completed").length} 步 · ${state.flight?.planner_calls || 0} 次本地规划`);
+  setText(document.getElementById("plannerProgress"), `${semanticCompletionLabel(mission)} · ${state.flight?.planner_calls || 0} 次本地规划`);
   taskInstruction.disabled = commandPending;
   submitTaskBtn.disabled = commandPending || !configured || !taskInstruction.value.trim();
   submitTaskBtn.textContent = mission.status === "generation_failed" ? "重试任务"
@@ -1357,7 +1417,11 @@ function renderSemanticMission() {
   message.dataset.error = String(Boolean(commandError || ["error", "generation_failed"].includes(mission.status)));
   const feedback = Array.isArray(mission.execution_feedback)
     ? [...mission.execution_feedback].reverse().find(entry => typeof entry?.message === "string" && entry.message.trim())?.message : "";
-  const messageText = commandError || (paused ? "任务已暂停，可继续或重置。"
+  const pauseMessage = state.runtime_backend === "gazebo"
+    ? "任务已暂停，可继续任务或下达返航降落指令；重置需先在基地降落并解除武装。"
+    : "任务已暂停，可继续或重置。";
+  const messageText = commandError || (paused ? pauseMessage : state.flight?.mode === "feedback_hold"
+    ? "已请求刹停，正在等待最新飞行位置。核查这段轨迹后会自动继续。"
     : semanticGoalMessage(mission) || mission.message || feedback || defaults[mission.status] || defaults.idle);
   setText(message, messageText);
   const summary = document.getElementById("semanticSummary");
@@ -1381,8 +1445,7 @@ function renderSemanticMission() {
   }
 
   const nextStepsKey = JSON.stringify([state.scenario_id, mission.mission_id, mission.vehicle_id,
-    mission.revision, planRevision, mission.program, mission.loops, steps, mission.current_step_id, mission.current_execution_id, evidence,
-    steps.map(step => semanticMotionProgressLabel(step, mission))]);
+    mission.revision, planRevision, mission.program, mission.loops, steps, mission.current_step_id, mission.current_execution_id, evidence]);
   if (nextStepsKey !== semanticStepsKey) {
     semanticStepsKey = nextStepsKey;
     const program = semanticProgramNodes(mission.program).filter(node => ["repeat", "branch"].includes(node.action));
@@ -1405,6 +1468,7 @@ function renderSemanticMission() {
     const revisions = new Set(steps.map(step => step.revision || 1));
     let displayedRevision = null;
     const items = [];
+    semanticStepStatuses = [];
     steps.forEach((step, index) => {
       const revision = step.revision || 1;
       if (revisions.size > 1 && displayedRevision !== revision) {
@@ -1423,13 +1487,12 @@ function renderSemanticMission() {
       content.append(semanticElement("strong", "", semanticStepLabel(step)));
       const detail = step.action === "motion" ? semanticMotionSummary(step)
         : step.action === "control" ? semanticControlSummary(step)
+          : step.action === "visual" ? `${step.visual?.description || ""} · ${step.visual?.max_distance_m ?? "—"} 米内确认`
           : step.action === "review" && typeof step.instruction === "string" ? step.instruction.trim() : "";
       if (detail) content.append(semanticElement("span", "task-step-iteration", detail));
-      const status = STEP_STATUS_LABELS[step.status] || "待执行";
-      const duration = step.action !== "control" && Number(step.duration_seconds) > 0 ? ` · 停留 ${step.duration_seconds} 秒` : "";
-      const result = semanticEvidenceForStep(step, mission);
-      content.append(semanticElement("span", "task-step-status", result ? evidenceResultLabel(result)
-        : semanticMotionProgressLabel(step, mission) || status + duration));
+      const statusElement = semanticElement("span", "task-step-status");
+      semanticStepStatuses.push(statusElement);
+      content.append(statusElement);
       const iterations = Object.values(step.loop_iterations || {});
       if (iterations.length) content.append(semanticElement("span", "task-step-iteration", `循环第 ${iterations.join(" / ")} 次`));
       if (step.when) {
@@ -1440,6 +1503,14 @@ function renderSemanticMission() {
     });
     semanticSteps.replaceChildren(...items);
   }
+  // Progress changes frequently; keep the list, text selection and scroll anchors.
+  steps.forEach((step, index) => {
+    const status = STEP_STATUS_LABELS[step.status] || "待执行";
+    const duration = step.action !== "control" && Number(step.duration_seconds) > 0 ? ` · 停留 ${step.duration_seconds} 秒` : "";
+    const result = semanticEvidenceForStep(step, mission);
+    setText(semanticStepStatuses[index], result ? evidenceResultLabel(result)
+      : semanticMotionProgressLabel(step, mission) || status + duration);
+  });
 }
 
 
@@ -1452,6 +1523,9 @@ function evidenceResultLabel(entry) {
     return "目标状态尚未确认。";
   }
   if (entry.action === "review") return result.reviewed === true ? "执行反馈已评估。" : "正在评估执行反馈。";
+  if (entry.action === "visual") return result.observed === true
+    ? `图像与深度已确认 · ${Number.isFinite(result.range_m) ? result.range_m.toFixed(1) : "—"} 米（模型视觉判断）`
+    : "视觉目标尚未确认。";
   if (entry.action === "thermal_scan") {
     const temperature = Number.isFinite(result.temperature_c) ? `${result.temperature_c.toFixed(1)} °C` : "温度未记录";
     return `${temperature} · ${result.anomaly === true ? "检测到模拟异常" : result.anomaly === false ? "未检测到模拟异常" : "异常状态未确认"}`;
@@ -1567,7 +1641,9 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
   const flight = state.flight || {};
   const avoidance = flight.avoidance || {};
   setText(agentActionValue, waypoints.length ? waypoints.map(formatPoint).join(" -> ") : "--");
-  setText(document.getElementById("plannerProgress"), `${flight.planner_calls ?? 0} planner calls | ${avoidance.replans ?? 0} local replans | ${Math.min(flight.waypoint_index ?? 0, flight.waypoints?.length ?? 0)}/${flight.waypoints?.length ?? 0} reached`);
+  if (!isSemanticScenario()) {
+    setText(document.getElementById("plannerProgress"), `${flight.planner_calls ?? 0} planner calls | ${avoidance.replans ?? 0} local replans | ${Math.min(flight.waypoint_index ?? 0, flight.waypoints?.length ?? 0)}/${flight.waypoints?.length ?? 0} reached`);
+  }
   setText(agentRiskValue, decision.risk);
   setText(agentReasonValue, decision.reason);
 
@@ -1604,7 +1680,7 @@ function renderDecisionTrace(entry = state?.history?.[0] || null) {
   setText(executionPositionValue, formatPoint(state.uav));
   const milestones = state.milestones || {};
   setText(missionProgressText, isSemanticScenario()
-    ? `${(state.semantic_mission?.steps || []).filter(step => step.status === "completed").length} 个步骤已验证完成 · 当前阶段 ${semanticStatusLabel(state.semantic_mission?.status)}`
+    ? `${semanticCompletionLabel(state.semantic_mission, true)} · 当前阶段 ${semanticStatusLabel(state.semantic_mission?.status)}`
     : `${milestones.target_reached ? "★ Collected · Target reached" : "☆ Target pending"} · ${milestones.base_returned ? "Returned to base" : "Return pending"}`);
   const recovery = flight.recovery || {};
   const recoveryLabels = {
@@ -1639,33 +1715,24 @@ function renderRuntimeControls() {
     const selected = button.dataset.runtime === state.runtime_backend;
     button.setAttribute("aria-checked", String(selected));
     button.classList.toggle("active", selected);
-    button.disabled = commandPending || (isSemanticScenario() && button.dataset.runtime === "airsim");
-    button.title = isSemanticScenario() && button.dataset.runtime === "airsim"
-      ? "园区任务目前使用 HTML 仿真观测" : "";
+    button.disabled = commandPending || (!state.scenario?.gazebo_world && button.dataset.runtime === "gazebo");
+    button.title = !state.scenario?.gazebo_world && button.dataset.runtime === "gazebo"
+      ? "请先选择支持 Gazebo 的地图并启动对应世界"
+      : "";
   });
-  if (airsimConfigBtn) {
-    airsimConfigBtn.disabled = commandPending || isSemanticScenario();
+  if (gazeboConfigBtn) {
+    gazeboConfigBtn.disabled = commandPending;
   }
 
   scenarioSelect.value = state.scenario_id || "";
-  if (runtime.host !== null && runtime.host !== undefined) {
-    setInputUnlessFocused(airsimHost, runtime.host);
-  }
+  setInputUnlessFocused(gazeboWorld, state.scenario?.gazebo_world || "");
   if (runtime.port !== null && runtime.port !== undefined) {
-    setInputUnlessFocused(airsimPort, runtime.port);
+    setInputUnlessFocused(gazeboPort, runtime.port);
   }
   if (runtime.vehicle_name !== null && runtime.vehicle_name !== undefined) {
     setInputUnlessFocused(vehicleName, runtime.vehicle_name);
   }
-  const wind = isRecord(runtime.wind_ned) ? runtime.wind_ned : {};
-  setInputUnlessFocused(windNorth, wind.x ?? 0);
-  setInputUnlessFocused(windEast, wind.y ?? 0);
-  setInputUnlessFocused(windDown, wind.z ?? 0);
-
-  reconnectAirSimBtn.disabled = commandPending || isSemanticScenario();
-  applyWindBtn.disabled = commandPending
-    || !connected
-    || !Boolean(runtime.supports_wind);
+  reconnectGazeboBtn.disabled = commandPending;
 }
 
 
@@ -1884,12 +1951,12 @@ async function openAgentDialog() {
 }
 
 
-function openAirSimDialog() {
-  if (commandPending || isSemanticScenario()) {
+function openGazeboDialog() {
+  if (commandPending) {
     return;
   }
   renderRuntimeControls();
-  openDialog(airsimDialog);
+  openDialog(gazeboDialog);
 }
 
 
@@ -1902,7 +1969,8 @@ function setInputUnlessFocused(input, value) {
 
 function setText(element, value) {
   if (element) {
-    element.textContent = valueOrDash(value);
+    const text = String(valueOrDash(value));
+    if (element.textContent !== text) element.textContent = text;
   }
 }
 
@@ -2119,11 +2187,12 @@ function setCameraMode(mode) {
 
 
 function animate() {
+  void captureOnboardObservation();
   timer.update();
   const delta = Math.min(timer.getDelta(), 0.1);
   const elapsed = timer.getElapsed();
-  const htmlRuntimeActive = state?.runtime_backend === "html";
-  const frame = htmlRuntimeActive ? motionTimeline.sample(performance.now() / 1000) : null;
+  const telemetryVisible = ["html", "gazebo"].includes(state?.runtime_backend);
+  const frame = telemetryVisible ? motionTimeline.sample(performance.now() / 1000) : null;
 
   if (uavGroup && frame) {
     uavGroup.position.copy(worldFromSample(frame.position));
@@ -2151,12 +2220,12 @@ function animate() {
   displayedAvoidance = avoidanceView?.update(frame?.time, uavGroup?.position,
     state?.flight?.waypoints?.[state?.flight?.waypoint_index],
     Boolean(state?.flight?.running && !state.flight.planning && !state.flight.error),
-    Boolean(htmlRuntimeActive && frame)) || null;
+    Boolean(telemetryVisible && frame)) || null;
   renderAvoidanceStatus(displayedAvoidance);
   const highlightedBirds = new Set(displayedAvoidance
     ? [...(displayedAvoidance.threats || []).map(threat => threat.id), ...(displayedAvoidance.episode?.object_ids || [])] : []);
 
-  if (htmlRuntimeActive && frame) {
+  if (telemetryVisible && frame) {
     birdMeshes.forEach((bird, id) => {
       const sample = frame.traffic[id];
       bird.visible = Boolean(sample);
@@ -2196,8 +2265,8 @@ function animate() {
       bird.userData.contactBubble.material.color.set(risk === "critical" ? "#ff6b57" : "#94a3b8");
     });
   }
-  updateGoalStar(delta, elapsed, htmlRuntimeActive, frame?.time);
-  updateBirdHover(htmlRuntimeActive);
+  updateGoalStar(delta, elapsed, telemetryVisible, frame?.time);
+  updateBirdHover(telemetryVisible);
 
   if (cameraMode === "follow" && uavGroup) {
     updateFollowCamera(delta, Boolean(frame?.reset));
@@ -2280,9 +2349,8 @@ runtimeButtons.forEach((button) => {
   button.addEventListener("click", () => switchRuntime(button.dataset.runtime));
 });
 agentKeyBtn?.addEventListener("click", openAgentDialog);
-airsimConfigBtn?.addEventListener("click", openAirSimDialog);
-reconnectAirSimBtn.addEventListener("click", () => switchRuntime("airsim", true));
-applyWindBtn.addEventListener("click", applyWind);
+gazeboConfigBtn?.addEventListener("click", openGazeboDialog);
+reconnectGazeboBtn.addEventListener("click", () => switchRuntime("gazebo", true));
 agentForm?.addEventListener("submit", configureDeepSeekFromDialog);
 closeAgentBtn?.addEventListener("click", closeAgentDialog);
 cancelAgentBtn?.addEventListener("click", closeAgentDialog);
@@ -2299,11 +2367,12 @@ deepseekBaseUrl?.addEventListener("input", () => {
   invalidateAgentModels();
   refreshAgentConfigControls();
 });
-closeAirSimBtn?.addEventListener("click", () => closeDialog(airsimDialog));
-closeAirSimFooterBtn?.addEventListener("click", () => closeDialog(airsimDialog));
+closeGazeboBtn?.addEventListener("click", () => closeDialog(gazeboDialog));
+closeGazeboFooterBtn?.addEventListener("click", () => closeDialog(gazeboDialog));
 window.addEventListener("resize", onResize);
 new ResizeObserver(onResize).observe(sceneContainer);
 taskForm?.addEventListener("submit", submitSemanticTask);
+taskInstruction?.addEventListener("keydown", handleTaskInstructionKeydown);
 taskInstruction?.addEventListener("input", () => {
   commandError = "";
   renderSemanticMission();

@@ -60,6 +60,22 @@ class EnvironmentContractTest(unittest.TestCase):
 
 
 class MotionContractTest(unittest.TestCase):
+    def test_physical_response_time_reserves_braking_distance(self):
+        state = VehicleState((0, 0, 2), (3, 0, 0))
+        target = (1.5, 0, 2)
+        ideal = TrajectoryController().velocity_command(state, target, .05)
+        delayed = TrajectoryController(response_seconds=.5).velocity_command(state, target, .05)
+        self.assertLess(delayed[0], ideal[0])
+        self.assertGreaterEqual(delayed[0], state.velocity[0]-.1-1e-9)
+        # The measured speed will consume the last 30 cm before the physical
+        # loop responds. Ask it to brake towards zero, including on a descent.
+        direction = (.8, 0., -.6)
+        state = VehicleState((1., 1., 3.), tuple(.8*v for v in direction))
+        target = tuple(p+.3*v/s for p,v,s in zip(state.position, direction, (3,3,5)))
+        command = TrajectoryController(response_seconds=.5).velocity_command(state, target, .05)
+        for actual, previous in zip(command, state.velocity):
+            self.assertAlmostEqual(actual, previous*.9)
+
     def test_descent_settles_without_crossing_base_altitude(self):
         from uav_llm_demo.html_runtime import HtmlRuntime
         for control_dt in (0.05, 0.1, 0.2):

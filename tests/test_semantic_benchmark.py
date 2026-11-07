@@ -8,8 +8,11 @@ from unittest.mock import patch
 
 from uav_llm_demo.agents import PlannerProviderError
 from uav_llm_demo.semantic_benchmark import (
-    _BudgetedAgent, evaluate_oracle, load_dataset, redact, run_case, summarize,
+    _BudgetedAgent, _usage_cost, compare_policies, evaluate_oracle, load_dataset, redact,
+    recovery_metrics, run_case, summarize,
 )
+from uav_llm_demo.scenarios import load_scenario
+from uav_llm_demo.semantic_tasks import task_catalog
 
 
 WORLD = {"home": dict(center=[0, 0, 0], arrival=[0, 0, 0]),
@@ -38,16 +41,27 @@ def sample(t=0, position=(0, 0, 0), speed=0, yaw=0, eid=None, phase=None):
 
 
 class OracleTests(unittest.TestCase):
-    def evaluate(self, req, records=(), samples=()):
-        return evaluate_oracle(req, evidence=list(records), telemetry=list(samples), world=WORLD, mission_id="mission")
+    def evaluate(self, req, records=(), samples=(), **context):
+        return evaluate_oracle(req, evidence=list(records), telemetry=list(samples), world=WORLD, mission_id="mission", **context)
 
     def test_completion_without_required_work_fails(self):
         self.assertFalse(self.evaluate(predicate(), [evidence("return_home", "home")])["satisfied"])
         self.assertTrue(self.evaluate(predicate(), [evidence()])["satisfied"])
 
+    def test_native_landing_requires_disarmed_contact_for_the_whole_dwell(self):
+        requirement = dict(type="goal", target="home", state="landed", dwell_seconds=1)
+        rows = [{**sample(t), "runtime": "gazebo", "landed": True, "armed": t < 1} for t in (0, .5, 1)]
+        self.assertFalse(self.evaluate(requirement, samples=rows)["satisfied"])
+        rows.append({**sample(2), "runtime": "gazebo", "landed": True, "armed": False})
+        self.assertTrue(self.evaluate(requirement, samples=rows)["satisfied"])
+        rows[-1]["landed"] = False
+        self.assertFalse(self.evaluate(requirement, samples=rows)["satisfied"])
+
     def test_wrong_target_source_vehicle_mission_or_unsuccessful_result_fails(self):
         changes = [dict(target_id="garden"), dict(source="model_claim"), dict(vehicle_id="uav-2"),
-                   dict(mission_id="old"), dict(result={"inspected": False})]
+                   dict(mission_id="old"), dict(result={"inspected": False}),
+                   dict(observation={"status": "unknown"}),
+                   dict(observation={"status": "valid", "observed_at": 0, "valid_until": .5, "confidence": 1})]
         for change in changes:
             with self.subTest(change=change):
                 row = {**evidence(), **change}
@@ -81,6 +95,33 @@ class OracleTests(unittest.TestCase):
         self.assertFalse(self.evaluate(req, [hot, evidence(when=2, eid="inspection")])["satisfied"])
         self.assertTrue(self.evaluate(req, [hot, evidence(target="garden", when=2, eid="inspection")])["satisfied"])
         self.assertFalse(self.evaluate(req, [evidence(when=2)])["satisfied"])
+        cold.update(evidence_id="original", observation=dict(status="valid", observed_at=0, valid_until=1.5, confidence=1))
+        fresh = evidence("thermal_scan", when=3, eid="refresh", evidence_id="fresh", refresh_of="original",
+                         result={"simulated": True, "temperature_c": 68},
+                         observation=dict(status="valid", observed_at=2, valid_until=5, confidence=1))
+        rows = [cold, evidence(when=1.4, eid="cold_inspection"), fresh,
+                evidence(target="garden", when=4, eid="hot_inspection")]
+        decisions = [dict(simulation_time=1.2, requested_evidence_id="original", resolved_evidence_id="original",
+                          field="temperature_c", observed_value=29),
+                     dict(simulation_time=3.2, requested_evidence_id="original", resolved_evidence_id="fresh",
+                          field="temperature_c", observed_value=68)]
+        self.assertTrue(self.evaluate(predicate("thermal_scan"), rows)["satisfied"])
+        # The later hot refresh must not rewrite the earlier cold decision.
+        earlier = self.evaluate(req, rows, condition_evaluations=decisions)
+        self.assertTrue(earlier["satisfied"])
+        self.assertEqual(earlier["measured"]["selected_branch"], "else")
+        self.assertEqual(self.evaluate(req, rows)["measured"]["selected_branch"], "else")
+        later = {**req, "decision_occurrence": 2}
+        measured = self.evaluate(later, rows, condition_evaluations=decisions)
+        self.assertTrue(measured["satisfied"])
+        self.assertEqual(measured["measured"]["observation_evidence_id"], "fresh")
+        self.assertFalse(self.evaluate(later, rows, condition_evaluations=decisions,
+                                       condition_evaluations_dropped=1)["satisfied"])
+        decisions[1]["simulation_time"] = 2.5  # Referencing a future reading is invalid.
+        self.assertFalse(self.evaluate(later, rows, condition_evaluations=decisions)["satisfied"])
+        decisions[1]["simulation_time"] = 3.2
+        fresh["refresh_of"] = "unbound"
+        self.assertFalse(self.evaluate(later, rows, condition_evaluations=decisions)["satisfied"])
 
     def test_condition_cannot_use_an_action_before_observation(self):
         req = dict(type="if", observation=predicate("thermal_scan"), field="temperature_c", op=">", value=20,
@@ -117,6 +158,7 @@ class OracleTests(unittest.TestCase):
         self.assertTrue(self.evaluate(req, samples=good)["satisfied"])
         for bad in ([sample(1, (0, 0, 2))], [sample(1, speed=1)], [sample(1, (.2, 0, 0))], good[:3]):
             self.assertFalse(self.evaluate(req, samples=bad)["satisfied"])
+        self.assertFalse(self.evaluate(req, samples=[{**row, "mission_id": "another-mission"} for row in good])["satisfied"])
 
     def test_hover_altitude_heading_requires_measured_state(self):
         req = dict(type="goal", target="library", state="airborne", altitude_m=10, yaw_deg=90)
@@ -142,9 +184,41 @@ class OracleTests(unittest.TestCase):
         req = dict(type="circuit", target="garden", direction="clockwise", laps=1)
         rows = [evidence("motion", "garden", 10, "ring")]
         self.assertTrue(self.evaluate(req, rows, self.square_samples())["satisfied"])
+        half = {**req, "laps": .5}
+        self.assertTrue(self.evaluate(half, rows, self.square_samples()[:41])["satisfied"])
+        self.assertFalse(self.evaluate(half, rows, self.square_samples())["satisfied"])
         for samples in (self.square_samples(sign=-1), self.square_samples(laps=2), self.square_samples(size=.2)):
             self.assertFalse(self.evaluate(req, rows, samples)["satisfied"])
         self.assertFalse(self.evaluate(req, rows, [sample()])["satisfied"])
+        square = self.square_samples()
+        reversing = [{**s, "t": i / 10} for i, s in enumerate(square[:21] + list(reversed(square[:21])) + square)]
+        self.assertFalse(self.evaluate(req, [evidence("motion", "garden", 20, "ring")], reversing)["satisfied"])
+        original = [{**s, "execution_id": "cancelled", "action": "motion", "target_id": "garden", "user_update_index": 0}
+                    for s in self.square_samples()[:21]]
+        for continuation, user_update in ((False, False), (True, False), (False, True)):
+            with self.subTest(continuation=continuation, user_update=user_update):
+                remaining = self.square_samples()[20:] if continuation else self.square_samples()
+                resumed = [{**s, "execution_id": "resumed", "t": s["t"] + 4, "action": "motion",
+                            "target_id": "garden", "user_update_index": int(user_update)} for s in remaining]
+                result = {"completed": True}
+                if continuation:
+                    result["tracking_executions"] = ["cancelled", "resumed"]
+                finished = [evidence("motion", "garden", 20, "resumed", result=result)]
+                predicate = {**req, **({"after_update": 1} if user_update else {})}
+                measured = self.evaluate(predicate, finished, original + resumed)
+                self.assertEqual(measured["satisfied"], continuation or user_update)
+                if not continuation and not user_update:
+                    self.assertAlmostEqual(measured["measured"]["measured_signed_laps"], 1.25)
+                    self.assertGreater(measured["measured"]["uncredited_tracking_distance_m"], 0)
+                    recovery = recovery_metrics(req, finished, [], "mission", telemetry=original + resumed)
+                    self.assertGreater(recovery["uncredited_tracking_distance_m"], 0)
+                    # Reusing an execution ID across a transit/reset must not
+                    # invent reverse tracking that cancels the extra quarter.
+                    same_id = [{**s, "execution_id": "resumed"} for s in original]
+                    gap = {**sample(3, eid="resumed", phase="transit"), "action": "motion", "target_id": "garden"}
+                    repeated = self.evaluate(req, finished, same_id + [gap] + resumed)
+                    self.assertFalse(repeated["satisfied"])
+                    self.assertAlmostEqual(repeated["measured"]["measured_signed_laps"], 1.25)
 
     def test_two_laps_can_be_two_independent_completed_motion_nodes(self):
         req = dict(type="circuit", target="garden", direction="clockwise", laps=2)
@@ -165,10 +239,10 @@ class OracleTests(unittest.TestCase):
         samples[0]["yaw"] += 1
         self.assertFalse(self.evaluate(req, rows, samples)["satisfied"])
 
-    def test_all_failures_stay_in_denominator_and_expected_negative_is_separate(self):
+    def test_all_failures_stay_in_denominator(self):
         statuses = ["completed", "timeout", "clarification", "failed"]
         results = [dict(status=s, oracle_success=i == 0, service_success=i == 0, false_completion=False,
-                        interpretation_calls=1, wall_seconds=1, expected_oracle_success=True, regression_pass=i == 0)
+                        interpretation_calls=1, wall_seconds=1, regression_pass=i == 0)
                    for i, s in enumerate(statuses)]
         summary = summarize(results)
         self.assertEqual(summary["runs"], 4)
@@ -184,6 +258,41 @@ class OracleTests(unittest.TestCase):
         self.assertNotIn("opaque-token", json.dumps(cleaned))
         self.assertEqual(cleaned["token"], "[redacted]")
 
+    def test_recovery_metrics_exclude_required_repeats_and_unsuccessful_attempts(self):
+        reviews = [dict(event="semantic_execution_feedback", simulation_seconds=2.5,
+                        feedback=dict(kind="review_requested"))]
+        rows = [evidence(when=1), evidence(when=2, eid="two"), evidence(when=3, eid="extra"),
+                evidence(when=4, eid="unknown", result={"inspected": False})]
+        result = recovery_metrics(predicate(count=2), rows, reviews, "mission")
+        self.assertEqual(result["repeated_completed_actions"], 1)
+        self.assertEqual(result["duplicate_evidence"][0]["execution_id"], "extra")
+        self.assertEqual(recovery_metrics(predicate(count=3), rows, reviews, "mission")["repeated_completed_actions"], 0)
+        original = evidence("thermal_scan", when=1, evidence_id="original")
+        refresh = evidence("thermal_scan", when=3, eid="refresh", evidence_id="fresh", refresh_of="original",
+                           observation=dict(status="valid", observed_at=3, valid_until=5, confidence=1))
+        self.assertEqual(recovery_metrics(predicate("thermal_scan"), [original, refresh], reviews, "mission")["repeated_completed_actions"], 0)
+        refresh["refresh_of"] = "unbound"
+        self.assertEqual(recovery_metrics(predicate("thermal_scan"), [original, refresh], reviews, "mission")["repeated_completed_actions"], 1)
+        usage = dict(usage_missing=1, unreported_requests=0, prompt_cache_hit_tokens=0,
+                     prompt_cache_miss_tokens=10, completion_tokens=10)
+        prices = dict(input_hit=1, input_miss=2, output=3, currency="test")
+        self.assertIsNone(_usage_cost(dict(usage=usage), prices, offline=False)["estimated_cost"])
+
+    def test_paired_comparison_rejects_changed_conditions_and_reports_unmatched_runs(self):
+        def result(policy, case="first", success=False):
+            return dict(case_id=case, status="completed", oracle_success=success, service_success=True,
+                        false_completion=not success, interpretation_calls=1, wall_seconds=1,
+                        protocol=dict(policy=policy, seed=17, source_unchanged=True, mode="virtual", control_dt=.05))
+        before, after = result("single_pass"), result("contract", success=True)
+        comparison = compare_policies([before, after, result("single_pass", "unmatched")])
+        pair = comparison["comparisons"]["contract"]
+        self.assertEqual(pair["paired_runs"], 1)
+        self.assertEqual(pair["recovered"], [dict(case_id="first", seed=17)])
+        self.assertEqual(pair["unmatched_baseline"], [dict(case_id="unmatched", seed=17)])
+        after["protocol"]["control_dt"] = .1
+        with self.assertRaisesRegex(ValueError, "control_dt"):
+            compare_policies([before, after])
+
 
 class RunnerTests(unittest.TestCase):
     def setUp(self):
@@ -191,26 +300,34 @@ class RunnerTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def test_campus_executor_detects_omission_without_sending_oracle_to_model(self):
-        case = next(c for c in load_dataset()["cases"] if c["id"] == "holdout_initial_omission")
-        seen = []
+    def test_campus_executor_repairs_initial_omissions_without_sending_oracle_to_model(self):
+        fixture = next(c for c in load_dataset()["cases"] if c["id"] == "holdout_initial_omission")
         original = _BudgetedAgent.interpret_task
+        for repaired in (True, False):
+            with self.subTest(repaired=repaired):
+                case, seen = deepcopy(fixture), []
+                if not repaired:
+                    case["offline_responses"] = [deepcopy(case["offline_responses"][0]) for _ in range(3)]
 
-        def recording(agent, catalog, instruction, feedback="", **kwargs):
-            seen.append((deepcopy(catalog), instruction))
-            return original(agent, catalog, instruction, feedback, **kwargs)
+                def recording(agent, catalog, instruction, feedback="", **kwargs):
+                    seen.append((deepcopy(catalog), instruction))
+                    return original(agent, catalog, instruction, feedback, **kwargs)
 
-        with patch.object(_BudgetedAgent, "interpret_task", recording):
-            report = run_case(case, wall_budget=30)
-        self.assertTrue(report["service_success"])
-        self.assertFalse(report["oracle_success"])
-        self.assertTrue(report["false_completion"])
-        self.assertTrue(report["regression_pass"])
-        self.assertEqual(report["interpretation_calls"], 1)
-        self.assertNotIn("offline-benchmark-placeholder", json.dumps(report))
-        self.assertEqual(seen[0][1], case["instruction"])
-        self.assertNotIn("oracle", seen[0][0])
-        self.assertNotIn("offline_responses", seen[0][0])
+                with patch.object(_BudgetedAgent, "interpret_task", recording):
+                    report = run_case(case, max_calls=8, wall_budget=60)
+                self.assertEqual(report["service_success"], repaired)
+                self.assertEqual(report["oracle_success"], repaired)
+                self.assertFalse(report["false_completion"])
+                self.assertEqual(report["regression_pass"], repaired)
+                self.assertEqual(report["status"], "completed" if repaired else "failed")
+                self.assertEqual(report["interpretation_stage_calls"],
+                                 dict(requirements=2, audit=2, plan=2 if repaired else 3))
+                self.assertEqual(report["interpretation_calls"], sum(report["interpretation_stage_calls"].values()))
+                self.assertNotIn("offline-benchmark-placeholder", json.dumps(report))
+                self.assertEqual(seen[0][1], case["instruction"])
+                self.assertIn("task_requirements", seen[0][0])
+                self.assertNotIn("oracle", seen[0][0])
+                self.assertNotIn("offline_responses", seen[0][0])
 
     def test_remote_virtual_or_missing_key_fails_before_service(self):
         case = load_dataset()["cases"][0]
@@ -218,18 +335,64 @@ class RunnerTests(unittest.TestCase):
             run_case(case, mode="virtual", backend="deepseek")
         with patch.dict("os.environ", {}, clear=True), self.assertRaises(ValueError):
             run_case(case, mode="realtime", backend="deepseek")
+        with self.assertRaises(ValueError):
+            run_case(case, control_delay_ms=120)
+        with self.assertRaises(ValueError):
+            run_case(case, control_dt=.2)
+        with self.assertRaisesRegex(ValueError, "retired physics"):
+            run_case({**case, "physics": {"wind_mps": [2, -1, 0]}})
+        for options in ({}, {"mode": "realtime", "traffic": "fixed"}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "Gazebo requires"):
+                run_case(case, runtime_backend="gazebo", **options)
+
+    def test_native_startup_failure_is_counted_and_owned_session_is_closed(self):
+        from uav_llm_demo.gazebo_runtime import GazeboRuntime, GazeboRuntimeConfig
+        runtime = GazeboRuntime(GazeboRuntimeConfig(world="semantic_campus"))
+        with patch("uav_llm_demo.gazebo_session.GazeboSession") as factory:
+            session = factory.return_value
+            session.runtime, session.log_dir, session.manifest = runtime, None, {}
+            session.start.side_effect = RuntimeError("Private diagnostic")
+            result = run_case(load_dataset()["cases"][0], mode="realtime", runtime_backend="gazebo")
+            session.close.assert_called_once()
+        self.assertEqual(result["termination_reason"], "runtime_startup")
+        self.assertEqual(result["protocol"]["runtime"], "gazebo")
+        self.assertEqual(result["telemetry"], [])
+        self.assertFalse(result["service_success"])
+        self.assertEqual(summarize([result])["runs"], 1)
+        self.assertNotIn("Private diagnostic", json.dumps(result))
+
+    def test_single_pass_baseline_exposes_false_completion_without_reading_requirements(self):
+        case = next(c for c in load_dataset()["cases"] if c["id"] == "holdout_initial_omission")
+        for policy in ("single_pass", "current_repair", "event_review"):
+            with self.subTest(policy=policy):
+                result = run_case(case, policy=policy, wall_budget=30)
+                self.assertEqual(result["status"], "completed")
+                self.assertFalse(result["oracle_success"])
+                self.assertTrue(result["false_completion"])
+                self.assertEqual(result["interpretation_stage_calls"], {"plan": 1})
+                self.assertEqual(result["protocol"]["requirement_source"], "plan_derived_baseline")
 
     def test_budget_prevents_extra_calls_and_expired_requests(self):
-        agent = _BudgetedAgent(replies=[], api_key="test-placeholder", max_calls=1)
-        with self.assertRaises(PlannerProviderError):
-            agent.interpret_task({}, "任务")
-        with self.assertRaises(PlannerProviderError):
-            agent.interpret_task({}, "任务")
-        self.assertEqual(agent.calls, 1)
-        self.assertTrue(agent.budget_exhausted)
+        case = load_dataset()["cases"][0]
+        catalog = task_catalog(load_scenario("semantic_campus"))
+        for limit in (1, 2):
+            with self.subTest(limit=limit):
+                agent = _BudgetedAgent(replies=case["offline_responses"], requirements=case["offline_requirements"],
+                                       audits=case["offline_audits"], api_key="test-placeholder", max_calls=limit)
+                requirements = agent.extract_task_requirements(catalog, case["instruction"])
+                if limit == 1:
+                    with self.assertRaises(PlannerProviderError):
+                        agent.audit_task_requirements(catalog, case["instruction"], requirements)
+                else:
+                    agent.audit_task_requirements(catalog, case["instruction"], requirements)
+                    with self.assertRaises(PlannerProviderError):
+                        agent.interpret_task(catalog, case["instruction"])
+                self.assertEqual(agent.calls, limit)
+                self.assertEqual(sum(agent.stage_calls.values()), limit)
+                self.assertTrue(agent.budget_exhausted)
         expired = _BudgetedAgent(replies=[], api_key="test-placeholder", deadline=time.monotonic() - 1)
         with self.assertRaises(PlannerProviderError):
-            expired.interpret_task({}, "任务")
+            expired.extract_task_requirements({}, "任务")
         self.assertEqual(expired.calls, 0)
 
     def test_runtime_failure_is_a_result_and_does_not_drop_the_case(self):

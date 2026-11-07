@@ -2,9 +2,11 @@ import unittest
 import time
 
 from uav_llm_demo.avoidance import LocalAvoidance, PredictedTraffic
-from uav_llm_demo.evaluation import path_length
+from uav_llm_demo.agents import GeometricPlanner
 from uav_llm_demo.motion import VehicleState, WaypointManager, TrajectoryController
-from uav_llm_demo.safety import SafetyChecker
+from uav_llm_demo.path_tracking import PathFollower
+from uav_llm_demo.safety import SAFETY_MARGIN, SafetyChecker
+from uav_llm_demo.scenarios import load_scenario
 from test_avoidance import encounter_service, StraightTraffic
 
 
@@ -18,6 +20,37 @@ def known_track(radius, positions):
 
 
 class RouteReconnectionTest(unittest.TestCase):
+    def test_native_transit_reserves_tracking_room_over_campus_roofs(self):
+        scene = load_scenario("semantic_campus")
+        goal = (28., 50., 2.2)
+        context = dict(scene.to_dict(), position=dict(zip("xyz",scene.base)),
+                       goal=dict(zip("xyz",goal)), route_tracking_margin_m=PathFollower.CORRIDOR_M)
+        checker = SafetyChecker(context)
+        possible_shortcut = (48., 88., 4.55)
+        self.assertTrue(checker.segment_safe(possible_shortcut, goal))
+        self.assertFalse(checker.segment_safe(possible_shortcut, goal, extra_clearance=PathFollower.CORRIDOR_M))
+        route = GeometricPlanner().plan(context)
+        padded = SafetyChecker(context, clearance=SAFETY_MARGIN+PathFollower.CORRIDOR_M)
+        self.assertEqual(padded.validate_path(scene.base, route.waypoints), [])
+
+    def test_reference_preserves_route_slope_and_restores_cross_track_error(self):
+        manager = WaypointManager()
+        manager.load([(40, 0, 2.2)], (0, 0, 2.2))
+        state = VehicleState((0, 0, 2))
+        reference = manager.tracking_target(state)
+        self.assertAlmostEqual(reference[0]*3, 8)
+        self.assertEqual(reference[2], 2.2)
+        controller = TrajectoryController(response_seconds=.5)
+        corrected = controller.velocity_command(state, reference, .05)
+        distant = controller.velocity_command(state, manager.current, .05)
+        self.assertGreater(corrected[2], 10*distant[2])
+        manager.load([(10, 0, 4)], (0, 0, 2))
+        reference = manager.tracking_target(VehicleState((2, 1, 2.5)))
+        self.assertAlmostEqual((reference[2]-2)/2, reference[0]/10)
+        self.assertEqual(reference[1], 0)
+        self.assertEqual(manager.tracking_target(VehicleState((9.9, 0, 3.98))), manager.current)
+        self.assertEqual(manager.index, 0)
+
     def test_detour_rejoins_goal_without_returning_to_old_waypoint(self):
         service = encounter_service(velocity=(0, 0, 0))
         self.addCleanup(service.close)
@@ -83,9 +116,6 @@ class RouteReconnectionTest(unittest.TestCase):
         for second in range(20):
             self.assertFalse(local.stalled(manager.points[-1], manager.remaining_distance((1 + second * .2, 10, 2)), second))
         self.assertTrue(local.stalled(manager.points[-1], manager.remaining_distance((4.8, 10, 2)), 28))
-
-    def test_position_units_are_converted_for_path_metrics(self):
-        self.assertEqual(path_length([dict(x=0, y=0, z=0), dict(x=1, y=0, z=0), dict(x=1, y=0, z=1)]), 8)
 
     def test_occupied_goal_is_approached_after_traffic_leaves(self):
         service = encounter_service(velocity=(0, 0, 0))

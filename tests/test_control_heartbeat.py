@@ -19,7 +19,7 @@ class HeartbeatTest(unittest.TestCase):
         service.trace.snapshot.return_value = {"timing": {}}
         service._time = 0.0
         service._publish_state = Mock()
-        service.runtime = Mock(backend_name=backend)
+        service.runtime = Mock(spec=["backend_name"], backend_name=backend)
         service.advance = Mock()
         service._fail = Mock()
         with patch('uav_llm_demo.mission_service.time.monotonic', side_effect=[0, 0.45]):
@@ -32,10 +32,12 @@ class HeartbeatTest(unittest.TestCase):
         service._fail.assert_not_called()
         service.advance.assert_called_once_with(0.1)
 
-    def test_airsim_delay_retains_safety_stop(self):
-        service = self.run_delayed_tick('airsim')
-        service._fail.assert_called_once()
-        service.advance.assert_not_called()
+    def test_gazebo_scheduler_delay_keeps_the_task_and_advances_measurement_checks(self):
+        with self.assertLogs('uav_llm_demo.mission_service', level='WARNING'):
+            service = self.run_delayed_tick('gazebo')
+        service._fail.assert_not_called()
+        service.advance.assert_called_once_with(.1)
+        self.assertEqual(service.trace.event.call_args.args[0], 'control_delayed')
 
     def test_segment_optimization_matches_exhaustive_checks(self):
         checker = SafetyChecker(load_scenario('urban_crossing').to_dict())

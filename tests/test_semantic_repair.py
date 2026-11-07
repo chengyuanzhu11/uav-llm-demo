@@ -7,14 +7,18 @@ from threading import Event
 import unittest
 from unittest.mock import Mock, patch
 
+from tests.semantic_fixtures import semantic_responses, fixture_requirements
+from tests.test_generic_control_service import control
 from tests.test_semantic_motion_service import motion
 from tests.test_semantic_service import advance_until, response
-from tests.test_semantic_updates import compact_campus, home, program
+from tests.test_semantic_updates import compact_campus, home, program, skill
 from uav_llm_demo.agents import DeepSeekAgent, SemanticPlanError
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import distance, norm
 from uav_llm_demo.scenarios import load_scenario
-from uav_llm_demo.semantic_tasks import task_catalog
+from uav_llm_demo.semantic_tasks import task_catalog, semantic_plan_from_json_text
+from uav_llm_demo.semantic_navigation import repair_task_routes, validate_task_routes
+from uav_llm_demo.spatial_control import resolve_control_goal
 from uav_llm_demo.spatial_motion import spatial_catalog
 
 
@@ -133,32 +137,34 @@ class SemanticRepairTests(unittest.TestCase):
     def test_three_invalid_programs_have_generation_failure_and_allow_same_instruction(self):
         service, journal = self.service()
         bad = rejected_program("library")
-        with patch("uav_llm_demo.agents._post_deepseek", side_effect=[
-                response(bad), response(bad), response(bad), response(program([home()]))]) as post:
-            service.submit_task(INSTRUCTION, background=False)
+        instruction, accepted = "返航。", program([home()])
+        with patch("uav_llm_demo.agents._post_deepseek", side_effect=semantic_responses(accepted, [
+                response(bad), response(bad), response(bad), response(accepted)])) as post:
+            service.submit_task(instruction, background=False)
             failed = advance_until(service, lambda s: s["semantic_mission"]["status"] == "generation_failed", 10)
-            self.assertEqual(post.call_count, 3)
+            self.assertEqual(post.call_count, 5)
             self.assertFalse(failed["flight"]["running"])
             self.assertNotIn("请调整任务描述", failed["semantic_mission"]["message"])
             self.assertEqual(failed["uav"], failed["base"])
             self.assertEqual(failed["semantic_mission"]["evidence"], [])
             for _ in range(50):
                 service.advance(.1)
-            self.assertEqual(post.call_count, 3)
+            self.assertEqual(post.call_count, 5)
             self.assert_no_private_candidate(service, journal)
-            service.submit_task(INSTRUCTION, background=False)
+            service.submit_task(instruction, background=False)
             final = advance_until(service, lambda s: s["status"] == "completed", 10)
-            self.assertEqual(post.call_count, 4)
+            self.assertEqual(post.call_count, 8)
             self.assertNotIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[-1]))
-        self.assertEqual(final["semantic_mission"]["instruction"], INSTRUCTION)
+        self.assertEqual(final["semantic_mission"]["instruction"], instruction)
         self.assertIsNone(service._semantic_repair)
 
     def test_new_instruction_and_reset_clear_pending_repair(self):
         for reset in (False, True):
             with self.subTest(reset=reset):
                 service, journal = self.service()
-                with patch("uav_llm_demo.agents._post_deepseek", side_effect=[
-                        response(rejected_program("library")), response(program([home()]))]) as post:
+                intent = lambda instruction: boundary_program("library") if instruction == INSTRUCTION else program([home()])
+                with patch("uav_llm_demo.agents._post_deepseek", side_effect=semantic_responses(intent, [
+                        response(rejected_program("library")), response(program([home()]))])) as post:
                     service.submit_task(INSTRUCTION, background=False)
                     self.wait_for_rejection(service)
                     self.assertIsNotNone(service._semantic_repair)
@@ -169,9 +175,10 @@ class SemanticRepairTests(unittest.TestCase):
                     service.submit_task("取消剩余任务，返航。", background=False)
                     self.assertIsNone(service._semantic_repair)
                     advance_until(service, lambda s: s["status"] == "completed", 10)
-                self.assertEqual(post.call_count, 2)
+                self.assertEqual(post.call_count, 6)
                 self.assertNotIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[-1]))
                 self.assert_no_private_candidate(service, journal)
+
 
     def test_late_rejected_correction_cannot_contaminate_new_instruction_or_reset(self):
         for reset in (False, True):
@@ -186,14 +193,10 @@ class SemanticRepairTests(unittest.TestCase):
                         raise AssertionError("Test did not release the delayed response")
                     return response(rejected_program("library"))
 
-                replies = iter([response(rejected_program("library")), delayed_rejection,
-                                response(program([home()]))])
-
-                def respond(*args, **kwargs):
-                    item = next(replies)
-                    return item(*args, **kwargs) if item is delayed_rejection else item
-
-                with patch("uav_llm_demo.agents._post_deepseek", side_effect=respond) as post:
+                intent = lambda instruction: boundary_program("library") if instruction == INSTRUCTION else program([home()])
+                stages = semantic_responses(intent, [response(rejected_program("library")), delayed_rejection,
+                                                     response(program([home()]))])
+                with patch("uav_llm_demo.agents._post_deepseek", side_effect=stages) as post:
                     service.submit_task(INSTRUCTION, background=False)
                     self.wait_for_rejection(service)
                     for _ in range(40):
@@ -201,15 +204,15 @@ class SemanticRepairTests(unittest.TestCase):
                         if entered.wait(.005):
                             break
                     self.assertTrue(entered.is_set())
-                    self.assertIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[1]))
+                    self.assertIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[3]))
                     if reset:
                         service.reset()
                     service.submit_task("结束任务并返航。", background=False)
                     self.assertIsNone(service._semantic_repair)
                     release.set()
                     final = advance_until(service, lambda s: s["status"] == "completed", 10)
-                self.assertEqual(post.call_count, 3)
-                self.assertNotIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[2]))
+                self.assertEqual(post.call_count, 7)
+                self.assertNotIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[-1]))
                 self.assertEqual(final["semantic_mission"]["instruction"], "结束任务并返航。")
                 self.assertEqual(service._semantic_schema_failures, 0)
                 self.assertIsNone(service._semantic_repair)
@@ -228,7 +231,8 @@ class SemanticRepairTests(unittest.TestCase):
                 center = next(o["center_grid"] for o in spatial_catalog(service._environment.scenario)["objects"]
                               if o["id"] == target)
                 angles, progress = [], []
-                with patch("uav_llm_demo.agents._post_deepseek", side_effect=[response(rejected), response(accepted)]) as post:
+                with patch("uav_llm_demo.agents._post_deepseek",
+                           side_effect=semantic_responses(accepted, [response(rejected), response(accepted)])) as post:
                     service.submit_task(instruction, background=False)
                     for _ in range(5000):
                         if service._future is not None:
@@ -245,8 +249,8 @@ class SemanticRepairTests(unittest.TestCase):
                             progress.append(tracking["distance_m"])
                         if state["status"] == "completed":
                             break
-                self.assertEqual(post.call_count, 2)
-                self.assertIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[1]))
+                self.assertEqual(post.call_count, 4)
+                self.assertIn(PRIVATE_CANDIDATE, message_text(post.call_args_list[3]))
                 self.assertEqual(state["status"], "completed", service.semantic.message)
                 self.assertGreater(len(angles), 100)
                 winding = sign * sum((b - a + pi) % (2 * pi) - pi for a, b in zip(angles, angles[1:]))
@@ -264,6 +268,81 @@ class SemanticRepairTests(unittest.TestCase):
                 self.assertLessEqual(norm(service._vehicle.velocity), .02)
                 self.assertIsNone(service._semantic_repair)
                 self.assert_no_private_candidate(service, journal)
+
+
+    def test_geometric_repair_changes_only_free_dimensions_and_preserves_explicit_geometry(self):
+        from uav_llm_demo.semantic_navigation import hard_requirement_conflict
+        scene = load_scenario("semantic_campus")
+        sparse_landing = program([control("south_court")])
+        requirement = fixture_requirements(sparse_landing, task_catalog(scene))
+        self.assertIsNone(hard_requirement_conflict(requirement, scene,
+            {**scene.to_dict(), "position": dict(zip("xyz", scene.base))}))
+        alternative = control("south_court", anchor="arrival", offset_m=[0, 0, 0])
+        self.assertEqual(resolve_control_goal(alternative, scene, requirement.constraints)["position"][2], 0)
+        blocked = replace(compact_campus(), semantic_regions=(
+            dict(id="blocked", label="blocked", bounds=[3, 5, 14, 16]),))
+        requirement = fixture_requirements(program([skill("inspect", "inspect", "library"), home()],
+            avoid=["blocked"]), task_catalog(blocked))
+        self.assertEqual(hard_requirement_conflict(requirement, blocked,
+                         {**blocked.to_dict(), "position": dict(zip("xyz", blocked.base))}),
+                         "target_in_avoided_region")
+        safe = program([motion(dict(kind="curve", x="sin(t)", y="cos(t)", z=2,
+                                    t_start=0, t_end=6.28, altitude_delta_m=0), "library"), home()])
+        service, _ = self.service()
+        requirement = fixture_requirements(safe, task_catalog(compact_campus()))
+        self.assertIsNone(hard_requirement_conflict(requirement, compact_campus(), service._context()))
+        unsafe = program([motion(dict(kind="polyline", points_m=[[0, 0, -20], [3, 0, -20], [3, 3, -20]]),
+                                 "library", name="path"), home()])
+        for free_height in (True, False):
+            with self.subTest(free_height=free_height):
+                required = deepcopy(unsafe)
+                if free_height:
+                    required["steps"][0]["motion"]["path"]["flexible"] = dict(scale_groups=[], offset_axes=["z"])
+                service, journal = self.service()
+                corrected = deepcopy(unsafe)
+                corrected["steps"][0]["motion"]["path"]["points_m"] = [[0, 0, 0], [3, 0, 0], [3, 3, 0]]
+                replies = ([response(dict(tool="query_geometry", arguments=dict(target_id="library"))),
+                            response(dict(tool="preview_plan", arguments=dict(plan=unsafe))),
+                            response(dict(tool="preview_plan", arguments=dict(plan=corrected))),
+                            response(dict(tool="submit_plan", arguments=dict(candidate_id="candidate-1")))]
+                           if free_height else [response(unsafe)])
+                with patch("uav_llm_demo.agents._post_deepseek", side_effect=semantic_responses(
+                        required, replies)) as post:
+                    service.submit_task("保持指定折线路径的形状和顺序，随后返航。", background=False)
+                    final = advance_until(service, lambda state: state["status"] == "completed"
+                                          or state["semantic_mission"]["status"] == "needs_clarification", seconds=90)
+                self.assertEqual(final["milestones"]["task_completed"], free_height)
+                self.assertEqual(post.call_count, 6 if free_height else 3)
+                self.assertEqual(final["semantic_mission"]["provider_calls"], post.call_count)
+                if free_height:
+                    self.assertEqual(service.semantic.requirements.steps[0]["motion"]["path"]["points_m"][0][2], -20)
+                    self.assertGreater(service.semantic.plan.steps[0]["motion"]["path"]["points_m"][0][2], -20)
+                else:
+                    self.assertEqual(final["semantic_mission"]["evidence"], [])
+                self.assert_no_private_candidate(service, journal)
+
+        for free_targets in (("laboratory",), ("laboratory", "conference")):
+            with self.subTest(free_targets=free_targets):
+                scene = replace(compact_campus(), buildings=tuple(
+                    (7 if target == "laboratory" else 10, 15, 3) for target in free_targets))
+                nodes = [control("library", "airborne", "fixed", altitude_m=12)]
+                nodes += [control(target, "airborne", "free_" + target, altitude_m=10) for target in free_targets]
+                raw = program([*nodes, home()])
+                plan = semantic_plan_from_json_text(json.dumps(raw), task_catalog(scene))
+                requirements = fixture_requirements(plan, task_catalog(scene))
+                sparse = deepcopy(requirements.steps)
+                for node in sparse[1:-1]:
+                    node["control"].pop("altitude_m")
+                requirements = replace(requirements, steps=sparse)
+                service = MissionService(scenario=scene, agent=DeepSeekAgent(api_key="offline-repair-test-key"))
+                self.addCleanup(service.close)
+                context = service._context(semantic_constraints=False)
+                repaired = repair_task_routes(plan, scene, context, requirements)
+                validate_task_routes(repaired, scene, context)
+                self.assertEqual(repaired.steps[0], plan.steps[0])
+                for node in repaired.steps[1:-1]:
+                    self.assertGreater(resolve_control_goal(node, scene, repaired.constraints)["position"][2] * 5, 15)
+                self.assertTrue(all(node["control"]["altitude_m"] == 10 for node in plan.steps[1:-1]))
 
 
 if __name__ == "__main__":

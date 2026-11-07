@@ -4,6 +4,8 @@ import json
 import math
 import unittest
 
+from tests.semantic_fixtures import fixture_requirements
+
 from uav_llm_demo.campus_layout import CAMPUS_LAYOUT
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.safety import SAFETY_MARGIN, SafetyChecker, metric_distance
@@ -79,7 +81,8 @@ class MotionGeometryTests(unittest.TestCase):
         ordinary = {"id": "inspect", "action": "inspect", "target_id": "library",
                     "duration_seconds": None, "when": None}
         mission = SemanticMission(scene)
-        mission.accept(parse(ordinary, scene))
+        plan = parse(ordinary, scene)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(scene)))
         self.assertEqual(mission.current_goal, (53, 74, 3))
 
     def test_direction_is_clockwise_in_east_south_frame(self):
@@ -150,8 +153,24 @@ class MotionGeometryTests(unittest.TestCase):
             with self.subTest(expression=expression), self.assertRaises(ValueError):
                 compile_node(node)
 
+    def test_fractional_boundaries_use_arc_length_and_leave_the_endpoint_open(self):
+        for direction in ("clockwise", "counterclockwise"):
+            full = compile_node(motion(dict(kind="boundary", direction=direction, laps=1)))
+            for laps in (.25, .5, 1.5):
+                with self.subTest(direction=direction, laps=laps):
+                    partial = compile_node(motion(dict(kind="boundary", direction=direction, laps=laps)))
+                    self.assertAlmostEqual(partial.length_m, full.length_m * laps, places=7)
+                    self.assertGreater(metric_distance(partial.points[0], partial.points[-1]), 1)
+                    rising = compile_node(motion(dict(kind="boundary", direction=direction, laps=laps,
+                                                      altitude_m=12, end_altitude_m=16)))
+                    self.assertAlmostEqual(rising.points[0][2] * 5, 12)
+                    self.assertAlmostEqual(rising.points[-1][2] * 5, 16)
+                    horizontal = sum(metric_distance((*a[:2], 0), (*b[:2], 0))
+                                     for a, b in zip(rising.points, rising.points[1:]))
+                    self.assertAlmostEqual(horizontal, full.length_m * laps, places=7)
+
     def test_counts_speed_and_degenerate_paths_fail_closed(self):
-        variants = [motion({"kind": "boundary", "laps": count}) for count in (0, -1, True, 1.5, 21)]
+        variants = [motion({"kind": "boundary", "laps": count}) for count in (0, -1, True, math.nan, 21)]
         for speed in (0, -1, True, 4.1, math.nan):
             node = motion()
             node["motion"]["speed_mps"] = speed
@@ -170,7 +189,8 @@ class MotionEvidenceTests(unittest.TestCase):
     def test_stationary_arrival_cannot_claim_motion_completion(self):
         scene = load_scenario("semantic_campus")
         mission = SemanticMission(scene)
-        mission.accept(parse(motion(), scene))
+        plan = parse(motion(), scene)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(scene)))
         self.assertIsNone(mission.current_goal)
         for _ in range(3):
             self.assertFalse(mission.observe((26, 84, 2.2), 0, 30, 100))
@@ -182,7 +202,7 @@ class MotionEvidenceTests(unittest.TestCase):
         mission = SemanticMission(scene)
         plan = parse(motion(), scene)
         compiled = compile_motion(plan.steps[0], scene, scene.base, plan.constraints)
-        mission.accept(plan)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(mission.scenario)))
         metrics = {"execution_id": mission.current_step["execution_id"], "completed": True,
                    "covered_distance_m": compiled.length_m, "total_length_m": compiled.length_m,
                    "duration_seconds": 64}
@@ -208,7 +228,7 @@ class MotionEvidenceTests(unittest.TestCase):
         plan = semantic_plan_from_json_text(json.dumps(data), task_catalog(scene))
         compiled = compile_motion(plan.steps[0]["steps"][0], scene, scene.base, plan.constraints)
         mission = SemanticMission(scene)
-        mission.accept(plan)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(mission.scenario)))
         identities = []
         for i in range(2):
             step = mission.current_step
@@ -227,9 +247,9 @@ class MotionEvidenceTests(unittest.TestCase):
         scene = load_scenario("semantic_campus")
         mission = SemanticMission(scene)
         plan = parse(motion(), scene)
-        mission.accept(plan)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(mission.scenario)))
         old_execution = mission.current_step["execution_id"]
-        mission.accept(plan, preserve_evidence=True)
+        mission.accept(plan, preserve_evidence=True, requirements=fixture_requirements(plan, task_catalog(mission.scenario)))
         self.assertFalse(mission.complete_motion((27.8, 82.5, 2.2), 100,
                          {"execution_id": old_execution, "completed": True,
                           "covered_distance_m": 80, "total_length_m": 80, "duration_seconds": 32}))

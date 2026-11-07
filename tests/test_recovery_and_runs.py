@@ -198,7 +198,7 @@ class LongRunningTests(unittest.TestCase):
         for _ in range(250):
             log.record(dict(decision=dict(provider_error=True, safety_intervened=True)))
         self.assertEqual(len(log.events), 200)
-        metrics = log.snapshot(final_status='active', trajectory=[], battery=100)['metrics']
+        metrics = log.snapshot(final_status='active', path_length_m=0, battery=100)['metrics']
         self.assertEqual(metrics['steps'], 250)
         self.assertEqual(metrics['agent_errors'], 250)
         self.assertEqual(metrics['safety_interventions'], 250)

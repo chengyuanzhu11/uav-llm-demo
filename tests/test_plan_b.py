@@ -14,7 +14,7 @@ class PlanContractTest(unittest.TestCase):
     def test_scenarios_are_named_and_data_driven(self):
         scenarios = list_scenarios()
 
-        self.assertEqual({item["id"] for item in scenarios}, {"urban_crossing", "semantic_campus"})
+        self.assertEqual({item["id"] for item in scenarios}, {"urban_crossing", "semantic_campus", "visual_garden"})
         self.assertIn("urban_crossing", {item["id"] for item in scenarios})
         scenario = load_scenario("urban_crossing")
         self.assertEqual(scenario.base, (1, 18, 0))

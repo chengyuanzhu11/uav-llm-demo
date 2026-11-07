@@ -1,0 +1,11 @@
+{
+  "id": "visual_garden", "name": "视觉验证花园", "grid_size": 16,
+  "base": [2, 12, 0], "search_position": [7, 7, 1.4],
+  "objects": [
+    {"id": "wall", "kind": "box", "position_m": [24, 24, 2.5], "size_m": [3, 3, 5], "color": [0.65, 0.60, 0.50, 1]},
+    {"id": "tree_a", "kind": "tree", "position_m": [18, 18, 0], "height_m": 5, "radius_m": 1.6},
+    {"id": "tree_b", "kind": "tree", "position_m": [33, 24, 0], "height_m": 6, "radius_m": 1.8},
+    {"id": "bin", "kind": "bin", "position_m": [27, 18, 0], "size_m": [0.85, 0.7, 1.25], "color": [0.03, 0.35, 0.12, 1]},
+    {"id": "bench", "kind": "bench", "position_m": [15, 27, 0], "color": [0.5, 0.25, 0.08, 1]}
+  ]
+}

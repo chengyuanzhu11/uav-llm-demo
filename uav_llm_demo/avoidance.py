@@ -114,7 +114,8 @@ class LocalAvoidance:
         object_clearances = {}
         horizon = self.TERMINAL_HORIZON if terminal else self.HORIZON
         for index in range(1, round(horizon / self.DT) + 1):
-            velocity = controller.velocity_command(state, target, self.DT)
+            velocity = controller.velocity_command(state, target, self.DT,
+                                                   landing_radius=checker.landing_radius(target))
             position = tuple(state.position[i] + (state.velocity[i] + velocity[i]) * self.DT / (2 * SCALE[i])
                              for i in range(3))
             if not checker.segment_safe(state.position, position):

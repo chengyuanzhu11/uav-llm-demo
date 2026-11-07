@@ -42,6 +42,15 @@ def metric_distance(a, b) -> float:
     return math.hypot(*((x - y) * scale for x, y, scale in zip(a, b, SCALE)))
 
 
+def ground_segment_distance_m(x, y, a, b):
+    """Distance from a GRID ground point to a GRID line segment, in metres."""
+    dx, dy = (b[0] - a[0]) * SCALE[0], (b[1] - a[1]) * SCALE[1]
+    px, py = (x - a[0]) * SCALE[0], (y - a[1]) * SCALE[1]
+    length2 = dx * dx + dy * dy
+    t = max(0, min(1, (px * dx + py * dy) / length2)) if length2 else 0
+    return math.hypot(px - t * dx, py - t * dy)
+
+
 def _intersects(a, b, lower, upper) -> bool:
     """Closed slab intersection: touching the safety envelope is unsafe."""
     enter, leave = 0.0, 1.0
@@ -122,6 +131,16 @@ class SafetyChecker:
         """Return a validated ground site beneath a point, if any."""
         return next((site for site in self.ground_sites if self._over_site(point, site)), None)
 
+    def landing_radius(self, target):
+        """Horizontal clearance around a reference inside a validated ground column."""
+        if target is None or target[2] >= self.lower[2]:
+            return None
+        site = self.ground_site_for(target)
+        if site is None:
+            return None
+        offset = math.hypot((target[0]-site[0])*SCALE[0], (target[1]-site[1])*SCALE[1])
+        return max(0., self.pad_radius_m-offset)
+
     def validate_waypoint(self, point) -> list[str]:
         try:
             point = _point(point)
@@ -129,13 +148,17 @@ class SafetyChecker:
             return ["Invalid waypoint: expected three finite numeric coordinates."]
         errors = []
         if not self._inside_bounds(point):
-            errors.append("Waypoint outside flight bounds.")
+            axes = [f"{axis}={value*scale:.3f} m not in [{low*scale:.3f}, {high*scale:.3f}] m"
+                    for axis, value, low, high, scale in zip("xyz", point, self.lower, self.upper, SCALE)
+                    if value < low or value > high]
+            errors.append("Waypoint outside flight bounds: " + "; ".join(axes)
+                          + ". Below cruise altitude is allowed only inside verified takeoff/landing columns.")
         for lower, upper, label in self.boxes:
             if _intersects(point, point, lower, upper):
                 errors.append(f"Waypoint intersects {label} safety envelope.")
         return errors
 
-    def segment_safe(self, a, b) -> bool:
+    def segment_safe(self, a, b, *, extra_clearance=0.) -> bool:
         try:
             a, b = _point(a), _point(b)
         except ValueError:
@@ -151,12 +174,22 @@ class SafetyChecker:
             return False
         lower = tuple(min(x, y) for x, y in zip(a, b))
         upper = tuple(max(x, y) for x, y in zip(a, b))
+        if extra_clearance:
+            margin = _number(extra_clearance)
+            if margin < 0:
+                raise ValueError("Invalid clearance.")
+            padding = tuple(margin/s for s in SCALE)
+            lower = tuple(x-p for x,p in zip(lower,padding))
+            upper = tuple(x+p for x,p in zip(upper,padding))
         for lo, hi, _ in self.boxes:
             # Conservative broad phase: only disjoint boxes can be skipped.
             if (upper[0] < lo[0] or lower[0] > hi[0]
                     or upper[1] < lo[1] or lower[1] > hi[1]
                     or upper[2] < lo[2] or lower[2] > hi[2]):
                 continue
+            if extra_clearance:
+                lo = tuple(x-p for x,p in zip(lo,padding))
+                hi = tuple(x+p for x,p in zip(hi,padding))
             if _intersects(a, b, lo, hi):
                 return False
         return True

@@ -1,26 +1,12 @@
 from __future__ import annotations
 
-from math import dist, isfinite
+from math import isfinite
 from pathlib import Path
 import json
 from typing import Iterable, Mapping
 from .motion import SCALE, norm
 from .dynamic_risk import (NEAR_MISS_MARGIN_M, contact_distance_m,
                            physical_radius_m, separation_distance_m)
-
-
-def path_length(points: Iterable[Mapping[str, float]]) -> float:
-    values = list(points)
-    return round(
-        sum(
-            dist(
-                tuple(float(previous[key]) * scale for key, scale in zip("xyz", SCALE)),
-                tuple(float(current[key]) * scale for key, scale in zip("xyz", SCALE)),
-            )
-            for previous, current in zip(values, values[1:])
-        ),
-        3,
-    )
 
 
 def metrics_for_events(
@@ -257,13 +243,13 @@ class EvaluationLog:
         self,
         *,
         final_status: str,
-        trajectory: Iterable[Mapping[str, float]],
+        path_length_m: float,
         battery: int,
     ) -> dict[str, object]:
         metrics = metrics_for_events(
             self.events,
             final_status=final_status,
-            path_length=path_length(trajectory),
+            path_length=round(path_length_m, 3),
             battery_used=max(0, 100 - int(battery)),
         )
         metrics.update(steps=self.total_events, safety_interventions=self.total_interventions,

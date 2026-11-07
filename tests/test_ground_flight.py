@@ -3,10 +3,9 @@ import unittest
 from unittest.mock import patch
 from dataclasses import replace
 
-from uav_llm_demo.airsim_runtime import AirSimRuntime
 from uav_llm_demo.agents import MockLLMAgent, checked_plan
 from uav_llm_demo.benchmark import run_scenario
-from uav_llm_demo.motion import TrajectoryController, VehicleState
+from uav_llm_demo.motion import TrajectoryController, VehicleState, norm, SCALE
 from uav_llm_demo.safety import SafetyChecker
 
 
@@ -22,10 +21,39 @@ def context(scenario):
 
 
 class GroundFlightTests(unittest.TestCase):
+    def test_landing_recentres_before_descending_and_resists_lateral_drift(self):
+        from math import hypot
+        checker = SafetyChecker(context(scene()))
+        target = scene().base
+        controller = TrajectoryController(response_seconds=.5)
+        radius = checker.landing_radius(target)
+        state = VehicleState((target[0]+.6/3, target[1], 2.2))
+        command = controller.velocity_command(state, target, .05, landing_radius=radius)
+        self.assertLess(command[0], 0)
+        self.assertEqual(command[2], 0)  # Correct the edge offset before descent.
+        for _ in range(1500):
+            command = controller.velocity_command(state, target, .05, landing_radius=radius)
+            self.assertLessEqual(norm(command), controller.max_speed+1e-9)
+            self.assertLessEqual(abs(command[2]), controller.max_descent_speed+1e-9)
+            self.assertLessEqual(norm(tuple((command[i]-state.velocity[i])/.05 for i in range(3))),
+                                 controller.max_acceleration+1e-9)
+            # Persistent actuator/velocity disturbance, measured on every tick.
+            actual = (command[0]+.01, command[1]-.005, command[2])
+            point = tuple(state.position[i]+(state.velocity[i]+actual[i])*.05/(2*SCALE[i]) for i in range(3))
+            point = (*point[:2], max(0., point[2]))
+            self.assertTrue(checker.segment_safe(state.position, point))
+            state = VehicleState(point, actual)
+            if point[2]*5 < .02:
+                break
+        self.assertLess(state.position[2]*5, .02)
+        self.assertLess(hypot((state.position[0]-target[0])*3,(state.position[1]-target[1])*3), .15)
+
     def test_ground_is_only_allowed_over_base_and_transition_is_vertical(self):
         checker = SafetyChecker(context(scene()))
         self.assertFalse(checker.validate_waypoint((0, 3, 0)))
-        self.assertTrue(checker.validate_waypoint((2, 3, 0)))
+        rejection = checker.validate_waypoint((2, 3, 0))
+        self.assertTrue(rejection)
+        self.assertIn("z=0.000 m not in [10.000, 50.000] m", rejection[0])
         self.assertTrue(checker.validate_waypoint((0, 3, -.01)))
         self.assertTrue(checker.segment_safe((0, 3, 0), (0, 3, 2.2)))
         self.assertFalse(checker.segment_safe((0, 3, 0), (6, 3, 3)))
@@ -59,18 +87,6 @@ class GroundFlightTests(unittest.TestCase):
         self.assertTrue(any(p[2] > 4.12 for p in plan.waypoints))
         self.assertFalse(SafetyChecker(context(s)).validate_path(s.base, plan.waypoints))
 
-    def test_airsim_ground_reset_does_not_automatically_take_off(self):
-        runtime = AirSimRuntime()
-        try:
-            with patch.object(runtime, '_reset'), patch.object(runtime, '_ensure_airborne') as takeoff, \
-                 patch.object(runtime, '_read_telemetry', return_value={}), \
-                 patch.object(runtime, 'status', return_value={}):
-                runtime._reset_to_base((1, 18, 0))
-                takeoff.assert_not_called()
-                runtime._reset_to_base((1, 18, 2))
-                takeoff.assert_called_once_with((1, 18, 2))
-        finally:
-            runtime.close()
 
     def test_vertical_speed_limits_are_independent_of_horizontal_speed(self):
         controller = TrajectoryController()

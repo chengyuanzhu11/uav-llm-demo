@@ -3,7 +3,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from uav_llm_demo.airsim_runtime import AirSimRuntime
 from uav_llm_demo.html_runtime import HtmlRuntime
 from uav_llm_demo.motion import TrajectoryController, VehicleState, distance, norm
 from uav_llm_demo.path_tracking import PathFollower
@@ -169,23 +168,9 @@ class IndependentHeadingTests(unittest.TestCase):
         state = runtime.drive((3, 0, 0), .05)
         self.assertAlmostEqual(state.yaw, math.pi / 2)
 
-    def test_airsim_explicit_heading_converts_radians_to_ned_degrees(self):
-        runtime = AirSimRuntime()
-        self.addCleanup(runtime.close)
-        sent = []
-        runtime.client = SimpleNamespace(moveByVelocityAsync=lambda *args, **kwargs: sent.append((args, kwargs)))
-        runtime.api = SimpleNamespace(DrivetrainType=SimpleNamespace(MaxDegreeOfFreedom="free"),
-                                      YawMode=lambda is_rate, angle: (is_rate, angle))
-        runtime.connected = True
-        with patch.object(runtime, "_vehicle_state", return_value=VehicleState((1, 1, 3))):
-            runtime.drive((2, -1, .5), .05, yaw=math.pi / 2)
-            runtime.drive((2, -1, .5), .05)
-        self.assertEqual(sent[0][0], (1, 2, -.5, .3))
-        self.assertEqual(sent[0][1]["yaw_mode"], (False, 90.0))
-        self.assertEqual(sent[1][1]["yaw_mode"], (False, 0.0))
 
     def test_nonfinite_heading_rejected_before_flight(self):
-        for runtime in (HtmlRuntime(), AirSimRuntime()):
+        for runtime in (HtmlRuntime(),):
             self.addCleanup(runtime.close)
             with self.assertRaises(ValueError):
                 runtime.drive((0, 0, 0), .05, yaw=float("nan"))

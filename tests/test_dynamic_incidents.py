@@ -14,7 +14,7 @@ class DynamicIncidentTest(unittest.TestCase):
         log.observe_dynamic((15, 10, 2), [bird], .25)
         log.observe_dynamic((10, 10, 2), [bird], .3)
         self.assertEqual(log.dynamic_event_count, 2)
-        data = log.snapshot(final_status="active", trajectory=[], battery=100)
+        data = log.snapshot(final_status="active", path_length_m=0, battery=100)
         self.assertEqual(data["metrics"]["collision_or_separation_events"], 2)
         self.assertLess(data["metrics"]["min_dynamic_clearance_m"], 0)
         self.assertEqual(data["dynamic_incidents"][0]["object_id"], "bird")
@@ -123,7 +123,7 @@ class DynamicIncidentDetailTest(unittest.TestCase):
     def test_metrics_disambiguate_contact_and_safety_events(self):
         log = EvaluationLog()
         log.observe_dynamic((0, 0, 2), [self.bird(0)], 0)
-        data = log.snapshot(final_status="active", trajectory=[], battery=100)
+        data = log.snapshot(final_status="active", path_length_m=0, battery=100)
         metrics = data["metrics"]
         self.assertEqual(metrics["separation_violation_events"], 1)
         self.assertEqual(metrics["contact_events"], 1)

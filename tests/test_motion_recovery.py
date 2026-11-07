@@ -1,11 +1,13 @@
 """Service-level recovery checks using local observations and real motion control."""
 from dataclasses import replace
+from copy import deepcopy
+from math import pi
 import unittest
 from unittest.mock import patch
 
 from tests.test_avoidance import StraightTraffic
 from tests.test_semantic_motion_service import motion, advance
-from tests.test_semantic_updates import OfflineSemanticAgent, compact_campus, home, program, pump
+from tests.test_semantic_updates import OfflineSemanticAgent, compact_campus, home, program, pump, skill
 from uav_llm_demo.avoidance import LocalAvoidance
 from uav_llm_demo.dynamic_risk import physical_radius_m, separation_distance_m
 from uav_llm_demo.environment import DynamicFlyingObject
@@ -21,12 +23,102 @@ class MotionRecoveryTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def service(self, *replies, scenario=None):
+    def service(self, *replies, scenario=None, requirements=None):
         service = MissionService(scenario=scenario or compact_campus(),
-                                 agent=OfflineSemanticAgent(replies),
+                                 agent=OfflineSemanticAgent(replies, requirements=requirements),
                                  planner_latency_seconds=0, traffic_seed=17)
         self.addCleanup(service.close)
         return service
+
+    def test_event_review_preserves_started_geometry_and_continues_after_auxiliary_work(self):
+        node = motion(dict(kind="curve", x="3*cos(t)", y="3*sin(t)", z=2,
+                           t_start=0, t_end=2*pi), "laboratory",
+                      heading=dict(mode="fixed", yaw_deg=0), speed=1)
+        initial = program([node, home()])
+        requirements = deepcopy(initial)
+        requirements["steps"][0]["motion"]["path"]["flexible"] = dict(
+            scale_groups=[["x", "y"]], offset_axes=["z"])
+        changed = deepcopy(node)
+        changed["motion"]["path"].update(x="4*cos(t)", y="4*sin(t)")
+        continued = deepcopy(node)
+        continued["id"] = "continued_flight"
+        repaired = program([skill("check", "thermal_scan", "laboratory"), continued, home()])
+        service = self.service(initial, program([changed, home()]), repaired,
+                               program([continued, home()]), requirements=lambda _: requirements)
+        service.submit_task("绕一圈后返航，半径和高度由执行方案确定。", background=False)
+        pump(service, lambda _: service._motion_follower is not None
+             and service._motion_follower.progress_m > 6)
+        follower = service._motion_follower
+        progress, duration = follower.progress_m, service._motion_duration
+        heading_samples, heading_error = service._motion_heading_samples, service._motion_max_heading_error_deg
+        first_execution = service.semantic.current_step["execution_id"]
+        for _ in range(2):
+            service._recover_semantic_event("no_progress", "Injected persistent blockage")
+        pump(service, lambda _: service._motion_phase == "tracking" and not service._plan_requested)
+        progress, duration = follower.progress_m, service._motion_duration
+        heading_samples, heading_error = service._motion_heading_samples, service._motion_max_heading_error_deg
+        service._last_dynamic_plan_at = service._time - 20
+        def stalled_avoidance(vehicle, target, *args, **kwargs):
+            service.avoidance.active = True
+            return target
+        # Escalate through the actual control-tick handoff, after this tick has
+        # already selected a motion controller and before it records progress.
+        with patch.object(service.avoidance, "stalled", return_value=True), \
+                patch.object(service.avoidance, "choose", side_effect=stalled_avoidance):
+            service.advance(.05)
+        self.assertEqual(follower.progress_m, progress)
+        pump(service, lambda _: service.semantic.revision == 2 and service._motion_follower is follower)
+        self.assertEqual(service._motion_phase, "transit")
+        self.assertEqual(follower.progress_m, progress)
+        self.assertEqual(service._motion_duration, duration)
+        self.assertEqual(service._motion_heading_samples, heading_samples)
+        self.assertEqual(service._motion_max_heading_error_deg, heading_error)
+        self.assertEqual(service._environment.target, follower.rejoin_point)
+        self.assertEqual([item["action"] for item in service.semantic.evidence], ["thermal_scan"])
+        self.assertEqual(service.semantic.current_step["continuation_of"], first_execution)
+        self.assertIn("already-started motion", service.agent.inputs[2][2])
+        self.assertAlmostEqual(service.agent.inputs[1][0]["mission_context"]["started_motions"][0]["progress_m"], progress)
+
+        # A second review links to the same measured prefix without resetting its
+        # metrics, including when the first continuation used a different node ID.
+        pump(service, lambda _: follower.progress_m > progress + 3)
+        second_execution = service.semantic.current_step["execution_id"]
+        second_progress = follower.progress_m
+        for _ in range(3):
+            service._recover_semantic_event("no_progress", "Injected next blockage after observation")
+        pump(service, lambda _: service.semantic.revision == 3 and service._motion_follower is follower)
+        self.assertEqual(follower.progress_m, second_progress)
+        final_execution = service.semantic.current_step["execution_id"]
+        state = pump(service, lambda state: state["status"] == "completed")
+        self.assertTrue(state["milestones"]["safe_success"])
+        evidence = next(item for item in service.semantic.evidence if item["action"] == "motion")
+        self.assertEqual(evidence["result"]["tracking_executions"],
+                         [first_execution, second_execution, final_execution])
+        self.assertEqual(evidence["continuation_of"], second_execution)
+        self.assertAlmostEqual(evidence["result"]["distance_m"], follower.total_length_m)
+        self.assertGreater(evidence["duration_seconds"], duration)
+        self.assertGreater(evidence["result"]["heading_samples"], heading_samples)
+        self.assertGreaterEqual(evidence["result"]["max_heading_error_deg"], heading_error)
+        self.assertEqual(len(service.agent.inputs), 4)
+
+    def test_user_update_cancels_suspended_motion_without_crediting_its_partial_path(self):
+        node = motion(dict(kind="polyline", points_m=[[0, 0, 0], [0, 9, 0]]),
+                      "library", speed=1)
+        service = self.service(program([node, home()]), program([home()]))
+        service.submit_task("沿指定轨迹飞行后返航。", background=False)
+        pump(service, lambda _: service._motion_follower is not None
+             and service._motion_follower.progress_m > 2)
+        cancelled = service.semantic.current_step["execution_id"]
+        for _ in range(3):
+            service._recover_semantic_event("no_progress", "Injected persistent blockage")
+        self.assertEqual(len(service._suspended_motions), 1)
+        service.submit_task("取消剩余轨迹，直接返航。", background=False)
+        state = pump(service, lambda state: state["status"] == "completed")
+        self.assertTrue(state["milestones"]["safe_success"])
+        self.assertEqual(service._suspended_motions, [])
+        self.assertEqual([item["action"] for item in service.semantic.evidence], ["return_home"])
+        self.assertEqual(next(item for item in service.semantic._steps
+                              if item["execution_id"] == cancelled)["status"], "cancelled")
 
     def test_resume_behind_building_rejoins_unfinished_path_without_losing_progress(self):
         node = motion(dict(kind="polyline", points_m=[[0, 0, 0], [0, 9, 0]]),

@@ -9,6 +9,8 @@ from unittest.mock import Mock, patch
 import json
 
 from tests.test_semantic_updates import OfflineSemanticAgent, compact_campus, home, program, pump, skill
+from tests.semantic_fixtures import fixture_requirements
+
 from uav_llm_demo.agents import DeepSeekAgent, PlannerProviderError, SemanticPlanError
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import distance, norm, VehicleState
@@ -16,6 +18,7 @@ from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.task_contract import TaskContractMonitor, TaskContractError
 from uav_llm_demo.semantic_tasks import SemanticMission, semantic_plan_from_json_text, task_catalog
 from uav_llm_demo.semantic_navigation import apply_task_constraints
+from uav_llm_demo.task_observation import TaskObservationWorld
 
 
 def control(target, state="landed", name="settle", when=None, **parameters):
@@ -33,10 +36,10 @@ class GenericControlServiceTests(TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def service(self, *replies, actual=False):
+    def service(self, *replies, actual=False, requirements=None):
         scene = replace(load_scenario("semantic_campus"), dynamic_objects=()) if actual else compact_campus()
-        service = MissionService(scenario=scene, agent=OfflineSemanticAgent(replies), planner_latency_seconds=0,
-                                 traffic_seed=17)
+        service = MissionService(scenario=scene, agent=OfflineSemanticAgent(replies, requirements=requirements), planner_latency_seconds=0,
+                                 traffic_seed=17, task_world=TaskObservationWorld.demonstration(scene))
         self.addCleanup(service.close)
         return service
 
@@ -108,6 +111,22 @@ class GenericControlServiceTests(TestCase):
         self.assertFalse(service._plan_requested)
         self.assertEqual(len(service.agent.inputs), 1)
 
+    def test_arrived_skill_keeps_position_control_during_dwell(self):
+        service = self.service(program([control("library", "airborne", anchor="arrival", duration_seconds=5), home()]))
+        service.submit_task("图书馆访问点悬停5秒后返航。", background=False)
+        pump(service, lambda _: bool(service.waypoints.points) and service.waypoints.current is None, seconds=100)
+        target = service._environment.target
+        self.assertEqual(service.semantic.current_step["action"], "control")
+        # Small drift stays inside arrival tolerance: holding must correct it
+        # without waiting for a lost-position replan or crediting the next skill.
+        service.runtime.vehicle = VehicleState((target[0]+.04, target[1], target[2]))
+        service._commit_vehicle(service.runtime.read_state(), 0)
+        for _ in range(20):
+            service.advance(.1)
+        self.assertLess(distance(service._vehicle.position, target), .03)
+        self.assertEqual(service.semantic.current_step["action"], "control")
+        self.assertFalse(service._plan_requested)
+
     def test_review_uses_measured_evidence_and_preserves_terminal_goal(self):
         end = control("home", name="final")
         service = self.service(program([skill("scan", "thermal_scan", "library", .1), review(), end]),
@@ -147,16 +166,17 @@ class GenericControlServiceTests(TestCase):
 
     def test_model_schema_correction_has_reason_and_transport_still_retries(self):
         service = self.service(SemanticPlanError("Control state must be landed or airborne."),
-                               program([home()]))
+                               program([home()]), requirements=lambda _: program([home()]))
         service.submit_task("回基地", background=False)
         self.complete(service)
         self.assertIn("Control state", service.agent.inputs[1][2])
-        failed = self.service(*[SemanticPlanError("Unexpected task fields.") for _ in range(4)])
+        failed = self.service(*[SemanticPlanError("Unexpected task fields.") for _ in range(4)],
+                              requirements=lambda _: program([home()]))
         failed.submit_task("测试不合法程序", background=False)
         pump(failed, lambda s:s["semantic_mission"]["status"]=="generation_failed")
         self.assertEqual(len(failed.agent.inputs), 3)
         temporary = self.service(*[PlannerProviderError("HTTP 503", retryable=True) for _ in range(4)],
-                                 program([home()]))
+                                 program([home()]), requirements=lambda _: program([home()]))
         temporary.submit_task("回基地", background=False)
         self.complete(temporary)
         self.assertEqual(len(temporary.agent.inputs), 5)
@@ -164,7 +184,7 @@ class GenericControlServiceTests(TestCase):
     def test_unsafe_landing_rejected_before_takeoff(self):
         for target in ("library", "central_garden", "south_court"):
             with self.subTest(target=target):
-                service = self.service(program([control(target)]), actual=True)
+                service = self.service(program([control(target, anchor="center", offset_m=[0, 0, 0])]), actual=True)
                 service.submit_task("到目标中央降落。", background=False)
                 state = pump(service, lambda s:s["semantic_mission"]["status"]=="needs_clarification")
                 self.assertEqual(service._vehicle.position, service._environment.base)
@@ -212,7 +232,8 @@ class GenericControlServiceTests(TestCase):
         catalog = task_catalog(compact_campus())
         def parsed(nodes):
             return semantic_plan_from_json_text(json.dumps(program(nodes)), catalog)
-        initial = TaskContractMonitor(parsed([control("home", yaw_deg=90, duration_seconds=5)]), "test")
+        plan = parsed([control("home", yaw_deg=90, duration_seconds=5)])
+        initial = TaskContractMonitor(plan, "test", plan=plan)
         for modified in (control("home", yaw_deg=0, duration_seconds=5),
                          control("home", yaw_deg=90, duration_seconds=1)):
             with self.assertRaises(TaskContractError):
@@ -220,12 +241,14 @@ class GenericControlServiceTests(TestCase):
         node = dict(id="path", action="motion", target_id="library", when=None,
                     motion=dict(path=dict(kind="polyline", points_m=[[0,0,0],[3,0,0]])))
         with self.assertRaises(TaskContractError):
-            TaskContractMonitor(parsed([node]), "test").validate_revision(parsed([home()]), after_review=False)
+            plan = parsed([node])
+            TaskContractMonitor(plan, "test", plan=plan).validate_revision(parsed([home()]), after_review=False)
 
     def test_hover_above_ground_does_not_produce_landing_evidence(self):
         scene = load_scenario("semantic_campus")
         mission = SemanticMission(scene)
-        mission.accept(semantic_plan_from_json_text(json.dumps(program([control("north_football")])),task_catalog(scene)))
+        plan = semantic_plan_from_json_text(json.dumps(program([control("north_football")])),task_catalog(scene))
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(scene)))
         for i in range(50):
             self.assertFalse(mission.observe((42,22.5,.03),0,.1,i*.1))  # 15 cm high.
         self.assertEqual(mission.evidence, [])

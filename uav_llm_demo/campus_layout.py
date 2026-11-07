@@ -12,7 +12,11 @@ from __future__ import annotations
 import math
 
 from .path_tracking import PathFollower
-from .safety import SAFETY_MARGIN, SCALE, _intersects
+from .safety import SAFETY_MARGIN, SCALE, _intersects, ground_segment_distance_m
+
+# Default observation points need room for physical tracking error above the
+# campus's 10 m cruise floor; this is an execution choice, not a task requirement.
+_OBSERVATION_HEIGHT = 2.2
 
 
 def _building(identifier, label, kind, footprint, height, facade="glass"):
@@ -143,17 +147,72 @@ CAMPUS_LAYOUT = {
         _line("east-garden-stream", [(82, 47), (71, 47), (65, 50), (72, 54), (82, 54)], 1.3),
         _line("southern-river", [(4, 97), (92, 97)], 3.4),
     ],
-    # Small ornamental trees are below the 10 m flight floor. No trees grow on
-    # the launch apron, roads, sports grounds, observation points or roof holes.
+    # Trees remain below the 10 m flight floor. Planting is filtered against
+    # solid structures and circulation geometry below.
     "trees": [
-        dict(id=f"tree-{index}", x=x, y=y, height=0.5, radius=0.38)
+        dict(id=f"tree-{index}", x=x, y=y, height=(4.8 + index % 4 * .35) / 5,
+             radius=(1.7 + index % 3 * .15) / 3,
+             species=("broadleaf", "conifer", "ginkgo", "broadleaf")[index % 4])
         for index, (x, y) in enumerate(
             [(x, y) for x in (20, 36, 61, 79) for y in range(10, 90, 4)
              if y not in (26, 46, 54, 74, 78, 82, 86)]
             + [(x, y) for x in (42, 45, 52, 55) for y in (80, 84, 87)]
         )
     ],
+    # Visual scenery is deliberately separate from the named-place catalog.
+    # Dimensions are metres; positions use the same GRID frame as the campus.
+    "landmarks": [
+        dict(id="F01", kind="ring_sculpture", position=[45, 81.5], size_m=[4.4, 2.4, 4.8], color="#c93930", yaw_deg=15),
+        dict(id="F02", kind="pavilion", position=[54, 82.5], size_m=[6, 6, 4.8], color="#267b72", yaw_deg=0),
+        dict(id="F03", kind="bench", position=[42, 85.5], size_m=[3.8, 1.2, 1.3], color="#bd7846", yaw_deg=0),
+        dict(id="F04", kind="bins", position=[55.5, 86.3], size_m=[1.7, .95, 1.4], color="#327ab2", yaw_deg=0),
+        dict(id="F05", kind="kiosk", position=[41.5, 80.5], size_m=[4.5, 3.4, 3.5], color="#3b83b8", yaw_deg=0),
+        dict(id="F06", kind="planter", position=[50, 79.5], size_m=[4.2, 2.2, .9], color="#d8b344", yaw_deg=0),
+        dict(id="F07", kind="umbrella", position=[55, 79], size_m=[4.2, 4.2, 3.2], color="#df8c39", yaw_deg=0),
+        dict(id="F08", kind="pavilion", position=[23, 50.5], size_m=[5.8, 5.8, 4.8], color="#795344", yaw_deg=0),
+        dict(id="F09", kind="greenhouse", position=[33, 50], size_m=[6, 3.6, 3.8], color="#78a3a0", yaw_deg=0),
+        dict(id="F10", kind="canopy", position=[73.6, 50.3], size_m=[6.5, 4.2, 3.8], color="#336d9a", yaw_deg=0),
+        dict(id="F11", kind="bench", position=[74.5, 52.5], size_m=[3.8, 1.2, 1.3], color="#bd7846", yaw_deg=0),
+        dict(id="F12", kind="bicycle_rack", position=[63, 74.3], size_m=[5.5, 1.9, 1.6], color="#d7ab36", yaw_deg=0),
+        dict(id="F13", kind="planter", position=[71.5, 49.2], size_m=[3.6, 1.8, .9], color="#b75378", yaw_deg=0),
+        dict(id="F14", kind="bins", position=[34.5, 52.2], size_m=[1.7, .95, 1.4], color="#327ab2", yaw_deg=0),
+    ],
 }
+
+
+def _landmark_bounds(item):
+    width, depth, height = item["size_m"]
+    angle = math.radians(item["yaw_deg"])
+    rx = (abs(math.cos(angle)) * width + abs(math.sin(angle)) * depth) / (2 * SCALE[0])
+    ry = (abs(math.sin(angle)) * width + abs(math.cos(angle)) * depth) / (2 * SCALE[1])
+    x, y = item["position"]
+    return [x-rx, y-ry, 0], [x+rx, y+ry, height/SCALE[2]]
+
+
+# Keep planting out of the new furnishings, solid buildings, roads and water.
+# One filtered collection drives both rendering and ground-transition checks.
+def _clear_planting(tree, layout):
+    radius = tree["radius"] * 3 + .25
+    x, y = tree["x"], tree["y"]
+    for surface in layout["surfaces"]:
+        if surface["kind"] in {"launch", "running_track", "football", "basketball", "tennis", "volleyball"}:
+            l, r, n, s = surface["footprint"]
+            if l-.39-radius/3 <= x <= r+.39+radius/3 and n-.39-radius/3 <= y <= s+.39+radius/3:
+                return False
+    for item in [*layout["buildings"], *layout["roofs"]]:
+        l,r,n,s = item["footprint"]
+        if l-.39-radius/3 <= x <= r+.39+radius/3 and n-.39-radius/3 <= y <= s+.39+radius/3:
+            return False
+    for item in layout["landmarks"]:
+        lo,hi = _landmark_bounds(item)
+        if lo[0]-radius/3 <= x <= hi[0]+radius/3 and lo[1]-radius/3 <= y <= hi[1]+radius/3:
+            return False
+    return not any(ground_segment_distance_m(x,y,a,b) < line["width"]*1.5+radius
+                   for line in [*layout["roads"], *layout["waterways"]]
+                   for a,b in zip(line["points"],line["points"][1:]))
+
+
+CAMPUS_LAYOUT["trees"] = [tree for tree in CAMPUS_LAYOUT["trees"] if _clear_planting(tree, CAMPUS_LAYOUT)]
 
 
 def _campus_ground_obstacles(layout):
@@ -164,6 +223,10 @@ def _campus_ground_obstacles(layout):
     cannot place a landing column through a decorative but solid structure.
     """
     obstacles = []
+    for item in layout["landmarks"]:
+        lower, upper = _landmark_bounds(item)
+        obstacles.append(dict(id="campus_fixture_"+item["id"], kind="scene_fixture",
+                              lower_grid=lower, upper_grid=upper, rendered_by="landscape"))
 
     def box(identifier, kind, center, size_m, material):
         radius = [size / scale / 2 for size, scale in zip(size_m, SCALE)]
@@ -246,13 +309,13 @@ def _label_position(layout, x, y, height):
 
 
 def _outdoor_arrival(layout, footprint, *, building=False):
-    """Choose a stable 10 m arrival outside every solid roof/building envelope."""
+    """Choose an interior-height arrival outside solid roof/building envelopes."""
     left, right, north, south = footprint
     cx, cy = (left + right) / 2, (north + south) / 2
     clearance = SAFETY_MARGIN + .5
     margin = .39 + clearance / SCALE[0]
     obstacles = [item for item in [*layout["buildings"], *layout["roofs"]]
-                 if item["height"] * SCALE[2] + clearance >= 10]
+                 if item["height"] * SCALE[2] + clearance >= _OBSERVATION_HEIGHT * SCALE[2]]
 
     def clear(x, y):
         if not (1 <= x <= 94 and 1 <= y <= 94):
@@ -277,7 +340,7 @@ def _outdoor_arrival(layout, footprint, *, building=False):
     if not candidates:
         raise ValueError(f"No clear campus arrival for footprint {footprint}.")
     _, _, x, y = min(candidates)
-    return _position(x, y, 2)
+    return _position(x, y, _OBSERVATION_HEIGHT)
 
 
 def _campus_places(layout):
@@ -335,7 +398,7 @@ def _campus_places(layout):
             position, permitted = _position(48, 88, 0), ["return_home"]
         elif surface["kind"] == "running_track":
             site_id, label, code, kind = "stadium", "田径场 S1", "S1", "sports"
-            position, permitted = _position(26, 84, 2.2), list(actions)
+            position, permitted = _position(26, 84, _OBSERVATION_HEIGHT), list(actions)
         else:
             site_id, label = identifier.replace("-", "_"), surface_names[identifier]
             code, kind = label, surface["kind"]
@@ -346,8 +409,8 @@ def _campus_places(layout):
                                                           (north + south) / 2, .15),
                            allowed_actions=permitted))
     for identifier, label, position in (
-            ("east_gate", "东门", (81, 26, 2)),
-            ("north_gate", "北门", (47, 6, 2))):
+            ("east_gate", "东门", (81, 26, _OBSERVATION_HEIGHT)),
+            ("north_gate", "北门", (47, 6, _OBSERVATION_HEIGHT))):
         places.append(dict(id=identifier, label=label, code=label, kind="gate",
                            building_ids=[], surface_ids=[], position=_position(*position),
                            label_position=_position(position[0], position[1], .7),
@@ -378,6 +441,7 @@ def _place_geometry(layout):
         if any(surfaces[identifier]["kind"] == "running_track" for identifier in place["surface_ids"]):
             boundary = surfaces[place["surface_ids"][0]]["geometry"]["centerline_grid"]
         objects[place["id"]] = dict(center_grid=[(left + right) / 2, (north + south) / 2],
+                                     footprint_grid=[left, right, north, south],
                                      boundary_grid=boundary)
     clearance = SAFETY_MARGIN + PathFollower.CORRIDOR_M
     xy_margin = .39 + clearance / SCALE[0]

@@ -58,12 +58,12 @@
             <i data-lucide="monitor" aria-hidden="true"></i>
             <span>HTML</span>
           </button>
-          <button type="button" class="runtime-option" data-runtime="airsim" role="radio" aria-checked="false">
+          <button type="button" class="runtime-option" data-runtime="gazebo" role="radio" aria-checked="false">
             <i data-lucide="radio" aria-hidden="true"></i>
-            <span>AirSim</span>
+            <span>Gazebo</span>
           </button>
         </div>
-        <button id="airsimConfigBtn" type="button" class="icon-button toolbar-config-button" aria-label="Configure AirSim" title="Configure AirSim">
+        <button id="gazeboConfigBtn" type="button" class="icon-button toolbar-config-button" aria-label="Configure Gazebo" title="Configure Gazebo">
           <i data-lucide="sliders-horizontal" aria-hidden="true"></i>
         </button>
       </div>
@@ -325,65 +325,44 @@
       </form>
     </dialog>
 
-    <dialog id="airsimDialog" class="control-dialog airsim-dialog" aria-labelledby="airsimDialogTitle">
+    <dialog id="gazeboDialog" class="control-dialog gazebo-dialog" aria-labelledby="gazeboDialogTitle">
       <form method="dialog">
         <header class="control-dialog-header">
           <div>
             <span>External simulation runtime</span>
-            <h2 id="airsimDialogTitle">AirSim connection</h2>
+            <h2 id="gazeboDialogTitle">Gazebo connection</h2>
           </div>
-          <button id="closeAirSimBtn" type="button" class="icon-button" aria-label="Close AirSim dialog" title="Close dialog">
+          <button id="closeGazeboBtn" type="button" class="icon-button" aria-label="Close Gazebo dialog" title="Close dialog">
             <i data-lucide="x" aria-hidden="true"></i>
           </button>
         </header>
 
-        <section id="airsimPanel" class="simulator-panel" aria-label="AirSim connection and wind">
+        <section id="gazeboPanel" class="simulator-panel" aria-label="Gazebo connection and wind">
           <div class="simulator-heading">
-            <h3>Cosys-AirSim</h3>
-            <span>3.3</span>
+            <h3>Gazebo + PX4</h3>
+
           </div>
           <div class="simulator-grid">
             <label>
               <span>Vehicle</span>
-              <input id="vehicleName" value="{{ airsim_defaults.vehicle_name }}">
+              <input id="vehicleName" value="x500_rgbd_0">
             </label>
             <label>
-              <span>Host</span>
-              <input id="airsimHost" value="{{ airsim_defaults.host }}">
+              <span>World</span>
+              <input id="gazeboWorld" value="visual_garden" readonly>
             </label>
             <label>
               <span>Port</span>
-              <input id="airsimPort" type="number" min="1" max="65535" value="{{ airsim_defaults.port }}">
+              <input id="gazeboPort" type="number" min="1024" max="65535" value="14540">
             </label>
           </div>
-          <button id="reconnectAirSimBtn" type="button" class="command-button secondary simulator-command">
+          <button id="reconnectGazeboBtn" type="button" class="command-button secondary simulator-command">
             <i data-lucide="refresh-cw" aria-hidden="true"></i>
             <span>Reconnect and Reset</span>
           </button>
-          <fieldset class="wind-settings">
-            <legend>Wind NED</legend>
-            <div class="wind-row">
-              <label>
-                <span>N</span>
-                <input id="windNorth" type="number" step="0.5" value="0">
-              </label>
-              <label>
-                <span>E</span>
-                <input id="windEast" type="number" step="0.5" value="0">
-              </label>
-              <label>
-                <span>D</span>
-                <input id="windDown" type="number" step="0.5" value="0">
-              </label>
-              <button id="applyWindBtn" type="button" class="command-button secondary" title="Apply NED wind vector">
-                <i data-lucide="wind" aria-hidden="true"></i>
-                <span>Apply</span>
-              </button>
-            </div>
-          </fieldset>
         </section>
         <footer class="control-dialog-footer">
-          <button id="closeAirSimFooterBtn" type="button" class="command-button secondary">Close</button>
+          <button id="closeGazeboFooterBtn" type="button" class="command-button secondary">Close</button>
         </footer>
       </form>
     </dialog>

@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from copy import deepcopy
 
 from .campus_layout import CAMPUS_LAYOUT, campus_building_cells
+from .simulation_scene import load_scene, safety_cells
 
 
 @dataclass(frozen=True)
@@ -67,10 +68,15 @@ class ScenarioDefinition:
     recommended_tasks: tuple[str, ...] = ()
     semantic_regions: tuple[dict, ...] = ()
     campus_layout: dict | None = None
+    asset_scene: str | None = None
 
     @property
     def building_map(self) -> dict[tuple[int, int], int]:
         return {(x, y): height for x, y, height in self.buildings}
+
+    @property
+    def gazebo_world(self) -> str | None:
+        return self.asset_scene or (self.scenario_id if self.campus_layout else None)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -99,6 +105,8 @@ class ScenarioDefinition:
             "recommended_tasks": list(self.recommended_tasks),
             "semantic_regions": deepcopy(list(self.semantic_regions)),
             "campus_layout": deepcopy(self.campus_layout),
+            "asset_scene": self.asset_scene,
+            "gazebo_world": self.gazebo_world,
         }
 
 
@@ -228,12 +236,26 @@ SCENARIOS = {
             "重复巡检图书馆和教学一号楼3次，最后返航。",
             "反复检查实验一号楼，温度低于40摄氏度或检查满5次后返航。",
             "去北区足球场中央降落停留，不用返航。",
+            "到南广场寻找一棵树，从机载画面确认后返航。",
+            "在南广场寻找红色圆环雕塑，接近到15米内确认后返航。",
+            "去东侧花园寻找蓝色顶棚，从机载画面确认后返航。",
         ),
         semantic_regions=_CAMPUS_REGIONS,
         campus_layout=CAMPUS_LAYOUT,
     ),
 }
 
+_garden = load_scene("visual_garden")
+SCENARIOS["visual_garden"] = ScenarioDefinition(
+    scenario_id="visual_garden", name=_garden["name"], grid_size=_garden["grid_size"],
+    min_altitude=1, max_altitude=4, base=tuple(_garden["base"]),
+    target=tuple(_garden["search_position"]), buildings=safety_cells(_garden), dynamic_objects=(),
+    mission_mode="semantic", asset_scene="visual_garden", points_of_interest=(
+        dict(id="home", label="起降点", kind="base", position=dict(zip("xyz", _garden["base"])), allowed_actions=["return_home", "navigate"]),
+        dict(id="garden", label="花园", kind="garden", position=dict(zip("xyz", _garden["search_position"])), allowed_actions=["navigate", "visual"])),
+    recommended_tasks=("到花园寻找绿色垃圾桶，从机载图像确认并定位后返航降落。",
+                       "到花园寻找一棵树，从机载图像确认后返航。"),
+)
 DEFAULT_SCENARIO = SCENARIOS["urban_crossing"]
 
 

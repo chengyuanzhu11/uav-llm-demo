@@ -11,7 +11,7 @@ import math
 import re
 
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 
 
 class TaskProtocolError(ValueError):
@@ -55,7 +55,7 @@ def motion_schema(limits, defaults):
     path = {"oneOf": [
         _object({"kind": {"const": "boundary"},
                  "direction": {"enum": ["clockwise", "counterclockwise"], "default": defaults["direction"]},
-                 "laps": {"type": "integer", "minimum": 1, "maximum": limits["max_laps"], "default": defaults["laps"]},
+                 "laps": {"type": "number", "exclusiveMinimum": 0, "maximum": limits["max_laps"], "default": defaults["laps"]},
                  "altitude_m": _number(True, minimum=0), "end_altitude_m": _number(True, minimum=0)}, ["kind"]),
         _object({"kind": {"const": "curve"}, **{axis: expression for axis in "xyz"},
                  "t_start": _number(minimum=-1000, maximum=1000),
@@ -67,10 +67,12 @@ def motion_schema(limits, defaults):
     ]}
     heading = {"oneOf": [
         {"type": "null"}, _object({"mode": {"const": "tangent"}}),
+        _object({"mode": {"const": "face_reference"}}),
         _object({"mode": {"const": "fixed"}, "yaw_deg": _number(minimum=-180, maximum=180)}),
         _object({"mode": {"const": "face_target"}, "target_id": {"type": "string"}}),
     ], "default": deepcopy(defaults["heading"])}
-    return _object({"path": path, "speed_mps": {**_number(True, minimum=.1, maximum=limits["max_speed_mps"]),
+    return _object({"path": path, "within_target": {"type": "boolean"},
+                    "speed_mps": {**_number(True, minimum=.1, maximum=limits["max_speed_mps"]),
                                                  "default": defaults["speed_mps"]}, "heading": heading}, ["path"])
 
 
@@ -106,11 +108,18 @@ def task_program_schema(limits, motion_limits, motion_defaults, control_defaults
                 fields[action] = motion_schema(motion_limits, motion_defaults)
             elif action == "control":
                 fields[action] = control_schema(control_defaults, limits["max_duration_seconds"])
+            elif action == "visual":
+                fields[action] = _object({"description": {"type": "string", "minLength": 1, "maxLength": 1000},
+                                          "max_distance_m": _number(minimum=2, maximum=100)})
             else:
                 fields["duration_seconds"] = _number(True, minimum=0,
                     maximum=0 if action == "return_home" else limits["max_duration_seconds"])
                 fields["duration_seconds"]["default"] = action_durations[action]
-        node_variants.append(_object(fields))
+        required = list(fields)
+        if action in ("motion", "control"):
+            fields["target_ref"] = {"oneOf": [_object({"step_id": {"type": "string"}}),
+                                               _object({"evidence_id": {"type": "string"}})]}
+        node_variants.append(_object(fields, required))
     node_variants.extend([
         _object({"id": common["id"], "action": {"const": "repeat"},
                  "count": {"type": ["integer", "null"], "minimum": 1, "maximum": limits["max_loop_iterations"]},
@@ -224,5 +233,6 @@ def validate_structure(value, schema, path="$", *, root=None, depth=0):
             finite = math.isfinite(value)
         except OverflowError:
             finite = False
-        if not finite or value < schema.get("minimum", -math.inf) or value > schema.get("maximum", math.inf):
+        if (not finite or value < schema.get("minimum", -math.inf) or value > schema.get("maximum", math.inf)
+                or value <= schema.get("exclusiveMinimum", -math.inf)):
             raise TaskProtocolError(path, "number_range", "Number must be finite and within the published bounds.")

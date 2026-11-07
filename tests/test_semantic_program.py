@@ -9,6 +9,7 @@ from uav_llm_demo.semantic_tasks import (
     semantic_plan_from_json_text, task_catalog,
 )
 from tests.test_semantic_tasks import parse, proposal, scene, step
+from tests.semantic_fixtures import fixture_requirements
 
 
 def compare(step_id, field="temperature_c", op=">", value=40):
@@ -33,7 +34,9 @@ def program(nodes):
 
 def mission(nodes, telemetry_values=None):
     value = SemanticMission(scene(), "自由任务描述", mission_id="program-mission")
-    value.accept(parse(program(nodes)), telemetry=telemetry_values)
+    plan = parse(program(nodes))
+    value.accept(plan, telemetry=telemetry_values,
+                 requirements=fixture_requirements(plan, task_catalog(scene())))
     return value
 
 
@@ -224,7 +227,8 @@ class ProgramExecutionTests(unittest.TestCase):
         self.assertEqual(len(value.evidence), 2)
         self.assertIsNone(value.current_step)
         self.assertFalse(any(record["action"] == "return_home" for record in value.evidence))
-        value.accept(parse(program([])), preserve_evidence=True)
+        plan = parse(program([]))
+        value.accept(plan, preserve_evidence=True, requirements=fixture_requirements(plan, task_catalog(scene())))
         self.assertEqual(value.current_step["action"], "return_home")
         finish(value)
         self.assertEqual(value.status, "completed")
@@ -234,15 +238,17 @@ class ProgramExecutionTests(unittest.TestCase):
             value = mission([step("visit", "visit", "library"), step("second", "visit", "laboratory")])
             with self.assertRaises(SemanticExecutionError):
                 finish(value)
-            value.accept(parse(program([])), preserve_evidence=True)
+            plan = parse(program([]))
+            value.accept(plan, preserve_evidence=True, requirements=fixture_requirements(plan, task_catalog(scene())))
             self.assertEqual(value.current_step["action"], "return_home")
             finish(value)
         self.assertEqual(value.status, "completed")
 
     def test_missing_telemetry_safely_waits_without_creating_result(self):
         value = SemanticMission(scene())
+        plan = parse(program([step("visit", "visit", "library", when=telemetry("battery_percent", ">", 50))]))
         with self.assertRaises(SemanticExecutionError) as caught:
-            value.accept(parse(program([step("visit", "visit", "library", when=telemetry("battery_percent", ">", 50))])))
+            value.accept(plan, requirements=fixture_requirements(plan, task_catalog(scene())))
         self.assertEqual(caught.exception.code, "missing_telemetry")
         self.assertEqual(value.status, "safety_wait")
         self.assertEqual(value.evidence, [])
@@ -254,7 +260,8 @@ class TaskRevisionTests(unittest.TestCase):
         finish(value)
         old = deepcopy(value.evidence)
         value.observe(value.current_goal, 0, 1, 11)
-        value.accept(parse(program([step("record", "capture", "conference", 2)])), preserve_evidence=True)
+        plan = parse(program([step("record", "capture", "conference", 2)]))
+        value.accept(plan, preserve_evidence=True, requirements=fixture_requirements(plan, task_catalog(scene())))
         self.assertEqual(value.revision, 2)
         self.assertEqual(value.mission_id, "program-mission")
         self.assertEqual(value.evidence, old)
@@ -271,7 +278,8 @@ class TaskRevisionTests(unittest.TestCase):
         finish(value)
         replacement = parse(program([step("scan", "thermal_scan", "library"),
                                      step("record", "capture", "laboratory", when=compare("scan", value=40))]))
-        value.accept(replacement, preserve_evidence=True)
+        value.accept(replacement, preserve_evidence=True,
+                     requirements=fixture_requirements(replacement, task_catalog(scene())))
         self.assertEqual(value.current_step["id"], "scan")
         finish(value)
         self.assertEqual(value.current_step["id"], "home")
@@ -284,7 +292,7 @@ class TaskRevisionTests(unittest.TestCase):
         catalog = task_catalog(scene())
         catalog["mission_context"] = value.catalog_context()
         new = semantic_plan_from_json_text(json.dumps(program([step("record", "capture", "library", when=condition)])), catalog)
-        value.accept(new, preserve_evidence=True)
+        value.accept(new, preserve_evidence=True, requirements=fixture_requirements(new, catalog))
         self.assertEqual(value.current_step["id"], "record")
         finish(value)
         self.assertEqual([item["revision"] for item in value.evidence], [1, 2])

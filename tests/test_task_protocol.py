@@ -56,7 +56,7 @@ class TaskProtocolTests(unittest.TestCase):
         error = self.error(value, "$.steps[0].motion.kind", "object_fields")
         self.assertEqual(error["missing"], ["path"])
         self.assertEqual(error["unexpected"], ["kind", "laps"])
-        self.assertEqual(error["allowed"], ["path", "speed_mps", "heading"])
+        self.assertEqual(error["allowed"], ["path", "within_target", "speed_mps", "heading"])
 
     def test_root_and_nested_constraints_reject_fields(self):
         value = program(motion())

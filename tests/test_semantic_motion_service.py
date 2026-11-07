@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from tests.test_semantic_updates import OfflineSemanticAgent, compact_campus, home, program, pump, skill
 from uav_llm_demo.mission_service import MissionService
-from uav_llm_demo.motion import distance, norm
+from uav_llm_demo.motion import VehicleState, distance, norm
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.spatial_motion import spatial_catalog
 
@@ -34,9 +34,9 @@ class SemanticMotionServiceTests(unittest.TestCase):
         self.guard.start()
         self.addCleanup(self.guard.stop)
 
-    def service(self, *replies, actual=False):
+    def service(self, *replies, actual=False, requirements=None):
         scenario = replace(load_scenario("semantic_campus"), dynamic_objects=()) if actual else compact_campus()
-        service = MissionService(scenario=scenario, agent=OfflineSemanticAgent(replies),
+        service = MissionService(scenario=scenario, agent=OfflineSemanticAgent(replies, requirements=requirements),
                                  planner_latency_seconds=0, traffic_seed=17)
         self.addCleanup(service.close)
         return service
@@ -83,8 +83,18 @@ class SemanticMotionServiceTests(unittest.TestCase):
                        dict(mode="fixed", yaw_deg=90), name="eight", speed=1.5)
         line = motion(dict(kind="polyline", points_m=[[0,0,2],[3,0,2],[3,3,2],[0,3,2]]),
                       "library", dict(mode="fixed", yaw_deg=0), name="sideways", speed=1)
-        service = self.service(program([curve, line, home()]))
-        service.submit_task("飞一个逐渐升高的八字，再沿折线侧飞，最后返航。", background=False)
+        # Independent reference shapes leave unspecified size/height to the
+        # execution plan, while preserving topology, axis order and heading.
+        required = program([
+            dict(id="r_curve", action="motion", target_id="library", motion=dict(path=dict(
+                kind="curve", x="sin(t)", y="sin(2*t)", z="t", t_start=0, t_end=2*pi,
+                flexible=dict(scale_groups=[["x"], ["y"], ["z"]], offset_axes=["z"])))),
+            dict(id="r_line", action="motion", target_id="library", motion=dict(
+                path=dict(kind="polyline", points_m=[[0,0,0],[1,0,0],[1,1,0],[0,1,0]],
+                          flexible=dict(scale_groups=[["x", "y"]], offset_axes=["z"])),
+                heading=dict(mode="fixed", yaw_deg=0))), home()])
+        service = self.service(program([curve, line, home()]), requirements=lambda _: required)
+        service.submit_task("飞一个逐渐升高的八字，再向东、向南、向西沿等长折线侧飞，机头朝北，最后返航。", background=False)
         top, headings = 0, []
         for _ in range(3500):
             state = advance(service)
@@ -100,6 +110,9 @@ class SemanticMotionServiceTests(unittest.TestCase):
         self.assertTrue(headings)
         self.assertLess(max(abs(y) for y in headings), .05)
         self.assertEqual([e["action"] for e in service.semantic.evidence], ["motion","motion","return_home"])
+        self.assertEqual(service.semantic.requirements.steps[0]["motion"]["path"]["x"], "sin(t)")
+        self.assertEqual(service.semantic.plan.steps[0]["motion"]["path"]["x"], "6*sin(t)")
+        self.assertFalse(any(event["kind"] == "no_progress" for event in service.semantic.execution_feedback))
 
     def test_pause_resume_preserves_path_progress_and_user_update_cancels_remainder(self):
         path = motion(dict(kind="curve", x="6*cos(t)", y="6*sin(t)", z=0,
@@ -121,12 +134,27 @@ class SemanticMotionServiceTests(unittest.TestCase):
         self.assertFalse(any(e["action"]=="motion" for e in service.semantic.evidence))
         self.assertEqual(final["semantic_mission"]["evidence"][-1]["action"], "return_home")
 
+    def test_entry_drift_reacquires_endpoint_and_replanning_keeps_position_control(self):
+        service = self.service(program([motion(dict(kind="polyline", points_m=[[0,0,0],[2,0,0]]), "library"), home()]))
+        service.submit_task("到图书馆向东飞两米后返航。", background=False)
+        pump(service, lambda s: service._motion is not None)
+        entry = service.waypoints.points[-1]
+        service.waypoints.index = len(service.waypoints.points)
+        displaced = (entry[0]+.2/3, entry[1], entry[2])
+        service._vehicle = VehicleState(displaced)
+        service._advance_semantic_task(.05)
+        self.assertEqual(service.waypoints.current, entry)
+        self.assertFalse(service._plan_requested)
+        self.assertEqual(service._motion_phase, "transit")
+        self.assertEqual(service.semantic.evidence, [])
+        service._request_replan("route_blocked")
+        self.assertEqual(service._hold_target, displaced)
+
     def test_unsafe_motion_curve_rejected_before_takeoff(self):
         node = motion(dict(kind="polyline",points_m=[[0,0,0],[0,0,-20]]), "library")
         service = self.service(program([node,home()]))
         service.submit_task("执行超出飞行范围的路径。",background=False)
-        for _ in range(4):
-            state=advance(service)
+        state = pump(service, lambda item: item["semantic_mission"]["status"] == "needs_clarification")
         self.assertEqual(service._vehicle.position, service._environment.base)
         self.assertNotEqual(state["status"], "completed")
         self.assertEqual(service.semantic.evidence, [])

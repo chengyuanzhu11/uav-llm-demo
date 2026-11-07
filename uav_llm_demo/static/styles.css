@@ -148,7 +148,7 @@ svg {
     minmax(138px, auto)
     minmax(120px, 188px)
     minmax(290px, 1.35fr)
-    minmax(210px, 1.1fr)
+    minmax(300px, 1.1fr)
     minmax(100px, auto)
     minmax(0, 1fr)
     repeat(3, auto);
@@ -276,7 +276,8 @@ svg {
 }
 
 .runtime-selector {
-  grid-template-columns: repeat(2, minmax(55px, 1fr));
+  grid-template-columns: repeat(3, minmax(64px, 1fr));
+  min-width: 194px;
 }
 
 .agent-option,
@@ -668,6 +669,8 @@ button.secondary {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
+  overflow-anchor: none;
   overscroll-behavior: contain;
   scrollbar-color: var(--line-strong) var(--surface-1);
   scrollbar-width: thin;
@@ -1342,8 +1345,7 @@ dialog.control-dialog::backdrop {
 }
 
 .control-dialog-field,
-.simulator-grid label,
-.wind-row label {
+.simulator-grid label {
   color: var(--muted);
   display: grid;
   font-size: 11px;
@@ -1437,36 +1439,6 @@ dialog.control-dialog::backdrop {
   width: 100%;
 }
 
-.wind-settings {
-  border: 0;
-  border-top: 1px solid var(--line);
-  margin: 12px 0 0;
-  min-width: 0;
-  padding: 10px 0 0;
-}
-
-.wind-settings legend {
-  color: var(--muted);
-  font-size: 10px;
-  padding: 0 6px 0 0;
-}
-
-.wind-row {
-  align-items: end;
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
-  margin-top: 11px;
-  min-width: 0;
-}
-
-.wind-row button {
-  height: 32px;
-  min-width: 58px;
-  padding: 0 10px;
-  white-space: nowrap;
-}
-
 .control-dialog-footer {
   align-items: center;
   background: var(--surface-1);
@@ -1498,7 +1470,7 @@ dialog.control-dialog::backdrop {
       minmax(105px, 138px)
       minmax(100px, 130px)
       minmax(285px, 310px)
-      minmax(210px, 230px)
+      minmax(300px, 320px)
       minmax(0, 1fr)
       repeat(3, auto);
     overflow-x: auto;
@@ -1556,14 +1528,6 @@ dialog.control-dialog::backdrop {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .wind-row {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .wind-row button {
-    grid-column: 1 / -1;
-    width: 100%;
-  }
 }
 
 @media (max-width: 700px) {
@@ -1668,7 +1632,7 @@ dialog.control-dialog::backdrop {
 
 .simulator[data-mission-mode="semantic"] .app-toolbar {
   grid-template-columns: minmax(138px, auto) minmax(120px, 188px)
-    minmax(235px, 1fr) minmax(210px, 1fr) minmax(100px, auto)
+    minmax(235px, 1fr) minmax(300px, 1fr) minmax(100px, auto)
     minmax(0, 1fr) repeat(2, auto);
 }
 
@@ -1758,6 +1722,7 @@ dialog.control-dialog::backdrop {
 .task-step-condition,
 .task-step-iteration { color: var(--subtle); font-size: 10px; line-height: 1.5; }
 .task-step-iteration { color: var(--muted); }
+.task-step-status { font-variant-numeric: tabular-nums; }
 .task-step-condition { color: #baaa87; }
 .semantic-step[data-status="active"] .task-step-marker { background: #24413f; border-color: var(--cyan); color: var(--cyan); }
 .semantic-step[data-status="active"] .task-step-status { color: var(--cyan); }

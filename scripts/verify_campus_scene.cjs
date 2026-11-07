@@ -448,6 +448,8 @@ async function main() {
       window.__campusTest.stopPolling();
     });
     await page.waitForFunction(() => document.querySelector("#scenarioSelect option:checked")?.value === "semantic_campus");
+    assert.equal(await page.locator('[data-runtime="gazebo"]').isDisabled(), false,
+      "Campus must allow the native Gazebo runtime");
     viewports.push(await checkViewport(page, 1440, 900));
     const initial = await inspectCampus(page);
     async function capture(name) {
@@ -456,6 +458,27 @@ async function main() {
       screenshots.push(destination);
     }
     await capture("campus-overview-1440.png");
+    const landscapeViews = await page.evaluate(async () => {
+      const THREE = await import('/static/vendor/three.module.js');
+      const {OnboardCamera} = await import('/static/onboard_camera.js');
+      const {renderer,scene,state} = window.__campusTest;
+      const sensor = new OnboardCamera(THREE,renderer,scene);
+      const views = [['south-plaza',[48.5,87,3],-90,-37],
+        ['west-garden',[35,53,3],-160,-28],['east-garden',[76,54,3],-135,-35]];
+      try {
+        return views.map(([name,position_grid,yaw_deg,pitch_deg]) => {
+          const packet = sensor.capture({frame_id:name,width:320,height:240,vertical_fov_deg:75,
+            near_m:.1,far_m:250,position_grid,yaw_deg,pitch_deg},state.grid_size);
+          if (!packet.depth_m.some(d=>d>0 && d<60)) throw new Error('No nearby landscape depth: '+name);
+          return {name,rgb:packet.rgb};
+        });
+      } finally {sensor.target.dispose();sensor.depthTarget.dispose();}
+    });
+    for (const {name,rgb} of landscapeViews) {
+      const destination = path.join(captureDir, 'onboard-'+name+'.png');
+      fs.writeFileSync(destination,Buffer.from(rgb.split(',')[1],'base64'));
+      screenshots.push(destination);
+    }
     await renderFrame(page, "follow");
     const follow = await page.evaluate(() => {
       const { camera, controls } = window.__campusTest;
@@ -524,6 +547,8 @@ async function main() {
     }, groupName);
     activeState = { ...fixtures.urban_crossing, sequence: activeState.sequence + 100 };
     await page.evaluate(snapshot => window.__campusTest.acceptState(snapshot), activeState);
+    assert.equal(await page.locator('[data-runtime="gazebo"]').isDisabled(), true,
+      "Unsupported worlds must not enable Gazebo");
     await renderFrame(page);
     const disposed = await page.evaluate(name => {
       const { scene, disposalProbe: probe } = window.__campusTest;

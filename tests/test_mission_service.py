@@ -6,9 +6,10 @@ from unittest.mock import Mock, patch
 
 from uav_llm_demo.agents import DeepSeekAgent, MockLLMAgent, PlannerProviderError, RoutePlan
 from uav_llm_demo.environment import BASE
+from uav_llm_demo.gazebo_runtime import GazeboRuntime
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import SCALE, VehicleState, distance
-from uav_llm_demo.runtime import RuntimeUnavailableError
+from uav_llm_demo.runtime import RuntimeUnavailableError, StaleFeedbackError
 from uav_llm_demo.safety import SafetyChecker
 from uav_llm_demo.traffic_motion import ContinuousTraffic
 
@@ -56,8 +57,10 @@ class RecordingRuntime:
         return {
             "backend": self.backend_name,
             "connected": True,
-            "supports_wind": self.backend_name == "airsim",
+            "supports_wind": self.backend_name == "gazebo",
             "source": self.backend_name,
+            **({"landed": self.vehicle.position[2] * SCALE[2] <= .18, "armed": False}
+               if self.backend_name == "gazebo" else {}),
         }
 
     def close(self):
@@ -80,6 +83,65 @@ def pump(service, predicate, limit=300):
 
 
 class MissionServiceTest(unittest.TestCase):
+    def test_late_native_tick_checks_intermediate_geometry_and_missing_history(self):
+        for samples, error in [([(1.5, (30., -30., 6.))], "static safety boundary"),
+                               ([], "没有可核查的飞行轨迹"),
+                               ([(1.6, (30., -30., 15.))], None)]:
+            with self.subTest(error=error):
+                runtime = RecordingRuntime("gazebo")
+                adapter = GazeboRuntime()
+                adapter.camera = Mock()
+                adapter.camera.vehicle_path.return_value = samples
+                runtime.measured_path = adapter.measured_path
+                service = MissionService(scenario=empty_airspace(), runtime=runtime)
+                self.addCleanup(service.close)
+                service._vehicle = VehicleState((10., 10., 3.), sample_time=1.)
+                runtime.vehicle = VehicleState((10., 10., 3.), sample_time=2.2)
+                service.advance(.05)
+                if error:
+                    self.assertIn(error, service._error)
+                    self.assertEqual(runtime.drive_calls, 0)
+                else:
+                    self.assertIsNone(service._error)
+                    self.assertEqual(runtime.drive_calls, 1)
+
+    def test_native_feedback_gap_brakes_then_checks_motion_before_resuming(self):
+        runtime = RecordingRuntime("gazebo")
+        service = MissionService(runtime=runtime)
+        self.addCleanup(service.close)
+        service.advance(.05)
+        with patch.object(runtime, "read_state", side_effect=StaleFeedbackError("late pose")), \
+                patch.object(runtime, "stop", wraps=runtime.stop) as brake:
+            service.advance(.05)
+            brake.assert_called_once()
+            self.assertIsNone(service._error)
+        # The first measurement after the gap is below the floor away from
+        # base. It must be checked before a new velocity can be issued.
+        sent = runtime.drive_calls
+        runtime.vehicle = VehicleState((10., 10., 1.))
+        service.advance(.05)
+        self.assertIn("static safety boundary", service._error)
+        self.assertEqual(runtime.drive_calls, sent)
+
+    def test_safety_failure_keeps_first_cause_and_refreshes_native_telemetry(self):
+        runtime = RecordingRuntime("gazebo")
+        service = MissionService(runtime=runtime)
+        try:
+            service.trace.event = Mock()
+            service._fail("Measured runtime motion crossed a static safety boundary.")
+            runtime.vehicle = VehicleState((10., 10., 1.), (.1, 0., 0.))
+            for _ in range(3):
+                service.advance(.05)
+            service._fail("Safety Checker blocked the next control segment.")
+            state = service.state()
+            self.assertEqual(state['uav'], dict(x=10.,y=10.,z=1.))
+            self.assertFalse(state['runtime']['landed'])
+            self.assertEqual(state['flight']['error'], "Measured runtime motion crossed a static safety boundary.")
+            self.assertEqual(runtime.drive_calls, 0)
+            self.assertEqual(sum(call.args[0]=='mission_error' for call in service.trace.event.call_args_list), 1)
+        finally:
+            service.close()
+
     def test_plan_origin_is_published_fixed_and_reset(self):
         service = MissionService()
         try:
@@ -261,7 +323,7 @@ class MissionServiceTest(unittest.TestCase):
         return service
 
     def test_round_trip_completes_only_at_base_for_both_runtimes(self):
-        for backend in ("html", "airsim"):
+        for backend in ("html", "gazebo"):
             with self.subTest(runtime=backend):
                 service = self.short_mission(backend)
                 returning = pump(service, lambda state: state["phase"] == "returning_home")
@@ -432,30 +494,30 @@ class MissionServiceTest(unittest.TestCase):
         self.assertEqual(changed["flight"]["planner_calls"], 1)
 
     def test_switch_runtime_resets_only_when_new_runtime_is_ready(self):
-        created = RecordingRuntime("airsim")
+        created = RecordingRuntime("gazebo")
         service = MissionService(
             agent=MockLLMAgent(),
             runtime_factory=lambda backend, config: created,
         )
         self.addCleanup(service.close)
 
-        state = service.switch_runtime("airsim", {"host": "127.0.0.1", "port": 41451})
+        state = service.switch_runtime("gazebo", {"world": "visual_garden", "port": 14540})
 
         self.assertEqual(created.reset_calls, [BASE])
-        self.assertEqual(state["runtime_backend"], "airsim")
+        self.assertEqual(state["runtime_backend"], "gazebo")
         self.assertEqual(state["uav"], state["base"])
         self.assertEqual(state["step_count"], 0)
 
     def test_failed_runtime_switch_preserves_current_runtime(self):
         def failing_factory(backend, config):
-            raise RuntimeUnavailableError("AirSim is offline")
+            raise RuntimeUnavailableError("Gazebo is offline")
 
         service = MissionService(agent=MockLLMAgent(), runtime_factory=failing_factory)
         self.addCleanup(service.close)
         before = service.state()
 
         with self.assertRaises(RuntimeUnavailableError):
-            service.switch_runtime("airsim", {})
+            service.switch_runtime("gazebo", {})
 
         after = service.state()
         self.assertEqual(after["runtime_backend"], "html")

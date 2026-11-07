@@ -4,6 +4,7 @@ The model replies are fixtures; parsing, geometry, flight, observations, review
 handling and final success decisions use the production service.
 """
 from copy import deepcopy
+from dataclasses import replace
 from threading import Event
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,7 @@ from tests.test_semantic_updates import (
     OfflineSemanticAgent, compact_campus, home, program, pump, repeat, skill,
 )
 from uav_llm_demo.mission_service import MissionService
+from uav_llm_demo.task_observation import TaskObservationWorld
 
 
 def review(name="assess"):
@@ -23,9 +25,9 @@ class RecordingOfflineAgent(OfflineSemanticAgent):
         super().__init__(replies)
         self.repairs = []
 
-    def interpret_task(self, catalog, instruction, feedback="", *, repair=None):
+    def interpret_task(self, catalog, instruction, feedback="", *, repair=None, planning=None):
         self.repairs.append(deepcopy(repair))
-        return super().interpret_task(catalog, instruction, feedback, repair=repair)
+        return super().interpret_task(catalog, instruction, feedback, repair=repair, planning=planning)
 
 
 class TaskContractServiceTests(unittest.TestCase):
@@ -39,6 +41,7 @@ class TaskContractServiceTests(unittest.TestCase):
         service = MissionService(
             scenario=compact_campus(), agent=RecordingOfflineAgent(replies),
             planner_latency_seconds=0, traffic_seed=17,
+            task_world=TaskObservationWorld.demonstration(compact_campus()),
         )
         self.addCleanup(service.close)
         return service
@@ -108,6 +111,67 @@ class TaskContractServiceTests(unittest.TestCase):
         self.assertEqual(service.agent.repairs, [None, None])
         observed = service.agent.inputs[1][0]["mission_context"]["evidence"]
         self.assertEqual(observed[0]["result"]["temperature_c"], 29)
+
+    def test_stalled_runtime_triggers_review_without_repeating_completed_work(self):
+        first = skill("first", "inspect", "library", .1)
+        remaining = skill("remaining", "capture", "conference", .1)
+        service = self.service(program([first, remaining, home()]), program([remaining, home()]))
+        service.submit_task("先检查图书馆，再到会议中心采样，最后返航。", background=False)
+        pump(service, lambda state: len(state["semantic_mission"]["evidence"]) == 1)
+        drive = service.runtime.drive
+        def temporarily_blocked(*args, **kwargs):
+            if service.semantic.revision == 1:
+                return service.runtime.read_state()
+            return drive(*args, **kwargs)
+        with patch.object(service.runtime, "drive", side_effect=temporarily_blocked):
+            final = self.completed(service)
+        self.assertEqual([row["action"] for row in final["semantic_mission"]["evidence"]],
+                         ["inspect", "capture", "return_home"])
+        self.assertEqual(len(service.agent.inputs), 2)
+        self.assertEqual(service._autonomous_reviews, 1)
+        self.assertEqual(service.agent.inputs[-1][0]["mission_context"]["evidence"][0]["step_id"], "first")
+
+    def test_pending_recovery_is_deduplicated_and_user_update_cancels_it(self):
+        work = skill("first", "inspect", "library", .1)
+        service = self.service(program([work, home()]), program([home()]))
+        service.submit_task("巡检图书馆后返航。", background=False)
+        pump(service, lambda state: state["semantic_mission"]["status"] == "running")
+        service._last_event_review_at = service._time
+        for _ in range(10):
+            service._recover_semantic_event("route_unreachable", "通路暂时受阻。")
+        self.assertIsNotNone(service._semantic_event_pending)
+        self.assertEqual(sum(service._semantic_event_counts.values()), 3)
+        self.assertEqual(len(service.agent.inputs), 1)
+        service.stop_runtime()
+        for _ in range(120):
+            service.advance(.1)
+        self.assertIsNotNone(service._semantic_event_pending)
+        self.assertEqual(len(service.agent.inputs), 1)
+        service._fail("Injected runtime outage")
+        for _ in range(20):
+            service.advance(.1)
+        self.assertIsNone(service._semantic_event_pending)
+        self.assertFalse(service._running)
+        self.assertEqual(len(service.agent.inputs), 1)
+        service.submit_task("取消未完成检查，立即返航。", background=False)
+        final = self.completed(service)
+        self.assertIsNone(service._semantic_event_pending)
+        self.assertEqual([row["action"] for row in final["semantic_mission"]["evidence"]], ["return_home"])
+        self.assertEqual(service._autonomous_reviews, 0)
+
+    def test_terminal_heading_stall_enters_recovery_without_false_completion(self):
+        from tests.test_generic_control_service import control
+        planned = program([control("home", state="airborne", altitude_m=12, yaw_deg=90, duration_seconds=.1), home()])
+        service = self.service(planned, planned)
+        service.submit_task("基地上空转向东再返航。", background=False)
+        drive = service.runtime.drive
+        def stuck_yaw(*args, **kwargs):
+            measured = drive(*args, **kwargs)
+            return replace(measured, yaw=0) if service.semantic.revision == 1 else measured
+        with patch.object(service.runtime, "drive", side_effect=stuck_yaw):
+            final = self.completed(service)
+        self.assertEqual(service._autonomous_reviews, 1)
+        self.assertEqual([row["action"] for row in final["semantic_mission"]["evidence"]], ["control", "return_home"])
 
     def test_review_result_can_enable_work_after_an_unconditional_action(self):
         enabled = dict(step_id="assess", field="reviewed", op="==", value=True)

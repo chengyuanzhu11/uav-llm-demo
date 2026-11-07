@@ -29,6 +29,7 @@ class VehicleState:
     velocity: tuple[float, float, float] = (0.0, 0.0, 0.0)
     acceleration: tuple[float, float, float] = (0.0, 0.0, 0.0)
     yaw: float = 0.0
+    sample_time: float | None = None  # Absolute simulator time for native feedback.
 
 
 class WaypointManager:
@@ -54,12 +55,38 @@ class WaypointManager:
         points = (position,) + self.points[self.index:]
         return sum(distance(a, b) for a, b in zip(points, points[1:]))
 
+    def tracking_target(self, state, lookahead_m=8.0):
+        """A bounded reference on the accepted segment, preserving its slope.
+
+        Pointing at a distant endpoint dilutes perpendicular/height correction.
+        Project onto the segment and look ahead, without skipping a waypoint or
+        changing the validated route. Near its end the reference is the endpoint.
+        """
+        end = self.current
+        if end is None:
+            return None
+        start = self.segment_start
+        vector = tuple((end[i]-start[i])*SCALE[i] for i in range(3))
+        length = norm(vector)
+        if length < 1e-9:
+            return end
+        offset = tuple((state.position[i]-start[i])*SCALE[i] for i in range(3))
+        along = sum(a*b for a,b in zip(offset,vector))/length
+        fraction = min(1., (max(0.,along)+lookahead_m)/length)
+        return tuple(start[i]+(end[i]-start[i])*fraction for i in range(3))
+
     def reconnect(self, state, checker, reachable):
         """Only ordinary transit waypoints may be skipped; always retain the goal."""
         if self.current is None:
             return False
         remaining = self.remaining_distance(state.position)
         furthest = len(self.points) - 1
+        if self.plan_start[2] < checker.lower[2]:
+            departure = next((i for i, p in enumerate(self.points) if p[2] >= checker.lower[2]), None)
+            if departure is not None and self.index <= departure:
+                # Complete the takeoff column before a horizontal shortcut.
+                # Being close to the cruise floor does not prove stable ascent.
+                furthest = min(furthest, departure)
         landing_site = checker.ground_site_for(self.points[-1])
         if landing_site is not None and self.points[-1][2] < checker.lower[2]:
             # Reach and decelerate at the entrance to the landing column before
@@ -73,7 +100,7 @@ class WaypointManager:
                     break
                 approach = index
             if self.index <= approach:
-                furthest = approach
+                furthest = min(furthest, approach)
         for index in range(furthest, self.index, -1):
             point = self.points[index]
             tail = self.points[index:]
@@ -95,13 +122,15 @@ class WaypointManager:
 
 
 class TrajectoryController:
-    def __init__(self, max_speed=4.0, max_acceleration=2.0, max_climb_speed=2.0, max_descent_speed=1.0):
+    def __init__(self, max_speed=4.0, max_acceleration=2.0, max_climb_speed=2.0, max_descent_speed=1.0,
+                 response_seconds=0.0):
         self.max_speed = max_speed
         self.max_acceleration = max_acceleration
         self.max_climb_speed = max_climb_speed
         self.max_descent_speed = max_descent_speed
+        self.response_seconds = response_seconds
 
-    def velocity_command(self, state, target, dt):
+    def velocity_command(self, state, target, dt, *, landing_radius=None):
         if not isfinite(dt) or not 0 < dt <= 0.2:
             raise ValueError("Controller dt must be in (0, 0.2] seconds.")
         desired = (0.0, 0.0, 0.0)
@@ -110,13 +139,44 @@ class TrajectoryController:
             length = norm(delta)
             if length > 1e-9:
                 braking_acceleration = self.max_acceleration * 0.5
-                speed = min(self.max_speed, sqrt(2 * braking_acceleration * length), length * 1.4)
+                # Reserve both response distance v*tau and braking distance
+                # v²/(2a). Smoothing acceleration without this reserve makes
+                # a physical follower brake too late at corners/endpoints.
+                lag_speed = braking_acceleration * self.response_seconds
+                braking_speed = sqrt(lag_speed**2 + 2*braking_acceleration*length) - lag_speed
+                speed = min(self.max_speed, braking_speed, length * 1.4)
+                if self.response_seconds:
+                    # If actual closing speed already exceeds the envelope,
+                    # reserve the distance the aircraft will travel before it responds.
+                    closing = max(0., sum(v*d for v, d in zip(state.velocity, delta)) / length)
+                    available = max(0., length - closing*self.response_seconds)
+                    speed = min(speed, sqrt(2*braking_acceleration*available), 1.4*available)
                 desired = tuple(v * speed / length for v in delta)
                 vertical_limit = self.max_climb_speed if desired[2] >= 0 else self.max_descent_speed
                 factor = min(1.0, vertical_limit / max(abs(desired[2]), 1e-12))
                 desired = tuple(v * factor for v in desired)
+                if landing_radius is not None and delta[2] < 0:
+                    # A vertical approach needs horizontal position correction
+                    # independent of its remaining height and descent speed.
+                    horizontal = norm(delta[:2])
+                    horizontal_speed = min(self.max_speed, horizontal*1.4,
+                        sqrt(lag_speed**2 + 2*braking_acceleration*horizontal)-lag_speed)
+                    lateral_speed = norm(state.velocity[:2])
+                    stopping = lateral_speed*self.response_seconds + lateral_speed**2/(2*braking_acceleration)
+                    # Reserve margin before the hard column boundary. Stop
+                    # descending while lateral motion is braking/recentring.
+                    descent_fraction = max(0., min(1.,
+                        (.7*landing_radius-horizontal-stopping)/max(.3*landing_radius, 1e-9)))
+                    down = min(self.max_descent_speed, -delta[2]*1.4,
+                        sqrt(lag_speed**2 - 2*braking_acceleration*delta[2])-lag_speed)*descent_fraction
+                    horizontal_speed = min(horizontal_speed, sqrt(max(0., self.max_speed**2-down**2)))
+                    desired = tuple(v*horizontal_speed/max(horizontal, 1e-12) for v in delta[:2]) + (-down,)
         change = tuple(desired[i] - state.velocity[i] for i in range(3))
-        factor = min(1.0, self.max_acceleration * dt / max(norm(change), 1e-12))
+        # A physical attitude/thrust loop cannot track bang-bang acceleration
+        # around zero velocity. Keep the ideal-runtime default, but give native
+        # flight the same smooth response in both execution and safety rollouts.
+        factor = min(1.0, dt / max(dt, self.response_seconds),
+                     self.max_acceleration * dt / max(norm(change), 1e-12))
         return tuple(state.velocity[i] + change[i] * factor for i in range(3))
 
 

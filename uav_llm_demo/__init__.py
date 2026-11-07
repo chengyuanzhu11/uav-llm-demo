@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import os
+import base64
 from collections.abc import Mapping
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
-from .airsim_runtime import AirSimRuntime, AirSimRuntimeConfig
-from .airsim_connection import default_airsim_host
+from .gazebo_runtime import GazeboRuntime, GazeboRuntimeConfig
 from .mission_service import MissionService
-from .runtime import RuntimeCapabilityError, RuntimeUnavailableError
+from .runtime import RuntimeStateError, RuntimeUnavailableError
 from .scenarios import list_scenarios
 from .provider_config import ProviderConfigError
 
@@ -25,9 +24,13 @@ def create_app(
     if service is None:
         mission_service._ensure_loop()
 
+    @app.errorhandler(RuntimeStateError)
+    def runtime_state_conflict(exc):
+        return jsonify(error=str(exc), error_code=exc.error_code), 409
+
     @app.get("/")
     def index():
-        return render_template("index.html", airsim_defaults=_airsim_defaults())
+        return render_template("index.html")
 
     @app.get("/favicon.ico")
     def favicon():
@@ -40,6 +43,24 @@ def create_app(
     @app.get("/api/scenarios")
     def api_scenarios():
         return jsonify(scenarios=list_scenarios())
+
+    @app.post("/api/onboard/frame")
+    def api_onboard_frame():
+        if request.content_length is None or request.content_length > 4_000_000:
+            return jsonify(error="Camera packet exceeds the supported size."), 413
+        try:
+            return jsonify(mission_service.receive_camera_frame(request.get_json(silent=True)))
+        except (ValueError, TypeError) as exc:
+            return jsonify(error=str(exc)), 400
+
+    @app.get("/api/onboard/image")
+    def api_onboard_image():
+        with mission_service._lock:
+            frame = mission_service.visual.frame
+            if frame is None or request.args.get("frame_id") != frame["frame_id"]:
+                return "", 404
+            return Response(base64.b64decode(frame["rgb"].split(",", 1)[1]), mimetype="image/png",
+                            headers={"Cache-Control": "no-store"})
 
     @app.post("/api/mission/start")
     def api_start():
@@ -129,15 +150,9 @@ def create_app(
 
     @app.post("/api/runtime/wind")
     def api_runtime_wind():
-        data = request.get_json(silent=True) or {}
-        try:
-            return jsonify(mission_service.set_wind(data))
-        except RuntimeCapabilityError as exc:
-            return _runtime_error_response(mission_service, exc, 409)
-        except RuntimeUnavailableError as exc:
-            return _runtime_error_response(mission_service, exc, 503)
-        except (TypeError, ValueError) as exc:
-            return jsonify(error=str(exc)), 400
+        # Published endpoint: reject old clients explicitly without changing a flight.
+        return jsonify(error="本地动力学模式及风速接口已移除。物理实验请使用 Gazebo＋PX4，并在 Gazebo 场景中配置风场。",
+                       error_code="runtime_removed"), 410
 
     @app.get("/api/config")
     def api_read_config():
@@ -171,74 +186,14 @@ def _runtime_error_response(
     message = f"Runtime error: {exc}"
     payload = service.state(feedback=message)
     payload["error"] = message
+    payload["error_code"] = "runtime_unavailable"
     return jsonify(payload), status_code
 
 
 def _build_runtime(
     backend: str,
     config: Mapping[str, object],
-) -> AirSimRuntime:
-    if backend != "airsim":
+) -> GazeboRuntime:
+    if backend != "gazebo":
         raise ValueError(f"Unsupported external runtime '{backend}'.")
-    return AirSimRuntime(
-        AirSimRuntimeConfig(
-            host=str(config.get("host") or default_airsim_host()),
-            port=_bounded_int(
-                config.get("port"),
-                int(os.getenv("AIRSIM_PORT", "41451")),
-                1,
-                65535,
-            ),
-            vehicle_name=str(
-                config.get("vehicle_name")
-                or os.getenv("AIRSIM_VEHICLE_NAME", "Drone1")
-            ),
-            velocity_mps=_bounded_float(
-                config.get("velocity_mps"),
-                float(os.getenv("AIRSIM_VELOCITY_MPS", "4.0")),
-                0.5,
-                20.0,
-            ),
-            meters_per_cell=_bounded_float(
-                config.get("meters_per_cell"),
-                3.0,
-                0.5,
-                20.0,
-            ),
-            meters_per_altitude_level=_bounded_float(
-                config.get("meters_per_altitude_level"),
-                5.0,
-                0.5,
-                20.0,
-            ),
-        )
-    )
-
-
-def _airsim_defaults():
-    return dict(host=default_airsim_host(), port=os.getenv("AIRSIM_PORT", "41451"),
-                vehicle_name=os.getenv("AIRSIM_VEHICLE_NAME", "Drone1"))
-
-
-def _bounded_float(
-    value: object,
-    default: float,
-    minimum: float,
-    maximum: float,
-) -> float:
-    number = default if value in (None, "") else float(value)
-    if not minimum <= number <= maximum:
-        raise ValueError(f"Value {number} must be between {minimum} and {maximum}.")
-    return number
-
-
-def _bounded_int(
-    value: object,
-    default: int,
-    minimum: int,
-    maximum: int,
-) -> int:
-    number = default if value in (None, "") else int(value)
-    if not minimum <= number <= maximum:
-        raise ValueError(f"Value {number} must be between {minimum} and {maximum}.")
-    return number
+    return GazeboRuntime(GazeboRuntimeConfig(**dict(config)))

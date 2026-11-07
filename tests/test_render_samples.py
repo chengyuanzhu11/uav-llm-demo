@@ -10,14 +10,15 @@ from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import VehicleState
 
 
-class AirSimStub(HtmlRuntime):
-    backend_name = "airsim"
+class GazeboStub(HtmlRuntime):
+    backend_name = "gazebo"
 
     def configure_scene(self, scenario):
         self.scenario = scenario
 
     def status(self):
-        return dict(backend="airsim", connected=True, supports_wind=True, source="test")
+        return dict(backend="gazebo", connected=True, supports_wind=True, source="test",
+                    landed=self.vehicle.position[2] <= .036, armed=False)
 
 
 class RenderSamplesTest(unittest.TestCase):
@@ -25,7 +26,7 @@ class RenderSamplesTest(unittest.TestCase):
         self.scenario = replace(empty_airspace(), grid_size=8,
                                 base=(1.0, 6.0, 0.0), target=(6.0, 1.0, 3.0))
         self.service = MissionService(scenario=self.scenario, traffic_seed=17,
-                                      runtime_factory=lambda backend, config: AirSimStub())
+                                      runtime_factory=lambda backend, config: GazeboStub())
         self.addCleanup(self.service.close)
 
     def set_vehicle(self, position=(2.0, 2.0, 2.0), velocity=(1.0, 0.0, 0.0), yaw=0.7):
@@ -103,11 +104,31 @@ class RenderSamplesTest(unittest.TestCase):
         changed["motion_samples"][-1]["velocity"][0] = -999
         changed["motion_samples"][-1]["traffic"]["bird-1"][0] = -999
         changed["motion_samples"].clear()
+        changed["scenario"]["base"]["x"] = -999
         self.service._publish_state()
+        self.assertEqual(self.service.state()["scenario"], original["scenario"])
         self.assertEqual(self.service.state()["motion_samples"], original["motion_samples"])
         self.assertEqual(self.service._vehicle.position, self.scenario.base)
         self.assertEqual(self.service._vehicle.velocity, (0, 0, 0))
         self.assertNotEqual(self.service._environment.dynamic_objects[0].position[0], -999)
+
+    def test_scene_metadata_refreshes_and_distance_survives_display_window(self):
+        original = self.service.state()
+        x, y, z = self.scenario.base
+        self.set_vehicle((x+1, y, z))
+        self.set_vehicle((x+1, y, z+1))
+        # Trimming the renderer's history must not erase measured flight cost.
+        self.service._environment.path = [self.service._vehicle.position]
+        self.service._environment.continuous_path = [point_to_dict(self.service._vehicle.position)]
+        self.service._environment.scenario = replace(self.scenario, name="Updated scene")
+        self.service._publish_state()
+        measured = self.service.state()
+        self.assertEqual(measured["metrics"]["path_length"], 8)
+        self.assertEqual(measured["scenario"]["name"], "Updated scene")
+        self.assertEqual(original["scenario"]["name"], self.scenario.name)
+        with patch.object(self.service, "_random_scenario", return_value=self.scenario):
+            reset = self.service.reset()
+        self.assertEqual(reset["metrics"]["path_length"], 0)
 
     def test_path_window_tracks_absolute_origin_and_only_moves_when_truncated(self):
         env = self.service._environment
@@ -160,16 +181,22 @@ class RenderSamplesTest(unittest.TestCase):
         self.assertEqual(state["motion_samples"][0]["t"], 0)
         self.assertEqual(state["path_start_index"], 0)
 
-    def test_airsim_is_unsampled_and_runtime_switch_starts_fresh(self):
+    def test_external_telemetry_is_sampled_and_runtime_switch_starts_fresh(self):
         self.service.advance(0.05)
-        airsim = self.service.switch_runtime("airsim")
-        self.assertEqual(airsim["motion_samples"], [])
+        gazebo = self.service.switch_runtime("gazebo")
+        self.assertEqual(gazebo["motion_samples"][0]["t"], 0)
+        self.assertEqual(gazebo["motion_samples"][0]["position"], list(self.service.runtime.read_state().position))
+        self.assertEqual(gazebo["dynamic_objects"], [])
+        self.assertEqual(gazebo["motion_samples"][0]["traffic"], {})
+        self.assertEqual(gazebo["observation"]["dynamic_objects"], [])
         self.service.advance(0.05)
-        self.assertEqual(self.service.state()["motion_samples"], [])
+        self.assertGreater(self.service.state()["motion_samples"][-1]["t"], 0)
         html = self.service.switch_runtime("html")
         self.assertEqual(len(html["motion_samples"]), 1)
         self.assertEqual(html["motion_samples"][0]["t"], 0)
         self.assertEqual(html["path_start_index"], 0)
+        self.assertTrue(html["dynamic_objects"])
+        self.assertTrue(html["motion_samples"][0]["traffic"])
 
 
 if __name__ == "__main__":

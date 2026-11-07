@@ -14,16 +14,20 @@ if [[ $project_root == /mnt/* ]]; then
 fi
 requirements="$project_root/requirements.txt"
 case ${1:-} in
-    --airsim) requirements="$project_root/requirements-airsim.txt" ;;
+    --gazebo) requirements="$project_root/requirements-gazebo.txt" ;;
     "") ;;
-    *) echo "Usage: bash scripts/setup_wsl.sh [--airsim]" >&2; exit 1 ;;
+    *) echo "Usage: bash scripts/setup_wsl.sh [--gazebo]" >&2; exit 1 ;;
 esac
 if [[ -d $venv && ! -x $venv/bin/python ]]; then
     echo "Existing .venv is not a Linux environment; it will not be overwritten." >&2
     exit 1
 fi
 
-python3 -m venv "$venv"
+if [[ ${1:-} == --gazebo ]]; then
+    python3 -m venv --system-site-packages "$venv"
+elif [[ ! -x $venv/bin/python ]]; then
+    python3 -m venv "$venv"
+fi
 "$venv/bin/python" -m pip install -r "$requirements"
 "$venv/bin/python" -m pip check
 echo "WSL Python is ready: $venv/bin/python"

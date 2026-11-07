@@ -1,5 +1,6 @@
 // A compact architectural reconstruction of Beihang's Hangzhou campus.
 // Geometry and navigation share campus_layout; x/y = 3 m, elevation = 5 m.
+import {addCampusLandscape} from './campus_landscape.js';
 export function buildSemanticCampus(THREE, group, scenario) {
   const layout = scenario.campus_layout;
   if (!layout) return group;
@@ -292,17 +293,51 @@ export function buildSemanticCampus(THREE, group, scenario) {
     }
     return textureFrom(image);
   }
-  for (const surface of layout.surfaces || []) {
-    const r = rect(surface.footprint);
+  const surfacePatches = (layout.surfaces || []).map(surface => {
     const sport = ["running_track", "stadium", "football", "basketball", "tennis", "volleyball"].includes(surface.kind);
+    return {surface, r: rect(surface.footprint), sport,
+      height: surface.kind === "launch" ? 0.007 : sport ? 0.1 : 0.07};
+  });
+  function subtractPatch(part, cover) {
+    const left = Math.max(part.left, cover.left), right = Math.min(part.right, cover.right);
+    const north = Math.max(part.north, cover.north), south = Math.min(part.south, cover.south);
+    if (left >= right || north >= south) return [part];
+    return [
+      {left: part.left, right: left, north: part.north, south: part.south},
+      {left: right, right: part.right, north: part.north, south: part.south},
+      {left, right, north: part.north, south: north},
+      {left, right, north: south, south: part.south},
+    ].filter(patch => patch.right > patch.left && patch.south > patch.north);
+  }
+  for (const [index, {surface, r, sport, height}] of surfacePatches.entries()) {
+    // Inclusive layout footprints can share a strip of cells. Give later
+    // coplanar patches that area once, instead of drawing coincident faces.
+    let pieces = [r];
+    for (const cover of surfacePatches.slice(index + 1)) {
+      if (cover.height === height) pieces = pieces.flatMap(piece => subtractPatch(piece, cover.r));
+    }
+    if (!pieces.length) continue;
     const plaza = surface.kind === "plaza" || surface.kind === "south_square";
     const landscaped = ["garden", "paving"].includes(surface.kind);
     const mat = sport || plaza || landscaped ? material("#ffffff", {map: sport ? sportTexture(surface)
       : plaza ? plazaTexture() : landscapeTexture(surface.kind, surface.id), roughness: 1})
       : material(surface.color || (surface.kind === "lawn" ? colors.grass : colors.path));
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(r.width, r.depth), mat);
+    const positions = [], uv = [];
+    for (const piece of pieces) {
+      for (const [x, z] of [[piece.left, piece.south], [piece.right, piece.south], [piece.right, piece.north],
+        [piece.left, piece.south], [piece.right, piece.north], [piece.left, piece.north]]) {
+        positions.push(x - r.x, r.z - z, 0);
+        // Retain the original patch's texture coordinates after clipping.
+        uv.push((x - r.left) / r.width, (r.south - z) / r.depth);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+    geometry.computeVertexNormals();
+    const mesh = new THREE.Mesh(geometry, mat);
     mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(r.x, surface.kind === "launch" ? 0.007 : sport ? 0.1 : 0.07, r.z);
+    mesh.position.set(r.x, height, r.z);
     mesh.receiveShadow = true; mesh.name = `campus_surface_${surface.id}`;
     group.add(mesh);
   }
@@ -528,26 +563,13 @@ export function buildSemanticCampus(THREE, group, scenario) {
     }
   }
 
-  const canopyGeometry = new THREE.IcosahedronGeometry(1, 1);
-  const trunkGeometry = new THREE.CylinderGeometry(0.11, 0.15, 1, 5);
-  const treeMaterials = ["#648565", "#759371", "#839a70"].map(color => material(color, {roughness: 1}));
-  const trunkMaterial = material(colors.bark);
-  const home = scenario.points_of_interest?.find(item => item.id === "home")?.position;
-  for (const [index, tree] of (layout.trees || []).entries()) {
-    if (home && Math.hypot(tree.x - home.x, tree.y - home.y) * 3 < 5.2) continue;
-    const height = Math.min(2.7, tree.height * 5);
-    const radius = Math.min(1.65, tree.radius * 3);
-    const x = X(tree.x), z = Z(tree.y);
-    instance("campus_tree_trunks", trunkGeometry, trunkMaterial, x, height * 0.22, z,
-      1, height * 0.44, 1);
-    instance("campus_tree_canopies", canopyGeometry, treeMaterials[index % 3],
-      x, height * 0.64, z, radius, height * 0.36, radius * 0.91);
-  }
+  addCampusLandscape(THREE, group, layout, {X,Z,instance,material});
 
   // Low solid structures use the same exact bounds as ground-transition safety.
   const groundMaterials = {stone, trim, paleMetal};
   const groundMeshes = new Map();
   for (const obstacle of layout.ground_obstacles || []) {
+    if (obstacle.rendered_by === 'landscape') continue;
     const [left, north, bottom] = obstacle.lower_grid;
     const [right, south, top] = obstacle.upper_grid;
     const mesh = box(obstacle.id, X((left + right) / 2), (bottom + top) * 2.5,

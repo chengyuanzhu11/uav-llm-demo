@@ -1,8 +1,7 @@
 import json
 import unittest
-from uav_llm_demo.scene_layout import AIRSIM_ORIGIN, scene_layout
+from uav_llm_demo.scene_layout import scene_layout
 from uav_llm_demo.scenarios import SCENARIOS
-from uav_llm_demo.airsim_runtime import AirSimRuntime, grid_to_ned, ned_to_grid
 from uav_llm_demo.agents import MockLLMAgent
 from uav_llm_demo.safety import SafetyChecker
 
@@ -79,7 +78,7 @@ class SharedSceneTests(unittest.TestCase):
         self.assertFalse(checker.validate_waypoint(scenario.target))
 
     def test_every_scenario_has_exact_building_geometry(self):
-        for scenario in SCENARIOS.values():
+        for scenario in (s for s in SCENARIOS.values() if not s.asset_scene):
             objects = scene_layout(scenario)
             self.assertEqual(len({o["name"] for o in objects}), len(objects))
             buildings = [o for o in objects if o["name"].startswith("building_")]
@@ -90,15 +89,3 @@ class SharedSceneTests(unittest.TestCase):
                 self.assertAlmostEqual(obj["size"]["x"], 2.34)
             ground = objects[0]
             self.assertEqual(ground["position"]["z"] * 5 + ground["size"]["z"] / 2, 0)
-
-    def test_relocated_map_round_trip_preserves_grid_positions(self):
-        runtime = AirSimRuntime()
-        try:
-            runtime._origin = AIRSIM_ORIGIN
-            for point in ((1, 18, 2), (18, 2, 5), (6, 5, 4)):
-                actual = runtime._grid_to_ned(point)
-                local = tuple(actual[i] - AIRSIM_ORIGIN[i] for i in range(3))
-                self.assertEqual(local, grid_to_ned(point))
-                self.assertEqual(ned_to_grid(local), point)
-        finally:
-            runtime.close()

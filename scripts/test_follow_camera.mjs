@@ -8,7 +8,10 @@ const box = (a, b) => new THREE.Box3(new THREE.Vector3(...a), new THREE.Vector3(
 function run(name, rate, path, duration, obstacles = [], horizon = 0.3) {
   const rig = new FollowCameraRig(THREE);
   const start = path(0);
-  rig.reset(start, obstacles);
+  rig.reset(start, typeof obstacles === 'function' ? obstacles(0) : obstacles);
+  const initialBoomLength = rig.length;
+  let minimumBoomLength = rig.length, maximumBoomLength = rig.length, firstExtensionAt = null;
+  let maxRadialSpeed = 0, previousLength = rig.length;
   let previous = rig.position.clone();
   let maxSpeed = 0;
   let maximumAcceleration = 0;
@@ -23,8 +26,14 @@ function run(name, rate, path, duration, obstacles = [], horizon = 0.3) {
   for (let frame = 1; frame <= duration * rate; frame += 1) {
     const t = frame / rate;
     const target = path(t);
+    const walls = typeof obstacles === 'function' ? obstacles(t) : obstacles;
     const previews = Array.from({ length: 6 }, (_, i) => path(Math.min(duration, t + horizon * (i + 1) / 6)));
-    const position = rig.update(target, 1 / rate, obstacles, previews);
+    const position = rig.update(target, 1 / rate, walls, previews);
+    minimumBoomLength = Math.min(minimumBoomLength, rig.length);
+    maximumBoomLength = Math.max(maximumBoomLength, rig.length);
+    maxRadialSpeed = Math.max(maxRadialSpeed, Math.abs(rig.length - previousLength) * rate);
+    if (rig.length > initialBoomLength + 0.1) firstExtensionAt ??= t;
+    previousLength = rig.length;
     const step = position.distanceTo(previous);
     maxStep = Math.max(maxStep, step);
     maxSpeed = Math.max(maxSpeed, step * rate);
@@ -36,7 +45,7 @@ function run(name, rate, path, duration, obstacles = [], horizon = 0.3) {
     maxRelativeStep = Math.max(maxRelativeStep, offset.distanceTo(beforeOffset));
     maxRelativeDrift = Math.max(maxRelativeDrift, offset.distanceTo(base));
     assert.ok(position.toArray().every(Number.isFinite), `${name}: nonfinite camera`);
-    for (const obstacle of obstacles) {
+    for (const obstacle of walls) {
       assert.ok(!obstacle.containsPoint(target), `${name}: invalid fixture flies through a building`);
       assert.ok(!obstacle.containsPoint(position), `${name}: camera inside building at ${t}`);
       minimumClearance = Math.min(minimumClearance, obstacle.distanceToPoint(position));
@@ -56,12 +65,13 @@ function run(name, rate, path, duration, obstacles = [], horizon = 0.3) {
     lastTarget = target;
   }
   const result = { name, fps: rate, horizon, maxSpeed, maximumAcceleration, maxStep, maxRelativeStep, maxRelativeDrift,
+    initialBoomLength, minimumBoomLength, maximumBoomLength, maxRadialSpeed, firstExtensionAt,
     minimumClearance: Number.isFinite(minimumClearance) ? minimumClearance : null, ...rig.diagnostics };
   results.push(result);
   return result;
 }
 
-for (const fps of [30, 60, 120]) {
+for (const fps of [10, 30, 60, 120]) {
   const constant = run('constant velocity', fps, t => new THREE.Vector3(t * 3, 12, t), 8);
   assert.ok(constant.maxRelativeDrift < 1e-8);
   assert.ok(Math.abs(constant.maxSpeed - Math.sqrt(10)) < 1e-7);
@@ -76,6 +86,7 @@ for (const fps of [30, 60, 120]) {
   assert.equal(corner.sweepClamps, 0);
   assert.ok(corner.maxSpeed < 20, `corner speed ${corner.maxSpeed}`);
   assert.ok(corner.maximumAcceleration < 140, `corner acceleration ${corner.maximumAcceleration}`);
+  assert.ok(corner.minimumBoomLength > base.length() - 0.05, 'Orbit around the corner without retracting');
 
   const wall = run('near wall then corner', fps,
     t => new THREE.Vector3(0, 12, 12 - 3 * t), 12,
@@ -84,6 +95,7 @@ for (const fps of [30, 60, 120]) {
   assert.equal(wall.sweepClamps, 0);
   assert.ok(wall.maxSpeed < 28, JSON.stringify(wall));
   assert.ok(wall.maximumAcceleration < 140, `wall acceleration ${wall.maximumAcceleration}`);
+  assert.ok(wall.maximumBoomLength - wall.minimumBoomLength < 0.05, 'Keep distance while turning away from the wall');
 
   const narrow = run('stationary narrow courtyard', fps,
     () => new THREE.Vector3(0, 12, 0), 8,
@@ -91,6 +103,20 @@ for (const fps of [30, 60, 120]) {
       box([-8, 0, 3], [8, 30, 8]), box([-8, 0, -8], [8, 30, -3])]);
   assert.equal(narrow.directionChanges, 0);
   assert.ok(narrow.maxSpeed < 1e-8, `stationary camera changed position: ${narrow.maxSpeed}`);
+  assert.ok(narrow.minimumBoomLength > base.length() - 0.05, 'Raise the camera above a courtyard instead of zooming in');
+
+  const walls = [box([1,0,-8],[8,40,8]), box([-8,0,-8],[-1,40,8]),
+    box([-8,0,1],[8,40,8]), box([-8,0,-8],[8,40,-1])];
+  const roofed = [...walls, box([-8,16,-8],[8,18,8])];
+  const confined = run('roofed enclosure opens intermittently then stays clear', fps,
+    () => new THREE.Vector3(0,12,0), 12,
+    t => (t >= 3 && t < 3.4 || t >= 4 && t < 4.4 || t >= 5.4) ? walls : roofed);
+  assert.ok(confined.initialBoomLength < 5, 'Only retract when full-radius views are enclosed');
+  assert.ok(confined.firstExtensionAt >= 6.6, 'Short openings must not trigger repeated extension');
+  assert.ok(confined.boomLength > base.length() - 0.1, 'Restore normal distance after sustained clearance');
+  assert.ok(confined.maximumAcceleration < 140);
+  assert.equal(confined.emergencyClamps, 0);
+  assert.equal(confined.sweepClamps, 0);
 }
 const shortPreview = run('short confirmed preview', 60,
   t => new THREE.Vector3(0, 12, 12 - 3 * t), 12,

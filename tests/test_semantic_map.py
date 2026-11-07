@@ -19,8 +19,8 @@ class SemanticCampusMapTests(unittest.TestCase):
         self.context = self.scenario.to_dict()
         self.points = {item["id"]: item for item in self.context["points_of_interest"]}
 
-    def test_public_catalog_contains_only_two_supported_maps(self):
-        self.assertEqual(set(SCENARIOS), {"urban_crossing", "semantic_campus"})
+    def test_public_catalog_contains_supported_maps(self):
+        self.assertEqual(set(SCENARIOS), {"urban_crossing", "semantic_campus", "visual_garden"})
         self.assertEqual({item["id"] for item in list_scenarios()}, set(SCENARIOS))
         urban = load_scenario("urban_crossing")
         self.assertEqual(urban.mission_mode, "navigation")
@@ -35,6 +35,11 @@ class SemanticCampusMapTests(unittest.TestCase):
                 load_scenario(removed)
 
     def test_public_catalog_has_campus_capabilities_without_hidden_sensor_values(self):
+        model_catalog = json.dumps(task_catalog(self.scenario), ensure_ascii=False)
+        # Browser recommendations and appearance metadata must not reveal the
+        # answer to a search before the image model sees any sensor frames.
+        for hidden in ("landmarks", "species", "ring_sculpture", "#c93930", "recommended_tasks"):
+            self.assertNotIn(hidden, model_catalog)
         self.assertTrue({
             "home", "conference", "library", "teaching", "exhibition", "research_one",
             "research_two", "laboratory", "stadium", "east_gate", "north_teaching",
@@ -78,6 +83,8 @@ class SemanticCampusMapTests(unittest.TestCase):
                 self.assertEqual(point["label"], place["label"])
                 self.assertEqual(point["position"], place["position"])
                 self.assertEqual(checker.validate_waypoint(point["position"]), [])
+                if place["id"] != "home":
+                    self.assertGreater(point["position"]["z"], self.scenario.min_altitude)
                 if place["building_ids"]:
                     self.assertNotEqual(place["label_position"], place["position"])
         self.assertEqual({point["id"] for point in self.points.values()

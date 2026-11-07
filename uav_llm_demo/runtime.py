@@ -2,12 +2,24 @@ from typing import Protocol
 from .motion import VehicleState
 
 
-class RuntimeCapabilityError(RuntimeError):
-    pass
+CONTROL_LEASE_SECONDS = 0.3
+MAX_FEEDBACK_GAP_SECONDS = 1.0
 
 
 class RuntimeUnavailableError(RuntimeError):
     pass
+
+
+class StaleFeedbackError(RuntimeUnavailableError):
+    """Motion must brake until a newly sampled position is available."""
+
+
+class RuntimeStateError(RuntimeError):
+    """An operation conflicts with vehicle/world state; the message is public."""
+
+    def __init__(self, error_code: str, message: str):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class SimulationRuntime(Protocol):

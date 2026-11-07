@@ -1,9 +1,10 @@
 # UAV LLM 决策 Demo
 
-项目包含两种单无人机演示：
+项目包含三种单无人机演示：
 
 - **Urban Crossing**：保留 Mock / DeepSeek 两种航点规划方式，飞到随机远端终点，再返航。
 - **北航杭州国际校园**：参考校园航拍与导览图重建，输入自然语言，由 DeepSeek 生成任务与空间运动程序；本地规划、连续轨迹跟踪和避障负责执行，不提供 Mock 任务模式。
+- **视觉验证花园**：树木、垃圾桶、长椅与遮挡墙组成的小场景，复用语言任务框架，可由 Gazebo＋PX4 SITL 执行真实仿真飞行和 RGB-D 观测。
 
 校园任务可自由描述目标、飞行形状、方向、朝向、条件和循环，也可在飞行中修改任务。未指定的参数采用默认值：按地点选择作业高度，巡检 2 秒、热检查 3 秒、模拟采样 1 秒、通用停留 2 秒；明确指定的受支持参数优先。结束位置及降落或悬停状态由任务决定，不再自动添加返航。地点不明、缺少能力或要求冲突时才提示补充或调整。
 
@@ -13,16 +14,18 @@ DeepSeek API 模式下的 Urban Crossing 实际飞行画面（HTML Simulation）
 
 ```text
 Urban Crossing: Mock / DeepSeek → 航点
-校园任务: 自然语言 → DeepSeek 任务与运动程序 → 本地空间编译 / 转场规划
-                                         ↓
-                   安全检查 → 连续控制与避障 → Runtime
-                                         ↓
-                    轨迹覆盖 / 目标状态 / 观测记录 → 下一任务或 DeepSeek 评估
+校园任务: 自然语言 → 独立任务要求 → 原文审查 → 任务与运动程序
+                                              ↓
+                     本地空间编译 / 转场规划 → 安全检查 → 控制与避障 → Runtime
+                                              ↓
+                      轨迹 / 状态 / 观测证据 → 契约验收、下一任务或执行复核
 ```
 
 ## Runtime
 
-`HTML Simulation` 是默认模式。它不启动 Unreal、不连接 `41451`，由 `TrajectoryController` 以 50 ms 控制周期连续更新位置、速度和加速度，适合开发 Planner、观察决策日志和验证任务逻辑。
+`HTML Simulation` 是默认模式，由 `TrajectoryController` 以 50 ms 控制周期连续更新位置、速度和加速度，适合开发 Planner、观察决策日志和验证任务逻辑，无需启动外部仿真程序。
+
+运行后端只保留 **HTML** 与 **Gazebo＋PX4**。HTML 用于快速调试、任务逻辑回归和离线模型回复回放；视觉识别、目标定位、飞行执行及恢复能力的主要研究实验使用 Gazebo＋PX4。两类结果分别报告，HTML 成功不能作为物理飞行成功的证据。Gazebo 支持校园、视觉验证花园与批量校园语义基准，动态鸟群与风场尚未迁入；启动与验收见下文。
 
 无人机从基地地面（z=0）启动，先垂直爬升，再执行三维航路；返航先到基地上空，再垂直下降，低速到达地面才完成任务。巡航高度为 10–50 米，低于 10 米的运动限于半径 0.75 米的已验证垂直通道：Urban Crossing 使用基地通道，校园可从共享地表与障碍几何解析其他起降或低空停留位置。两张地图均允许按建筑约束爬升、下降或绕行；园区作业点使用默认高度，指定高度上限时可降低楼外作业高度，并重新检查路线安全性。控制器限制爬升 2 米/秒、下降 1 米/秒；这是仿真参数，不代表真实机型性能。
 
@@ -42,21 +45,15 @@ Urban Crossing 终点的实际高度处显示金色星星与光环。后端确�
 
 HTML 飞行保护启用后，`metrics.collision_or_separation_events` 根据连续控制采样间的相对运动检查 UAV 与鸟类安全包络是否重叠，同一次持续重叠只计一次，不再搜索决策文本。`min_dynamic_clearance_m` 为最小包络净距，负值表示间距违规，并不等于已确认的网格模型物理碰撞；未测量时为 `null`。`evaluation.dynamic_incidents` 保留最近 100 次事件的鸟类编号、任务时间和净距，累计计数不受截断影响。页面事件列表在 Reset 后清除；通过 `app.py` 启动时，运行记录异步写入 `logs/mission_runs.jsonl`，可按 `run_id` 复盘，详见下方评测说明。
 
-点击 Start 后启用本地保护：暂停任务、等待 API 或 Planner 连续失败时仍可主动躲避来袭鸟类，但不擅自继续已暂停/失败的任务。Reset、任务完成及飞控/连接故障会解除保护。短暂相遇只进行本地轨迹重规划，不消耗 API；局部避障期间剩余路线长度连续 8 秒无明显改善才请求高层重规划，动态事件调用间隔至少 10 秒，网络故障按 2、4、8、16、30 秒退避并持续重试；重复不安全路线保留拒绝航段与次数，要求更换走廊，重试间隔最多 10 秒。均不设尝试次数上限，直到成功或手动暂停、Reset。找不到无碰撞轨迹时显示红色 best-effort 告警并选择风险较低且不穿建筑的运动，不能保证任意突发情况绝对无碰撞。这是有限时域仿真避障，不是真机安全认证。AirSim 尚未接入鸟类遥测，不使用 HTML 鸟类冒充其障碍物。
+点击 Start 后启用本地保护：暂停任务、等待 API 或 Planner 连续失败时仍可主动躲避来袭鸟类，但不擅自继续已暂停/失败的任务。Reset、任务完成及飞控/连接故障会解除保护。短暂相遇只进行本地轨迹重规划，不消耗 API；局部避障期间剩余路线长度连续 8 秒无明显改善才请求高层重规划，动态事件调用间隔至少 10 秒，网络故障按 2、4、8、16、30 秒退避并持续重试；重复不安全路线保留拒绝航段与次数，要求更换走廊，重试间隔最多 10 秒。均不设尝试次数上限，直到成功或手动暂停、Reset。找不到无碰撞轨迹时显示红色 best-effort 告警并选择风险较低且不穿建筑的运动，不能保证任意突发情况绝对无碰撞。这是有限时域仿真避障，不是真机安全认证。
 
-`AirSim Validation` 是 Urban Crossing 的可选模式；园区的观测技能目前仅支持 HTML 仿真。启动 Blocks 后，在同一页面切换即可。切换 Runtime 会停止自动运行并从基地重置任务，不会把 HTML 中途状态同步给 AirSim。连接失败时仍保留当前 HTML Runtime 和任务状态。
+`Gazebo + PX4` 用于校园与视觉验证花园，实际飞行由 PX4 SITL 和 Gazebo 执行，网页显示遥测、决策和机载图像。相机通过 Gazebo 传输获取同步 RGB-D，不需要浏览器参与图像生成。外部场景尚不包含 HTML 鸟群，不能将本地鸟类作为其真实观测。
 
-AirSim 模式下，浏览器 Three.js 只保留静态任务地图、目标和基地，不显示 UAV、动态飞行物，也不回放 AirSim 返回的轨迹。实际飞行只发生在 Blocks 中；浏览器继续显示 AirSim 遥测、Planner 决策和执行结果。HTML 与 AirSim 是同一个控制层的两个 Runtime，不是先执行 HTML 再同步到 AirSim。
+`Urban Crossing` 使用 40×40 格（117×117 米）的任务地图，保留近端街区，并向远端扩展为 32 个地块、4 个十字路口；道路、街树、建筑和安全检查使用相同场景数据。起终点以同色的透明方形光柱标记，可透过建筑辨认位置。HTML 使用高低错落的现代楼群（最高 65 米），包括矩形、圆柱塔楼及局部斜撑立面，配合细密窗格、屋顶设备、道路纹理和暖色侧光；街树低于最低飞行高度。建筑造型及屋顶细节均限制在共享障碍包围体内，圆柱的碰撞检查采用保守包围体；任务边界外的楼群只作视觉背景。水平每格 3 米，高度每层 5 米。
 
-AirSim 会执行 NED 路径并返回位置、姿态、线速度、角速度、线加速度和角加速度。短航段速度上限、实际位置重定基准和稳定到达判定由 `airsim_runtime.py` 负责。重置后先等待机体静止；基地半径 0.75 米范围内不超过 10 厘米的 Unreal 地面接触误差在控制坐标中归零，原始 NED 遥测仍保留，其他位置及超出容差的负高度仍由安全检查拒绝。
+HTML 中 UAV 和鸟类共用仿真时钟，页面只读取快照；暂停任务或等待 API 时，控制循环仍更新交通和本地保护。慢帧最多推进 0.1 仿真秒，因此两者一起减慢；超过 0.3 秒记录延迟而不中断 HTML 任务，Gazebo/PX4 保留超时保护。页面分别显示去程到达、返航完成和重试状态；只有实际位置及速度满足条件才确认任务阶段。
 
-`Urban Crossing` 使用 40×40 格（117×117 米）的任务地图，保留近端街区，并向远端扩展为 32 个地块、4 个十字路口；道路、街树、建筑和安全检查使用相同场景数据。起终点以同色的透明方形光柱标记，可透过建筑辨认位置。HTML 使用高低错落的现代楼群（最高 65 米），包括矩形、圆柱塔楼及局部斜撑立面，配合细密窗格、屋顶设备、道路纹理和暖色侧光；街树低于最低飞行高度。建筑造型及屋顶细节均限制在共享障碍包围体内，圆柱的碰撞检查采用保守包围体；任务边界外的楼群只作视觉背景。AirSim 仍按 `scene_layout.py` 将同一占地单元显示为简化方盒，实际联调方法见下方 AirSim 说明。水平每格 3 米，高度每层 5 米。
-
-切入 AirSim 或切换场景时，程序用 Windows Blocks 的 Cube 资源生成地图并加载纯色贴图。共享地图位于 NED `(500, 500, -100)` 的独立区域，避免与原装 Blocks 建筑重叠；飞行指令和遥测统一加减该偏移。Reset 将无人机放回该地图基地。原装 Blocks 地图保留，仅更新 `UAVDemo_` 前缀的对象。Flask 在 WSL 运行，贴图写入 Windows 的 `%LOCALAPPDATA%\UAV_LLM\AirSim\textures`，经路径转换交给 Blocks 读取；资源准备成功后才替换场景。动态飞行物的真实 Unreal 运动/碰撞仍属于独立功能，不由静态地图统一提供。
-
-HTML 中 UAV 和鸟类共用仿真时钟，页面只读取快照；暂停任务或等待 API 时，控制循环仍更新交通和本地保护。慢帧最多推进 0.1 仿真秒，因此两者一起减慢；超过 0.3 秒记录延迟而不中断 HTML 任务，AirSim 保留超时保护。页面分别显示去程到达、返航完成和重试状态；只有实际位置及速度满足条件才确认任务阶段。
-
-Follow UAV 使用带时间戳的实际控制采样，画面缓冲约 0.35 秒后连续播放，无人机、鸟类和已飞轨迹同步；这个延迟仅影响显示，控制与避障仍使用实时状态。断流时不外推未知运动，重连缺失整段轨迹时重新同步。轨迹按实际折线增量绘制，镜头利用已收到的后续采样提前避让建筑，并检查视线与移动路径，避免楼角突然拉近。
+Follow UAV 使用带时间戳的实际控制采样，画面缓冲约 0.35 秒后连续播放，无人机、鸟类和已飞轨迹同步；这个延迟仅影响显示，控制与避障仍使用实时状态。断流时不外推未知运动，重连缺失整段轨迹时重新同步。镜头优先保持距离，利用已收到的后续采样提前绕转或抬高，检查视线、转动弧线和实际移动路径；空间不足时才收近，持续开阔且转向稳定后再恢复远景。转向和距离变化均限制速度与加速度。
 
 ## 安装（WSL）
 
@@ -76,7 +73,7 @@ bash scripts/setup_wsl.sh
 
 已有仓库时，直接进入仓库目录运行 `bash scripts/setup_wsl.sh`。Linux 环境位于项目内 `.venv`，无需手动激活。VS Code 使用“WSL: Open Folder in WSL”打开该目录，解释器选择 `.venv/bin/python`。
 
-## 启动（WSL）
+## 启动与停止（WSL）
 
 在 WSL 终端进入克隆的仓库目录（若克隆在其他位置，请使用实际目录）：
 
@@ -86,6 +83,24 @@ bash scripts/start_demo.sh
 ```
 
 打开 [http://127.0.0.1:5000](http://127.0.0.1:5000)，保持启动终端打开。若提示 5000 已被占用，先停止原服务再启动。
+
+**停止纯网页 / HTML 仿真**：在另一个 WSL 终端执行，无需查询 PID；在原启动终端按 Ctrl+C 也可停止。
+
+```bash
+cd ~/projects/UAV_LLM
+bash scripts/stop_demo.sh --web-only
+```
+
+**一键停止整个项目的仿真服务**（网页服务、Gazebo 原生窗口/服务端和 PX4）：
+
+```bash
+cd ~/projects/UAV_LLM
+bash scripts/stop_demo.sh
+```
+
+脚本按当前仓库路径和启动方式识别同一 WSL 用户的进程，支持自定义网页端口；不会按端口或进程名批量关闭其他项目。先请求正常退出，最多等待 10 秒，再强制结束仍未退出的项目进程；重复执行安全，未启动时直接提示。
+
+`bash scripts/stop_demo.sh --dry-run` 可仅查看将停止的进程。停止会中断当前任务，不会自动返航或生成完成证据；日志保留，浏览器标签页需自行关闭。
 
 ### 页面操作
 
@@ -109,11 +124,11 @@ DeepSeek 可组合共享边界、参数曲线和相对折线路径，设置速�
 
 修改任务时先制动并保持本地避障，DeepSeek 结合当前位置、原任务和已完成记录解释新的剩余任务；校验通过后切换，保留位置、轨迹、电量、交通时间及历史记录。新要求不可执行时安全等待，旧任务不会自动继续；迟到的旧回复不能覆盖新指令。普通航段重规划、轨迹跟踪及循环执行在本地完成；任务需要依据新观测作进一步判断时，执行评估节点会调用 DeepSeek 更新剩余程序，并保留完整的未完成要求、顺序、次数、条件和安全约束。
 
-完成记录绑定任务、步骤、无人机、地点和仿真时间：观测动作须实际到达并满足驻留要求，运动动作须验证规定轨迹的覆盖进度，整项任务须通过独立任务契约验收：所需动作、条件分支、循环、轨迹及结束状态全部有执行证据，不能仅靠到达终点判成功。自主复核遗漏要求会自动纠错，用户主动修改任务则建立新契约。热读数是执行到现场后生成的仿真数据，模拟拍照保存结构化观测记录，**不生成照片，也不执行真实视觉识别或热成像**。初始提示不包含隐藏观测结果；已完成的历史证据会保留，暂停/偏离观测点会重新计时当前驻留。当前只有 `uav-1`，尚未实现多机分配。
+完成记录绑定任务、步骤、无人机、地点和仿真时间：观测动作须实际到达并满足驻留要求，运动动作须验证规定轨迹的覆盖进度，整项任务须通过独立任务契约验收：所需动作、条件分支、循环、轨迹及结束状态全部有执行证据，不能仅靠到达终点判成功。首次任务和用户修改先独立提取、审查原文要求，再生成计划；遗漏要求的计划会被拒绝并纠错。用户未限定的执行参数可调整，自主复核复用已核查要求。默认计划阶段由模型主动查询几何、试算并提交候选，详见[工具规划流程](docs/task-program.md)。首次解析至少包含要求提取和审查，规划调用数按实际工具轮次计量，来源覆盖与模型审查仍不能保证任意自然语言都无漏项。热读数仍是仿真数据，传统模拟采样保存结构化记录；外观寻找与接近使用新的 `visual` 节点，通过机载 RGB、同帧深度和模型反馈执行，详见[机载观测与持续反馈](docs/task-program.md#机载观测与持续反馈)。这不代表真实热成像或物理相机验收。初始提示不包含隐藏观测结果；已完成的历史证据会保留，暂停/偏离观测点会重新计时当前驻留。当前只有 `uav-1`，尚未实现多机分配。
 
 ## Agent
 
-Urban Crossing 默认使用离线 `mock`，DeepSeek 可驱动 HTML 或 AirSim；园区固定使用 DeepSeek 解释任务和 HTML 执行。
+Urban Crossing 默认使用离线 `mock`；园区固定使用 DeepSeek 解释任务。现有地图均可使用 HTML，校园和视觉验证花园还可选择 Gazebo＋PX4 执行。
 
 点击工具栏 **API 设置**，选择 DeepSeek 官方或阿里云百炼，填写对应 Key，读取模型列表后选择模型并保存。接口地址自动填写，业务空间地址等特殊配置在“高级设置”中修改。配置失败后可直接修改重试，无需重启；更换配置后重新提交任务即可。
 
@@ -158,24 +173,24 @@ POST /api/mission/task   园区提交自然语言任务：{"instruction":"..."}
 POST /api/mission/plan   Urban Crossing 请求一次 waypoint 规划
 POST /api/mission/start  开始或继续连续飞行控制循环
 POST /api/mission/goal   Urban Crossing 更新目标并触发重规划
-GET  /api/scenarios      列出两张地图、园区地点及推荐任务
+GET  /api/scenarios      列出地图、任务地点及推荐任务
 POST /api/scenario       切换地图并重置任务
 POST /api/reset          重置当前 Runtime 和任务
-POST /api/runtime        切换 html 或 airsim，并从基地重置
+POST /api/runtime        切换 html 或 gazebo，并从基地重置
 POST /api/runtime/stop   暂停任务并减速；已启用的本地碰撞保护继续工作
-POST /api/runtime/wind   设置 AirSim NED 风速；HTML 返回 HTTP 409
+POST /api/runtime/wind   已移除；旧客户端收到 HTTP 410，不改变当前任务
 POST /api/config         页面 Agent 切换控件使用的内部接口；日常操作无需手动调用
 ```
 
-AirSim 切换请求示例：
+Gazebo 切换请求示例：
 
 ```json
 {
-  "backend": "airsim",
+  "backend": "gazebo",
   "config": {
-    "port": 41451,
-    "vehicle_name": "Drone1",
-    "wind_ned": {"north": 0, "east": 0, "down": 0}
+    "port": 14540,
+    "vehicle_name": "x500_rgbd_0",
+    "world": "semantic_campus"
   }
 }
 ```
@@ -199,7 +214,7 @@ node scripts/verify_follow_camera.cjs
 
 ## 评测与复盘
 
-校园语义任务基准使用人工标注的要求，独立检查巡检、顺序、次数、条件、实际环绕轨迹和结束状态；离线运行不会调用 API，也不操作当前服务：
+校园语义任务基准使用独立编写的要求，检查巡检、顺序、次数、条件、实际环绕轨迹和结束状态；离线运行不会调用 API，也不操作当前服务：
 
 ```bash
 .venv/bin/python scripts/run_semantic_benchmark.py
@@ -217,29 +232,73 @@ node scripts/verify_follow_camera.cjs
 
 每轮记录完成证据、延迟、调用量、场景种子及源码指纹。配对比较、离线响应回放和可选费用估算见 [评测与运行日志](docs/evaluation-and-recovery.md)。
 
-## 可选：WSL 连接 Windows Blocks
+## Gazebo＋PX4 SITL
 
-Blocks 保留在 Windows；Flask、Python 和测试统一在 WSL。先安装可选依赖：
-
-```bash
-bash scripts/setup_wsl.sh --airsim
-bash scripts/start_airsim.sh
-.venv/bin/python scripts/verify_airsim.py
-```
-
-启动器读取 Windows `Documents/AirSim/settings.json`，在 `%LOCALAPPDATA%\UAV_LLM\AirSim\settings-wsl.json` 生成专用配置，保留原文件。NAT 模式仅监听当前 WSL 虚拟网卡，镜像网络使用 localhost；不绑定所有网卡。Blocks 路径不同时，可向启动器传入 `-BlocksExe 'C:\path\to\Blocks.exe'`。启动器仅支持 SimpleFlight 仿真。
-
-如 Windows 防火墙拦截，仅针对实际 Blocks 程序、TCP 41451、`vEthernet (WSL)` 和 `LocalSubnet` 添加入站许可；管理员操作独立于正常启动，脚本不会自动修改防火墙。不要向 Wi-Fi 或其他局域网接口开放该端口。
-
-后端和连接面板使用同一默认地址；可用 `AIRSIM_HOST`、`AIRSIM_PORT`、`AIRSIM_VEHICLE_NAME` 覆盖。Host 仅接受本机或当前 WSL 的 Windows 网关。共享贴图默认由 WSL 写入 `/mnt/c/.../AppData/Local/UAV_LLM/AirSim/textures`，Blocks 收到对应的 `C:\...` 路径；也可设置 `AIRSIM_TEXTURE_DIR` 为 Windows 挂载目录，不能使用 Linux 私有临时目录。
-
-`verify_airsim.py` **只读检查** RPC、车辆、遥测和 Cube 资源，不解锁、不起飞、不移动。通过后在页面切换 `AirSim Validation` 才会加载共享地图并重置仿真无人机；点击 Start 才执行飞行任务。地图和贴图加载可单独验证：
+以下命令均在 WSL Ubuntu 24.04 终端执行。首次使用时安装 Gazebo Harmonic、PX4 v1.17.0 与 Python 依赖；已安装可跳过：
 
 ```bash
-.venv/bin/python scripts/verify_shared_scene.py
+cd /home/kyrie/projects/UAV_LLM
+bash scripts/setup_gazebo.sh
 ```
 
-此流程仅面向 Windows Blocks 仿真，不连接真实无人机。校园任务仍使用 HTML 仿真。
+**终端 1：启动 Gazebo 原生窗口和 PX4 SITL。**
+
+```bash
+cd /home/kyrie/projects/UAV_LLM
+UAV_GZ_HEADLESS=0 bash scripts/start_gazebo.sh semantic_campus
+```
+
+**终端 2：启动网页服务。**
+
+```bash
+cd /home/kyrie/projects/UAV_LLM
+bash scripts/start_demo.sh
+```
+
+浏览器打开 [http://localhost:5000](http://localhost:5000)，网页选择“北航杭州国际校园”，再选择 **Gazebo**，等待连接成功后下达任务。运行期间保持两个终端打开；将 Gazebo 原生窗口与浏览器并排，即可同时观察物理仿真和任务状态。小场景仍可用 `bash scripts/start_gazebo.sh visual_garden` 启动，网页相应选择“视觉验证花园”。
+
+**停止**：另开一个 WSL 终端执行 `cd ~/projects/UAV_LLM`，然后执行 `bash scripts/stop_demo.sh` 一起关闭网页与 Gazebo＋PX4；若要保留网页、只关闭原生仿真：
+
+```bash
+bash scripts/stop_demo.sh --gazebo-only
+```
+
+`bash scripts/start_gazebo.sh` 不传场景参数时也默认启动校园。网页选择地图只改变任务场景，不会替换正在运行的 Gazebo 世界，两边必须一致。若 Gazebo 当前显示小花园而网页选择校园，连接会因缺少校园遥测而失败。更换世界时，先确认无人机已降落并解除武装，在网页切回 **HTML**，然后运行 `bash scripts/stop_demo.sh --gazebo-only`（或在终端 1 按 Ctrl+C）停止旧世界，使用目标场景参数重新启动；网页选择同名地图后再连接 **Gazebo**。网页服务可继续运行。
+
+校园使用现有布局及 Three.js 建筑、树木、垃圾桶等模型：首次启动自动导出并按材质合批，源文件变化后重建，后续使用缓存。首次导出需要 `npm ci` 和 `npx playwright install chromium --only-shell`（安装脚本已包含）。Gazebo 视觉模型复用网页网格；碰撞使用规划器同源的保守实体包围体，不支持建筑内部穿行。小花园继续读取 `simulation/scenes/visual_garden.json`。对象身份不作为视觉识别答案发送给模型，HTML 功能继续保留。
+
+无窗口运行设置 `UAV_GZ_HEADLESS=1`；仍需支持 Ogre2 的图形驱动。启动脚本只创建当前会话的进程，Ctrl+C 停止。PX4 和 Gazebo 的日志分别位于 `logs/px4.log` 与 `logs/gazebo.log`。实际测得的相机姿态和同步 RGB-D 用于定位；姿态、深度或时间不匹配时拒绝完成证据。
+
+上层轨迹跟踪和验收使用 Gazebo 发布的物理位姿，与相机和场景共用世界坐标；PX4 的 EKF 继续用于自身飞控，原始高度及速度估计单独保留。这里使用仿真真值定位，尚不是视觉里程计或实机定位验证。视觉模型只读取图像，粗定位先触发数字裁切聚焦，复核可见表面后再接近；原生图像校验在相机线程完成，像素数据只读共享，避免阻塞飞行控制。
+
+Gazebo 控制器根据实测速度和到航点的剩余距离减速。任务修改、网页响应或规划计算可能让上层控制循环延迟。速度指令超过 0.3 秒未续发，或位姿、世界时钟超过 0.25 秒未更新时，适配器独立向 PX4 请求刹停。恢复时会按顺序检查延迟期间记录的飞行路段，轨迹安全且反馈新鲜就继续当前任务；实测越界或连续 1 秒缺少可核查的反馈才会因该保护停止。
+
+日志中 `control_delayed` 记录调度间隔与等待控制锁的时间。`telemetry.control_timing` 记录位姿采样时间、发送指令时的世界时间及 PX4 最近报告的控制时间。`control_safety_blocked` 区分预测越界与实测越界，校园 10 米巡航下限只在已验证的起降区域内允许例外。
+
+Gazebo 转场选路优先在障碍安全边界之外再预留 0.8 米跟踪余量。可选捷径也必须留出这段余量，不能为了抄近提前跳过爬升航点。狭窄目标仍可按原安全边界规划和检查。
+
+速度设定值由独立线程持续发送，过期命令归零；LLM 等待不会中断底层控制。Reset 要求无人机已在基地落地并解除武装；空中暂停只保持悬停，需继续任务或下达返航降落指令后才能重置。被拒绝的重置和场景切换不改变当前执行状态，页面会说明具体原因。外部后端不支持的能力会明确拒绝，不能用本地模拟结果冒充。
+
+降落使用经过几何验证的 0.75 米半径通道，水平纠偏独立于下降限速；横向偏差和制动距离接近通道余量时先减缓或暂停下降，居中后继续。执行与避障试算共用该控制逻辑。安全故障保留首次原因和越界坐标，停止任务后继续更新实测遥测；悬停或停止发出运动指令不代表已落地，完成仍要求 PX4 确认落地并解除武装。
+
+普通转场沿已验证航段选择有限距离的前视点，避免长航段削弱高度和横向偏差修正；航段的坡度、终点与安全门槛不变。到达后持续保持目标位置，直到停留、机头朝向或原生落地条件完成；小幅漂移重新跟踪原终点，等待新规划时保持实测位置。
+
+先验证实际起降和 RGB-D 标定，再运行配置在 `.env` 中的语言、视觉模型：
+
+```bash
+.venv/bin/python scripts/verify_gazebo.py --managed --scene semantic_campus --control-only --output artifacts/gazebo-control.json
+.venv/bin/python scripts/verify_gazebo.py --managed --scene semantic_campus --instruction '到西侧花园寻找蓝色垃圾桶，接近到12米内，从机载图像确认并定位后返航降落。' --oracle-target campus_fixture_F14 --output artifacts/gazebo-visual.json
+```
+
+运行上述独立验收前关闭终端 1 的 Gazebo 会话，并将网页切回 HTML；`--managed` 自动启动对应世界并在结束时关闭，仅操作自己的进程。第二条会调用模型。验收检查两次独立图像确认、定位点到目标几何的距离、任务契约、安全记录及 PX4 落地和解除武装状态；目标真值只供评分。几何距离为零表示定位点落在目标包围体内部或表面，不代表定位误差为零。每次使用新的输出路径，同一控制端口仅允许一个任务控制器。
+
+校园批量语义任务使用同一份要求、计划和评分器，Gazebo 为每例重启独立世界，支持异地降落和失败后的隔离，不会把上一例的位置带入下一例：
+
+```bash
+.venv/bin/python scripts/run_semantic_benchmark.py --runtime gazebo --mode realtime --split all --max-calls 8 --simulation-budget 900 --wall-budget 900 --output artifacts/campus-px4.json
+```
+
+默认回复为离线夹具，但飞行由 Gazebo＋PX4 实际执行；加入 `--backend deepseek --max-calls 20` 才调用真实语言模型。日志目录保存在每例结果的 `simulator_logs` 中；时钟、真实位姿、模型指纹和最终落地状态同时记录。`inspect`、热检查和普通 `capture` 仍是任务级模拟观测，原生视觉识别由 `visual` 动作及 Gazebo RGB-D 完成。动态鸟群和风场尚未迁入，Gazebo 基准明确拒绝 `--traffic fixed`；未进行实飞验证。
 
 ## 项目结构
 
@@ -248,17 +307,21 @@ bash scripts/start_airsim.sh
 ```text
 uav_llm_demo/mission_service.py  任务生命周期、控制循环和重规划调度
 uav_llm_demo/agents.py           几何规划与 DeepSeek 航路/语义接口
-uav_llm_demo/semantic_tasks.py   任务契约、条件步骤与仿真执行证据
+uav_llm_demo/semantic_tasks.py   条件步骤与仿真执行证据
+uav_llm_demo/task_requirements.py  独立任务要求、原文覆盖与审查协议
+uav_llm_demo/task_contract.py    要求匹配、执行绑定与完整任务验收
 uav_llm_demo/spatial_motion.py   通用空间运动表达、共享几何与轨迹编译
 uav_llm_demo/semantic_navigation.py 任务约束、所有分支的可达性预检
 uav_llm_demo/safety.py           waypoint 和连续路径安全检查
 uav_llm_demo/motion.py           waypoint 管理、速度/加速度限制和重规划判定
 uav_llm_demo/avoidance.py        本地预测避障、短程绕行和危险缓解
-uav_llm_demo/runtime.py          HTML/AirSim 的统一连续运动契约
+uav_llm_demo/runtime.py          HTML 与 Gazebo/PX4 的统一连续运动契约
 uav_llm_demo/html_runtime.py     默认连续运动执行器
-uav_llm_demo/airsim_runtime.py   AirSim RPC、NED 映射和遥测适配
+uav_llm_demo/task_observation.py 独立任务世界、读数与有效事实
+uav_llm_demo/gazebo_runtime.py   PX4 速度指令、遥测与时钟适配
+uav_llm_demo/gazebo_camera.py    Gazebo RGB-D、相机姿态与像素定位
 uav_llm_demo/environment.py      三维任务、建筑和动态飞行物
 uav_llm_demo/static/             Three.js 场景和 Runtime 切换 UI
-scripts/                         Flask、AirSim 启停和联机验证脚本
+scripts/                         Flask、Gazebo/PX4 启停和联机验证脚本
 tests/                           Runtime、服务、API、飞控和界面契约测试
 ```

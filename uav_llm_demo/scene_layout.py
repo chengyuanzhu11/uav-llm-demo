@@ -1,30 +1,10 @@
-"""Shared metric geometry for the browser and Unreal scene."""
+"""Shared metric geometry for the browser scene."""
 
 from .scenarios import ScenarioDefinition
-from pathlib import Path
-import struct
-import zlib
-from .airsim_connection import texture_directory, windows_path
+from .simulation_scene import load_scene, scene_boxes
 
 METERS_PER_CELL = 3.0
 METERS_PER_LEVEL = 5.0
-AIRSIM_ORIGIN = (500.0, 500.0, -100.0)
-
-
-def color_texture(color: str, folder: Path | None = None) -> str:
-    folder = folder if folder is not None else texture_directory()
-    path = folder / (color.lstrip("#") + ".png")
-    def chunk(kind, data):
-        return (struct.pack(">I", len(data)) + kind + data
-                + struct.pack(">I", zlib.crc32(kind + data)))
-    rgb = bytes.fromhex(color.lstrip("#"))
-    content = (b"\x89PNG\r\n\x1a\n"
-                     + chunk(b"IHDR", struct.pack(">IIBBBBB", 4, 4, 8, 2, 0, 0, 0))
-                     + chunk(b"IDAT", zlib.compress((b"\0" + rgb * 4) * 4))
-                     + chunk(b"IEND", b""))
-    if not path.is_file() or path.read_bytes() != content:
-        path.write_bytes(content)
-    return windows_path(path)
 
 
 def scene_layout(scenario: ScenarioDefinition) -> list[dict]:
@@ -39,10 +19,12 @@ def scene_layout(scenario: ScenarioDefinition) -> list[dict]:
     extent = 180 if scenario.urban_parcels and not campus else scenario.grid_size * METERS_PER_CELL + 22
     box("ground", half, half, -0.1, extent, extent, 1,
         "#8d9c80" if campus else "#a9b0a9" if scenario.urban_parcels else "#75945e")
+    if scenario.asset_scene:
+        return objects + scene_boxes(load_scene(scenario.asset_scene))
     if campus:
         layout = scenario.campus_layout or {}
-        # The detailed browser campus and this conservative Unreal export read
-        # the same source. Ground markings never introduce flight obstacles.
+        # Detailed architecture and conservative camera geometry read the same source.
+        # Ground markings never introduce flight obstacles.
         for item in layout.get("surfaces", []):
             left, right, north, south = item["footprint"]
             box("campus_" + item["id"].replace("-", "_"),

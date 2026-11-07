@@ -33,14 +33,13 @@ await loadScenarios();
 assert.equal(requests, 1);
 ''')
 
-    def test_runtime_selector_and_conditional_airsim_panel_exist(self):
+    def test_runtime_selector_and_conditional_gazebo_panel_exist(self):
         html = (ROOT / "uav_llm_demo/templates/index.html").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('data-runtime="html"', html)
-        self.assertIn('data-runtime="airsim"', html)
-        self.assertIn('id="airsimPanel"', html)
+        self.assertEqual(re.findall(r'data-runtime="([^"]+)"', html), ["html", "gazebo"])
+        self.assertIn('id="gazeboPanel"', html)
         self.assertIn('role="radiogroup"', html)
 
     def test_javascript_uses_only_the_runtime_api(self):
@@ -50,7 +49,7 @@ assert.equal(requests, 1);
 
         self.assertIn('"/api/runtime"', javascript)
         self.assertIn('"/api/runtime/stop"', javascript)
-        self.assertIn('"/api/runtime/wind"', javascript)
+        self.assertNotIn('"/api/runtime/wind"', javascript)
         self.assertNotIn("/api/simulator/", javascript)
         self.assertNotIn("simulator_backend", javascript)
         self.assertNotIn("state.simulator", javascript)
@@ -90,8 +89,8 @@ assert.equal(requests, 1);
             'data-agent="mock"',
             'data-agent="deepseek"',
             'id="agentDialog"',
-            'id="airsimDialog"',
-            'id="airsimConfigBtn"',
+            'id="gazeboDialog"',
+            'id="gazeboConfigBtn"',
             'data-stage="observation"',
             'data-stage="agent"',
             'data-stage="execution"',
@@ -123,7 +122,7 @@ assert.equal(requests, 1);
         self.assertNotIn("unpkg.com", html)
         self.assertNotIn("cdn.jsdelivr.net", html)
         self.assertIn('aria-label="API 设置"', html)
-        self.assertIn('aria-label="Configure AirSim"', html)
+        self.assertIn('aria-label="Configure Gazebo"', html)
         self.assertNotIn("Expand decision inspector", html)
 
     def test_javascript_exposes_focused_workbench_renderers(self):
@@ -625,6 +624,23 @@ assert.equal(agentConfigSaving,false);assert.equal(agentDialog.open,true);
           state.flight.running = true;
           pending = toggleMission(); release(); await pending;
           assert.equal(urls.at(-1), '/api/runtime/stop');
+          // Flight state conflicts stay actionable; raw transport/provider text stays private.
+          for (const code of ['runtime_requires_landed', 'runtime_requires_home', 'runtime_world_mismatch']) {
+            const error = Object.assign(Error('请先返航降落。'), {status:409, code});
+            assert.equal(await runCommand(async () => { throw error; }), false);
+            assert.equal(commandError, '请先返航降落。');
+            assert.equal(commandPending, false);
+          }
+          for (const [error, expected] of [
+            [Object.assign(Error('private-provider-detail'), {status:503, code:'runtime_unavailable'}), '仿真连接不可用'],
+            [Error('private-network-detail'), '无法连接本地服务'],
+            [Object.assign(Error('private-server-detail'), {status:500}), '操作未成功'],
+          ]) {
+            await runCommand(async () => { throw error; });
+            assert.ok(commandError.startsWith(expected));
+            assert.ok(!commandError.includes('private-'));
+            assert.ok(!commandError.includes('API'));
+          }
         """)
 
     def test_continuous_contract_has_no_legacy_step_or_replay_loop(self):
@@ -667,19 +683,19 @@ assert.equal(agentConfigSaving,false);assert.equal(agentDialog.open,true);
         self.assertIn("depthTest: false", trail)
         self.assertIn("mesh.renderOrder = 5", trail)
 
-    def test_airsim_runtime_does_not_replay_html_scene_motion(self):
+    def test_gazebo_runtime_displays_only_received_telemetry(self):
         javascript = (ROOT / "uav_llm_demo/static/app.js").read_text(
             encoding="utf-8"
         )
 
         self.assertIn(
-            'const htmlRuntimeActive = state.runtime_backend === "html";',
+            'const telemetryVisible = ["html", "gazebo"].includes(state.runtime_backend);',
             javascript,
         )
-        self.assertIn("uavGroup.visible = htmlRuntimeActive", javascript)
-        self.assertIn("bird.visible = htmlRuntimeActive", javascript)
-        self.assertIn('if (state.runtime_backend !== "html")', javascript)
-        self.assertIn('const frame = htmlRuntimeActive ? motionTimeline.sample(', javascript)
+        self.assertIn("uavGroup.visible = telemetryVisible", javascript)
+        self.assertIn("bird.visible = telemetryVisible", javascript)
+        self.assertIn('if (!["html", "gazebo"].includes(state.runtime_backend))', javascript)
+        self.assertIn('const frame = telemetryVisible ? motionTimeline.sample(', javascript)
         self.assertIn("if (uavGroup && frame)", javascript)
 
 

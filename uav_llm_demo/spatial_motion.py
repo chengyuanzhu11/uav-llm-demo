@@ -23,6 +23,34 @@ _MAX_VALUE = 100000.0
 class MotionConstraintError(ValueError):
     """A valid movement requirement conflicts with a known scene constraint."""
 
+    def __init__(self, message, **details):
+        super().__init__(message)
+        self.diagnostic = dict(code="motion_path_unsafe", path="$.steps", message=message, **details)
+
+
+def motion_flight_envelope(lower, upper, *, anchor=None):
+    """The actual path-reference bounds, including the reserved tracking corridor."""
+    bounds = [[value + PathFollower.CORRIDOR_M / SCALE[i] for i, value in enumerate(lower)],
+              [value - PathFollower.CORRIDOR_M / SCALE[i] for i, value in enumerate(upper)]]
+    metric = [[value * SCALE[i] for i, value in enumerate(row)] for row in bounds]
+    result = dict(flight_bounds_grid=[list(lower), list(upper)], trajectory_bounds_grid=bounds,
+                  trajectory_bounds_m=metric, tracking_corridor_m=PathFollower.CORRIDOR_M)
+    if anchor is not None:
+        result.update(anchor_grid=list(anchor), anchor_m=[value * SCALE[i] for i, value in enumerate(anchor)],
+                      relative_path_offset_bounds_m=[[(row[i] - anchor[i]) * SCALE[i] for i in range(3)] for row in bounds])
+    return result
+
+
+def motion_bound_violations(point, envelope):
+    low, high = envelope["trajectory_bounds_m"]
+    violations = []
+    for i, value in enumerate(point):
+        actual = value * SCALE[i]
+        if actual < low[i] - 1e-8 * SCALE[i] or actual > high[i] + 1e-8 * SCALE[i]:
+            violations.append(dict(axis="xyz"[i], actual_m=actual, minimum_m=low[i], maximum_m=high[i],
+                                   required_shift_m=(low[i] - actual if actual < low[i] else high[i] - actual)))
+    return violations
+
 
 @dataclass(frozen=True)
 class CompiledMotion:
@@ -30,6 +58,8 @@ class CompiledMotion:
     speed_mps: float
     heading: dict
     length_m: float
+    footprint_grid: tuple | None = None
+    target_binding: dict | None = None
 
 
 def _finite(value, lower=-_MAX_VALUE, upper=_MAX_VALUE):
@@ -173,6 +203,8 @@ def spatial_catalog(scenario):
         if geometry:
             item["center_grid"][:2] = list(geometry["center_grid"][:2])
             item["boundary_grid"] = deepcopy(geometry["boundary_grid"])
+            if "footprint_grid" in geometry:
+                item["footprint_grid"] = list(geometry["footprint_grid"])
             item["boundary_direction"] = "clockwise"
             item["boundary_min_altitude_m"] = max(
                 geometry["boundary_min_altitude_m"],
@@ -185,7 +217,7 @@ def spatial_catalog(scenario):
             "objects": objects, "limits": deepcopy(MOTION_LIMITS), "defaults": deepcopy(MOTION_DEFAULTS),
             "expressions": "numbers, t, pi, + - * / ** (constant integer 0..4), sin, cos",
             "path_kinds": {
-                "boundary": {"direction": "clockwise or counterclockwise", "laps": "integer 1..20",
+                "boundary": {"direction": "clockwise or counterclockwise", "laps": "number 0 < laps <= 20; fractional traversal measured by boundary arc length; partial paths stay open",
                              "altitude_m": "absolute metres; null uses boundary_default_altitude_m; ceiling below boundary_min_altitude_m is unavailable",
                              "end_altitude_m": "absolute metres; null holds altitude, otherwise interpolate through path"},
                 "curve": {"x": "relative metre expression", "y": "relative metre expression",
@@ -193,6 +225,7 @@ def spatial_catalog(scenario):
                           "samples": "optional minimum sample count; actual density also enforces derivative bound"},
                 "polyline": {"points_m": "2..2048 relative metre [east,south,up] vectors in required order"}},
             "heading_modes": {"tangent": "face travel direction",
+                              "face_reference": "face this action's confirmed target_ref point",
                               "fixed": "yaw_deg: zero north, 90 east, 180 south, -90 west; clockwise viewed from above",
                               "face_target": "target_id of a published spatial object"}}
 
@@ -221,7 +254,7 @@ def normalize_motion(motion, target_id, catalog, constraints, *, path="$.motion"
         if not obj.get("boundary_grid"):
             raise TaskProtocolError(f"{field}.path.kind", "unavailable_geometry", "This object has no published boundary; use curve or polyline with its spatial anchor.", allowed=["curve", "polyline"])
         path["direction"] = path.get("direction", MOTION_DEFAULTS["direction"])
-        path["laps"] = _integer(path.get("laps", MOTION_DEFAULTS["laps"]), 1, MOTION_LIMITS["max_laps"])
+        path["laps"] = _finite(path.get("laps", MOTION_DEFAULTS["laps"]), 0, MOTION_LIMITS["max_laps"])
         default = obj["boundary_default_altitude_m"]
         ceiling = constraints.get("max_altitude_m")
         if ceiling is not None:
@@ -249,7 +282,12 @@ def normalize_motion(motion, target_id, catalog, constraints, *, path="$.motion"
     elif kind == "polyline":
         points = path["points_m"]
         path["points_m"] = [list(_point(point)) for point in points]
-    return {"path": path, "speed_mps": speed, "heading": heading}
+    result = {"path": path, "speed_mps": speed, "heading": heading}
+    if "within_target" in motion:
+        if motion["within_target"] and not obj.get("footprint_grid"):
+            raise TaskProtocolError(f"{field}.within_target", "unavailable_geometry", "Target has no published footprint.")
+        result["within_target"] = motion["within_target"]
+    return result
 
 
 def _resample(points):
@@ -266,16 +304,31 @@ def _resample(points):
     return output
 
 
-def compile_motion(node, scenario, start, constraints):
+def curve_points(path):
+    """The exact relative samples used by compilation and requirement checks."""
+    expressions = [_Expression(path[axis]) for axis in "xyz"]
+    derivative = math.hypot(*(item.range_and_derivative(path["t_start"], path["t_end"])[2] for item in expressions))
+    intervals = max(path.get("samples", 256) - 1,
+                    math.ceil(derivative * (path["t_end"] - path["t_start"]) / _SAMPLE_DISTANCE_M))
+    if intervals + 1 > MOTION_LIMITS["max_points"]:
+        raise ValueError("Curve requires too many samples for its variation; reduce frequency, extent or repetitions.")
+    return [tuple(expression.at(path["t_start"] + (path["t_end"] - path["t_start"]) * i / intervals)
+                  for expression in expressions) for i in range(intervals + 1)]
+
+
+def compile_motion(node, scenario, start, constraints, *, evidence=()):
     """Generate bounded geometry in a worker; caller validates static reachability."""
     _point(start)  # Validate context without adding a shortcut from it to the task.
     spatial = spatial_catalog(scenario)
     motion = normalize_motion(node["motion"], node["target_id"], spatial, constraints)
     objects = {item["id"]: item for item in spatial["objects"]}
-    obj = objects[node["target_id"]]
+    from .observed_targets import bind_spatial_object
+    obj, binding = bind_spatial_object(node, objects[node["target_id"]], evidence)
     origin = list(obj["center_grid"])
     ceiling = constraints.get("max_altitude_m")
     path = motion["path"]
+    if binding is not None and path["kind"] == "boundary":
+        raise ValueError("An observed target point has no measured boundary.")
     if path["kind"] == "boundary":
         boundary = [tuple(p) for p in obj["boundary_grid"]]
         if boundary[0] != boundary[-1]:
@@ -283,7 +336,21 @@ def compile_motion(node, scenario, start, constraints):
         if path["direction"] == "counterclockwise":
             boundary.reverse()
         circuit = _resample([(x, y, path["altitude_m"] / SCALE[2]) for x, y in boundary])
-        points = circuit + [point for _ in range(path["laps"] - 1) for point in circuit[1:]]
+        perimeter = sum(metric_distance(a, b) for a, b in zip(circuit, circuit[1:]))
+        remaining = perimeter * path["laps"]
+        points = [circuit[0]]
+        # Traverse the measured boundary, retaining the exact fractional endpoint.
+        # Never close the cropped portion or connect it back to the start.
+        for _ in range(math.ceil(path["laps"])):
+            for a, b in zip(circuit, circuit[1:]):
+                length = metric_distance(a, b)
+                if remaining <= 1e-8:
+                    break
+                fraction = 1. if remaining >= length - 1e-8 else remaining / length
+                points.append(b if fraction == 1. else tuple(x + (y - x) * fraction for x, y in zip(a, b)))
+                remaining -= length * fraction
+            if remaining <= 1e-8:
+                break
         if len(points) > MOTION_LIMITS["max_points"]:
             raise ValueError("Motion path point budget exceeded.")
         distance = [0.0]
@@ -299,15 +366,8 @@ def compile_motion(node, scenario, start, constraints):
         points = _resample([tuple(base + delta / scale for base, delta, scale in zip(origin, offset, SCALE))
                             for offset in path["points_m"]])
     else:
-        expressions = [_Expression(path[axis]) for axis in "xyz"]
-        derivative = math.hypot(*(item.range_and_derivative(path["t_start"], path["t_end"])[2] for item in expressions))
-        intervals = max(path["samples"] - 1,
-                        math.ceil(derivative * (path["t_end"] - path["t_start"]) / _SAMPLE_DISTANCE_M))
-        if intervals + 1 > MOTION_LIMITS["max_points"]:
-            raise ValueError("Curve requires too many samples for its variation; reduce frequency, extent or repetitions.")
-        points = [tuple(base + expression.at(path["t_start"] + (path["t_end"] - path["t_start"]) * i / intervals) / scale
-                        for base, expression, scale in zip(origin, expressions, SCALE))
-                  for i in range(intervals + 1)]
+        points = [tuple(base + value / scale for base, value, scale in zip(origin, offset, SCALE))
+                  for offset in curve_points(path)]
     points = _resample([_point(point) for point in points])
     if not 2 <= len(points) <= MOTION_LIMITS["max_points"]:
         raise ValueError("Motion path requires at least two distinct points.")
@@ -321,15 +381,30 @@ def compile_motion(node, scenario, start, constraints):
     for point in points:
         if not (0 <= point[0] <= scenario.grid_size - 1 and 0 <= point[1] <= scenario.grid_size - 1
                 and lower_altitude - 1e-8 <= point[2] * SCALE[2] <= upper_altitude + 1e-8):
-            raise ValueError("Motion path leaves the allowed map or altitude range.")
+            raise MotionConstraintError("Motion path leaves the allowed map or altitude range.",
+                point_grid=list(point),
+                **motion_flight_envelope((0, 0, lower_altitude / SCALE[2]),
+                    (scenario.grid_size - 1, scenario.grid_size - 1, upper_altitude / SCALE[2]), anchor=origin),
+                scale_m_per_grid=list(SCALE))
         for region_id in constraints.get("avoid_regions", []):
             region = avoided.get(region_id)
             if region is None:
                 raise ValueError("Unknown avoided region.")
             left, right, north, south = region["bounds"]
             if left - .2 <= point[0] <= right + .2 and north - .2 <= point[1] <= south + .2:
-                raise ValueError("Motion path enters an avoided region.")
+                raise MotionConstraintError("Motion path enters an avoided region.")
     heading = deepcopy(motion["heading"])
     if heading["mode"] == "face_target":
         heading = {"mode": "face_point", "point": tuple(objects[heading["target_id"]]["center_grid"])}
-    return CompiledMotion(tuple(points), motion["speed_mps"], heading, total)
+    elif heading["mode"] == "face_reference":
+        if binding is None:
+            raise ValueError("face_reference requires an observed target.")
+        heading = {"mode": "face_point", "point": tuple(binding["point_grid"])}
+    footprint = tuple(obj["footprint_grid"]) if motion.get("within_target") else None
+    if footprint:
+        left, right, north, south = footprint
+        margin = PathFollower.CORRIDOR_M / SCALE[0]
+        if any(not (left + margin <= p[0] <= right - margin and north + margin <= p[1] <= south - margin)
+               for p in points):
+            raise MotionConstraintError("Motion leaves the target footprint or its reserved tracking corridor; reduce or reposition free geometry.")
+    return CompiledMotion(tuple(points), motion["speed_mps"], heading, total, footprint, binding)

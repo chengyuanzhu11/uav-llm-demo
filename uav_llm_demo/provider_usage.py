@@ -39,6 +39,12 @@ def configure_usage_logging():
 
 
 def prefix_metrics(messages, previous):
+    # Multimodal payload sizes are not text-prefix cache measurements. Keep their
+    # image counts separate and never log image data or misleading character hits.
+    if any(not isinstance(m.get("content"), str) for m in messages):
+        return dict(prompt_content_chars=None, common_prefix_content_chars=None, first_changed_message=None,
+                    image_count=sum(sum(p.get("type") == "image_url" for p in m["content"] if isinstance(p, dict))
+                                    for m in messages if isinstance(m.get("content"), list)))
     common, changed = 0, None
     if previous is not None:
         for index, (a, b) in enumerate(zip(previous, messages)):

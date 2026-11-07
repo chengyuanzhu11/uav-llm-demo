@@ -121,6 +121,8 @@ const mime = { '.js': 'text/javascript', '.css': 'text/css', '.json': 'applicati
       let pollIndex = 0;
       let sampleIndex = 0;
       let lastCamera = null;
+      let lastCameraVelocity = null;
+      let lastDistance = null;
       let previousFullChunk = null;
       let firstFullPositions = null;
       let firstFullDisposed = 0;
@@ -133,7 +135,8 @@ const mime = { '.js': 'text/javascript', '.css': 'text/css', '.json': 'applicati
       const polls = [];
       const failures = [];
       const clampEvents = [];
-      const totals = {frames: 0, maxCameraStep: 0, maxCameraSpeed: 0, maxHeadError: 0,
+      const totals = {frames: 0, maxCameraStep: 0, maxCameraSpeed: 0, maxCameraAcceleration: 0,
+        minCameraDistance: Infinity, maxCameraDistance: 0, maxRadialSpeed: 0, maxHeadError: 0,
         maxVisibleTriangles: 0, maxTrafficError: 0, maxCpuMs: 0, frameResets: 0, timelineStalls: 0};
       let lastDisplayTime = null;
       function packet(at) {
@@ -198,9 +201,13 @@ const mime = { '.js': 'text/javascript', '.css': 'text/css', '.json': 'applicati
             if (lastDisplayTime !== null && frame.time === lastDisplayTime && now > 1 && now < duration - 1) totals.timelineStalls++;
             lastDisplayTime = frame.time;
             if (lastCamera) {
-              const movement = p.camera.position.distanceTo(lastCamera);
+              const velocity = p.camera.position.clone().sub(lastCamera).multiplyScalar(fps);
+              const movement = velocity.length() / fps;
               totals.maxCameraStep = Math.max(totals.maxCameraStep, movement);
               totals.maxCameraSpeed = Math.max(totals.maxCameraSpeed, movement * fps);
+              if (lastCameraVelocity) totals.maxCameraAcceleration = Math.max(totals.maxCameraAcceleration,
+                velocity.distanceTo(lastCameraVelocity) * fps);
+              lastCameraVelocity = velocity;
             }
             const stats = p.flightTrail.stats;
             totals.maxVisibleTriangles = Math.max(totals.maxVisibleTriangles, stats.visibleTriangles);
@@ -228,6 +235,11 @@ const mime = { '.js': 'text/javascript', '.css': 'text/css', '.json': 'applicati
             }
             const sight = p.camera.position.clone().sub(p.uavGroup.position);
             const distance = sight.length();
+            totals.minCameraDistance = Math.min(totals.minCameraDistance, distance);
+            totals.maxCameraDistance = Math.max(totals.maxCameraDistance, distance);
+            if (lastDistance !== null) totals.maxRadialSpeed = Math.max(totals.maxRadialSpeed,
+              Math.abs(distance - lastDistance) * fps);
+            lastDistance = distance;
             for (let index = 0; index < p.obstacles.length; index++) {
               const obstacle = p.obstacles[index];
               if (obstacle.containsPoint(p.camera.position)) violation('camera inside building', {obstacle: index});
@@ -283,24 +295,24 @@ const mime = { '.js': 'text/javascript', '.css': 'text/css', '.json': 'applicati
           ensure(p.flightTrail !== trail && p.flightTrail.stats.points <= 1, 'Reset retained old history');
           ensure(geometryDisposed === chunks.length && materialDisposed === 1, 'Trail does not own exactly one disposal per resource');
           const htmlTrail = p.flightTrail;
-          const airsim = clone(reset);
-          airsim.sequence = sequence++;
-          airsim.runtime_backend = 'airsim';
-          ensure(p.acceptState(airsim), 'AirSim switch rejected');
+          const gazebo = clone(reset);
+          gazebo.sequence = sequence++;
+          gazebo.runtime_backend = 'gazebo';
+          ensure(p.acceptState(gazebo), 'Gazebo switch rejected');
           const actors = [p.uavGroup, ...p.birds.values()];
           const positions = actors.map(actor => actor.position.toArray());
           const rotations = p.rotors.map(rotor => rotor.rotation.y);
           for (let i = 0; i < 30; i++) { p.clock.now += 1 / 60; p.animate(); }
-          ensure(p.flightTrail === null && !p.trailHead, 'HTML trail survived AirSim switch');
-          ensure(actors.every((actor, index) => !actor.visible && actor.position.toArray().every((v, j) => v === positions[index][j])), 'HTML actor animated under AirSim');
-          ensure(p.rotors.every((rotor, i) => rotor.rotation.y === rotations[i]), 'HTML rotors animated under AirSim');
+          ensure(p.flightTrail !== htmlTrail && p.flightTrail.stats.points <= 1, 'Old trail survived Gazebo switch');
+          ensure(p.uavGroup.visible && p.uavGroup.position.toArray().every((v, j) => v === positions[0][j]), 'External telemetry was not displayed faithfully');
+          ensure(p.rotors.every((rotor, i) => rotor.rotation.y === rotations[i]), 'Landed external rotors animated');
           ensure(htmlTrail._disposed, 'Old HTML trail was not disposed');
           reset.sequence = sequence++;
           ensure(p.acceptState(reset), 'HTML restore rejected');
           p.animate();
           ensure(p.flightTrail && p.flightTrail.stats.points <= 1 && p.uavGroup.visible, 'HTML restore failed');
-          return { reset: true, htmlToAirSimToHtml: true, disposedGeometries: geometryDisposed,
-            disposedMaterials: materialDisposed, airSimHtmlActorsFrozen: true };
+          return { reset: true, htmlToGazeboToHtml: true, disposedGeometries: geometryDisposed,
+            disposedMaterials: materialDisposed, gazeboTelemetryDisplayed: true };
         },
       };
     }, { initial: fixture.initial, final: fixture.final, samples: fixture.samples });
@@ -373,11 +385,15 @@ const mime = { '.js': 'text/javascript', '.css': 'text/css', '.json': 'applicati
     assert.deepEqual(errors, [], 'Browser page errors');
     assert.deepEqual(writes, [], 'Replay attempted an external mutation');
     assert.deepEqual(unknownRequests, [], 'Replay attempted an unexpected resource');
-    assert.deepEqual(replay.failures, [], 'Actual Urban route violates visual/safety invariants');
+    assert.deepEqual(replay.failures, [], 'Replayed route violates visual/safety invariants');
     assert.equal(replay.diagnostics.emergencyClamps, 0, 'Actual route requires emergency camera retraction');
     assert.equal(replay.diagnostics.sweepClamps, 0, 'Actual route requires camera sweep clamp');
+    assert.ok(replay.maxCameraSpeed < 25, `Abrupt camera speed: ${replay.maxCameraSpeed}`);
+    assert.ok(replay.maxCameraAcceleration < 140, `Abrupt camera acceleration: ${replay.maxCameraAcceleration}`);
     assert.equal(replay.finalLanded, true);
-    assert.ok(replay.starCollectedAt >= replay.targetReachedAt);
+    if (fixture.initial.scenario.mission_mode !== 'semantic') {
+      assert.ok(replay.starCollectedAt >= replay.targetReachedAt);
+    }
     assert.ok(replay.timelineStalls === 0, 'Normal packet jitter should not stall displayed flight');
   } finally {
     await browser.close();

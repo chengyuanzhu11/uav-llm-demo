@@ -10,6 +10,7 @@ from uav_llm_demo.safety import SafetyChecker
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.semantic_navigation import apply_task_constraints, validate_task_routes
 from uav_llm_demo.semantic_tasks import SemanticConstraintError, SemanticMission, SemanticPlan, semantic_plan_from_json_text, task_catalog
+from tests.semantic_fixtures import fixture_requirements
 
 
 def scene():
@@ -97,7 +98,7 @@ class SemanticSchemaTests(unittest.TestCase):
         self.assertEqual(plan.steps[0]["duration_seconds"], 7)
         self.assertEqual(plan.constraints, data["constraints"])
         mission = SemanticMission(scene())
-        mission.accept(plan)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(scene())))
         self.assertEqual(mission.current_goal, (8, 13, 3))
 
     def test_unknown_fields_targets_and_capabilities_fail_closed(self):
@@ -217,7 +218,8 @@ class SemanticSchemaTests(unittest.TestCase):
 class SemanticEvidenceTests(unittest.TestCase):
     def mission(self, steps=None):
         mission = SemanticMission(scene(), "巡检后返航", mission_id="mission-test")
-        mission.accept(parse(proposal(steps)))
+        plan = parse(proposal(steps))
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(scene())))
         self.assertEqual(mission.status, "running")
         return mission
 
@@ -332,7 +334,69 @@ class SemanticProviderTests(unittest.TestCase):
                 except PlannerProviderError:
                     pass
             self.assertEqual(usage.call_count, 1)
-            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v6")
+            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v10")
+
+    def test_source_audit_repairs_omission_before_plan_and_keeps_stages_independent(self):
+        instruction = "先巡检图书馆，再去会议中心采样，最后回家。"
+        missing = {"status": "ready", "summary": "巡检后返航。", "steps": [
+            {"id": "inspect", "action": "inspect", "target_id": "library"},
+            {"id": "home", "action": "return_home", "target_id": "home"}],
+            "constraints": {}, "coverage": [{"quote": instruction,
+                "requirement_ids": ["inspect", "home"], "constraint_keys": []}]}
+        rejected = {"status": "revision_required", "summary": "遗漏会议中心采样。", "issues": [
+            {"code": "missing_obligation", "message": "补上巡检后、返航前的会议中心采样。", "quote": "再去会议中心采样"}]}
+        corrected = deepcopy(missing)
+        corrected["summary"] = "巡检图书馆、会议中心采样后返航。"
+        corrected["steps"].insert(1, {"id": "capture", "action": "capture", "target_id": "conference"})
+        corrected["coverage"][0]["requirement_ids"].insert(1, "capture")
+        approved = {"status": "approved", "summary": "原任务要求齐全。", "issues": []}
+        executable = proposal([step("inspect", "inspect", "library"),
+                               step("capture", "capture", "conference"), step("home", "return_home", "home")])
+        catalog = task_catalog(scene())
+        catalog["mission_context"] = {
+            "mission_id": "prior-mission", "accepted_instruction": "此前的任务。",
+            "accepted_requirements": {"steps": [{"id": "old", "action": "inspect", "target_id": "library"}]},
+            "plan": {"old_plan_marker": True}, "current_step": {"old_current_marker": True},
+            "uncompleted_steps": [{"old_pending_marker": True}], "evidence": []}
+        catalog["task_requirements"] = {"stale_candidate_marker": True}
+        before = deepcopy(catalog)
+        agent = DeepSeekAgent(api_key="test-credential")
+        responses = [missing, rejected, corrected, approved, executable]
+        with patch.object(agent, "_request_json_content", side_effect=[json.dumps(item) for item in responses]) as request:
+            first = agent.extract_task_requirements(catalog, instruction)
+            audit = agent.audit_task_requirements(catalog, instruction, first)
+            self.assertEqual(audit.status, "revision_required")
+            self.assertEqual(audit.issues[0]["quote"], "再去会议中心采样")
+            repaired = agent.extract_task_requirements(catalog, instruction, repair={
+                "candidate": json.dumps(first.to_dict()),
+                "diagnostic": {"path": "$.steps", "code": "source_audit", "message": audit.summary,
+                               "issues": audit.to_dict()["issues"]}})
+            self.assertEqual(agent.audit_task_requirements(catalog, instruction, repaired).status, "approved")
+            plan_catalog = deepcopy(catalog)
+            plan_catalog["task_requirements"] = repaired.to_dict()
+            plan = agent.interpret_task(plan_catalog, instruction)
+        self.assertEqual([node["action"] for node in plan.steps], ["inspect", "capture", "return_home"])
+        self.assertEqual(catalog, before)
+        sent_catalogs = []
+        for index, call in enumerate(request.call_args_list):
+            message = call.args[0][1]["content"]
+            encoded_catalog, source = message.removeprefix("Catalog:\n").split("\nInstruction:\n", 1)
+            sent = json.loads(encoded_catalog)
+            sent_catalogs.append(sent)
+            self.assertEqual(source.split("\nFeedback:\n", 1)[0], instruction)
+            if index < 4:
+                self.assertNotIn("default_constraints", sent)
+                self.assertNotIn("defaults", sent["spatial"])
+                self.assertFalse(any("default_duration_seconds" in action for action in sent["actions"].values()))
+                self.assertTrue({"plan", "current_step", "uncompleted_steps"}.isdisjoint(sent["mission_context"]))
+                self.assertNotIn("task_program_schema", sent)
+                self.assertNotIn("task_requirements", sent)
+                self.assertEqual(sent["mission_context"]["accepted_requirements"], before["mission_context"]["accepted_requirements"])
+                self.assertNotIn("old_plan_marker", message)
+                self.assertNotIn("stale_candidate_marker", message)
+            else:
+                self.assertEqual(sent["task_requirements"], corrected)
+        self.assertEqual(sent_catalogs[1]["proposed_requirements"], missing)
 
     def test_api_errors_are_sanitized_and_invalid_semantic_output_never_becomes_route(self):
         agent = DeepSeekAgent(api_key="test-credential")
@@ -445,7 +509,7 @@ class SemanticNavigationTests(unittest.TestCase):
         service = MissionService(scenario=scenario, agent=DeepSeekAgent(api_key="test-context-key"))
         self.addCleanup(service.close)
         plan = replace(self.task(scenario, 25), constraints=dict(max_altitude_m=25, avoid_regions=["south_plaza"]))
-        service.semantic.accept(plan)
+        service.semantic.accept(plan, requirements=fixture_requirements(plan, task_catalog(scenario)))
         return service
 
     def test_control_contexts_do_not_share_mutable_constraint_or_building_data(self):
@@ -477,7 +541,7 @@ class SemanticNavigationTests(unittest.TestCase):
         self.assertIs(validate_task_routes(plan, scenario, context), plan)
         self.assertEqual(context["altitude_range"]["max"], 10)
         mission = SemanticMission(scenario)
-        mission.accept(plan)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(scenario)))
         apply_task_constraints(context, scenario, plan.constraints)
         self.assertEqual(context["altitude_range"], {"min": 2, "max": 2})
         library, conference = (position_of(scenario, target) for target in ("library", "conference"))
@@ -501,7 +565,8 @@ class SemanticNavigationTests(unittest.TestCase):
     def test_without_ceiling_observation_heights_stay_unchanged(self):
         scenario = load_scenario("semantic_campus")
         mission = SemanticMission(scenario)
-        mission.accept(self.task(scenario, None))
+        plan = self.task(scenario, None)
+        mission.accept(plan, requirements=fixture_requirements(plan, task_catalog(scenario)))
         self.assertEqual(mission.current_goal, position_of(scenario, "library"))
         self.assertTrue(mission.observe(mission.current_goal, 0, 2, 2))
         self.assertEqual(mission.current_goal, position_of(scenario, "conference"))

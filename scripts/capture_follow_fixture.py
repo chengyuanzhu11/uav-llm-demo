@@ -28,7 +28,10 @@ def capture(output):
         try:
             initial = service.state()
             samples = [initial["motion_samples"][-1]]
-            html = create_app(service=service).test_client().get("/").get_data(as_text=True)
+            response = create_app(service=service).test_client().get("/")
+            if response.status_code != 200:
+                raise RuntimeError("Cannot capture the application page for browser replay")
+            html = response.get_data(as_text=True)
             service.start(background=False)
             for _ in range(3600):
                 service.advance(0.05)

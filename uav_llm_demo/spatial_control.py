@@ -9,7 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 import math
 
-from .safety import GROUND_COLUMN_RADIUS_M, SAFETY_MARGIN, SCALE, SafetyChecker, _intersects, _point
+from .safety import GROUND_COLUMN_RADIUS_M, SAFETY_MARGIN, SCALE, SafetyChecker, _intersects, _point, ground_segment_distance_m
 from .task_protocol import TaskProtocolError, control_schema, validate_structure
 
 
@@ -146,16 +146,8 @@ def _contains(footprint, x, y, margin=0.0):
             and north - .39 + margin / SCALE[1] < y < south + .39 - margin / SCALE[1])
 
 
-def _distance_to_segment_m(x, y, a, b):
-    dx, dy = (b[0] - a[0]) * SCALE[0], (b[1] - a[1]) * SCALE[1]
-    px, py = (x - a[0]) * SCALE[0], (y - a[1]) * SCALE[1]
-    length2 = dx * dx + dy * dy
-    t = max(0, min(1, (px * dx + py * dy) / length2)) if length2 else 0
-    return math.hypot(px - t * dx, py - t * dy)
-
-
 def _touches_line(x, y, line, margin):
-    return any(_distance_to_segment_m(x, y, a, b) <= line["width"] * SCALE[0] / 2 + margin
+    return any(ground_segment_distance_m(x, y, a, b) <= line["width"] * SCALE[0] / 2 + margin
                for a, b in zip(line["points"], line["points"][1:]))
 
 
@@ -196,7 +188,7 @@ def _landing_site(scenario, x, y, constraints):
     if not launch_support and any(_touches_line(x, y, item, LANDING_CLEARANCE_M) for item in layout.get("roads", [])):
         raise ValueError("Landing point is within a road safety margin.")
     for tree in _trees(scenario):
-        radius = min(1.65, tree["radius"] * SCALE[0])
+        radius = tree["radius"] * SCALE[0]
         if math.hypot((x - tree["x"]) * SCALE[0], (y - tree["y"]) * SCALE[1]) <= radius + LANDING_CLEARANCE_M:
             raise ValueError("Landing point or vertical approach intersects a tree safety envelope.")
     point = (x, y, 0.0)
@@ -220,12 +212,14 @@ def _airborne_altitude(scenario, x, y, obj, constraints):
     return altitude
 
 
-def resolve_control_goal(step, scenario, constraints):
+def resolve_control_goal(step, scenario, constraints, *, evidence=()):
     """Resolve an exact requested position; never replace an unsafe goal nearby."""
     catalog = control_catalog(scenario)
     target_id = step["target_id"]
     control = normalize_control(step.get("control"), target_id, catalog, constraints)
     obj = next(item for item in catalog["objects"] if item["id"] == target_id)
+    from .observed_targets import bind_spatial_object
+    obj, binding = bind_spatial_object(step, obj, evidence)
     anchor = obj["center_grid"] if control["anchor"] == "center" else obj["arrival_grid"]
     x, y = (anchor[i] + control["offset_m"][i] / SCALE[i] for i in (0, 1))
     if control["state"] == "landed":
@@ -250,9 +244,10 @@ def resolve_control_goal(step, scenario, constraints):
         if errors:
             raise ValueError("Airborne control goal is unsafe: " + " ".join(dict.fromkeys(errors)))
         for tree in _trees(scenario):
-            if (altitude <= min(2.7, tree["height"] * SCALE[2]) + SAFETY_MARGIN
+            if (altitude <= tree["height"] * SCALE[2] + SAFETY_MARGIN
                     and math.hypot((x - tree["x"]) * SCALE[0], (y - tree["y"]) * SCALE[1])
-                    <= min(1.65, tree["radius"] * SCALE[0]) + SAFETY_MARGIN):
+                    <= tree["radius"] * SCALE[0] + SAFETY_MARGIN):
                 raise ValueError("Airborne control goal intersects a tree safety envelope.")
     return {"position": position, "state": control["state"],
-            "duration_seconds": control["duration_seconds"], "ground_site": ground_site}
+            "duration_seconds": control["duration_seconds"], "ground_site": ground_site,
+            **({"target_binding": binding} if binding is not None else {})}

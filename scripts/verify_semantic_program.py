@@ -10,15 +10,17 @@ from dataclasses import replace
 import json
 from pathlib import Path
 import sys
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from uav_llm_demo.agents import DeepSeekAgent
 from uav_llm_demo.mission_service import MissionService
+from uav_llm_demo.task_observation import TaskObservationWorld
 from uav_llm_demo.motion import distance, norm
 from uav_llm_demo.scenarios import load_scenario
+from tests.semantic_fixtures import response, semantic_responses
 
 
 def skill(name, action, target, when=None):
@@ -39,17 +41,21 @@ class Flight:
         self.replies, self.requests = deque(programs), []
         scenario = replace(load_scenario("semantic_campus"), dynamic_objects=())
         self.service = MissionService(scenario=scenario, traffic_seed=17,
+                                     task_world=TaskObservationWorld.demonstration(scenario),
                                      agent=DeepSeekAgent(api_key="offline-verification-key"))
+        self._respond = semantic_responses(lambda _: self.replies[0],
+                                          [self._plan_response for _ in programs])
+
+    def _plan_response(self, *args, **kwargs):
+        assert self.replies, "Unexpected provider retry"
+        return response(self.replies.popleft())
 
     def respond(self, url, **kwargs):
         assert url.endswith("/chat/completions")
         request = kwargs["json"]
         assert request["max_tokens"] == 12000
         self.requests.append(deepcopy(request))
-        assert self.replies, "Unexpected provider retry"
-        content = json.dumps(self.replies.popleft(), ensure_ascii=False)
-        return Mock(status_code=200, json=Mock(return_value={
-            "choices": [{"finish_reason": "stop", "message": {"content": content}}]}))
+        return self._respond(url, **kwargs)
 
     def until(self, predicate, seconds=240):
         for _ in range(round(seconds / .1)):

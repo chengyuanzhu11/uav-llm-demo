@@ -107,6 +107,16 @@ class SpatialControlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tree"):
             self.goal("south_plaza", state="landed", offset_m=[-10.5, -6, 0])
 
+    def test_visible_furnishings_block_landing_and_low_hover_but_allow_safe_overflight(self):
+        center = next(o for o in self.catalog["objects"] if o["id"] == "south_plaza")["center_grid"]
+        for item in self.scene.campus_layout["landmarks"][:7]:
+            offset = [(item["position"][i]-center[i])*3 for i in range(2)] + [0]
+            with self.subTest(item=item["id"]):
+                for control in (dict(state="landed"), dict(state="airborne", altitude_m=1)):
+                    with self.assertRaises(ValueError):
+                        self.goal("south_plaza", offset_m=offset, **control)
+                self.goal("south_plaza", state="airborne", altitude_m=10, offset_m=offset)
+
     def test_roads_near_ground_surface_edge_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "road"):
             self.goal("north_court", state="landed", offset_m=[-25.8, -26.7, 0])
@@ -177,13 +187,14 @@ class SpatialControlTests(unittest.TestCase):
             self.goal(state="landed", offset_m=[(edge + .4 - 42) * 3, 0, 0])
         # The centerline misses this tree, while an allowed off-center descent does not.
         tree_x, tree_y = 45, 80
-        tree_radius = .38 * 3
+        tree_radius = next(t["radius"] * 3 for t in self.scene.campus_layout["trees"]
+                           if (t["x"], t["y"]) == (tree_x, tree_y))
         x = tree_x + (tree_radius + LANDING_CLEARANCE_M - .05) / 3
         with self.assertRaisesRegex(ValueError, "tree"):
             self.goal("south_plaza", state="landed", offset_m=[(x - 48.5) * 3, (tree_y - 82) * 3, 0])
 
     def test_stadium_terrace_and_canopy_block_landing_columns(self):
-        obstacles = self.scene.campus_layout["ground_obstacles"]
+        obstacles = [o for o in self.scene.campus_layout["ground_obstacles"] if o.get("rendered_by") != "landscape"]
         self.assertEqual(len(obstacles), 10)
         self.assertEqual({item["kind"] for item in obstacles},
                          {"spectator_stand", "spectator_canopy", "gate_pier", "bridge_rail", "monument_sign"})
@@ -214,6 +225,8 @@ class SpatialControlTests(unittest.TestCase):
                  "points_of_interest": list(self.scene.points_of_interest)}
         # A data-only change must reach the actual Three.js meshes without an
         # accompanying renderer constant or duplicate obstacle implementation.
+        scene["campus_layout"]["ground_obstacles"] = [o for o in scene["campus_layout"]["ground_obstacles"]
+                                                     if o.get("rendered_by") != "landscape"]
         for bound in ("lower_grid", "upper_grid"):
             scene["campus_layout"]["ground_obstacles"][0][bound][0] += .7
         script = r'''

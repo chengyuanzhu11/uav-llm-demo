@@ -6,15 +6,17 @@
 
 Urban Crossing 无进展时刷新观测后重规划，并保留已完成去程的证据。页面 Recovery 显示策略及剩余重试时间；Mission progress 分别显示去程目标和返航基地。任务执行器与 `MissionEvidence` 各自判断阶段，成功需要目标及基地的实际位置、末端速度证据。
 
-园区由 DeepSeek 解释自然语言，再由本地几何规划执行各段。任务先验证所有条件分支的静态可达性；高度和区域约束同时作用于规划与控制。`semantic_mission` 保存步骤及绑定 `mission_id / step_id / vehicle_id / target_id / simulation_time` 的证据，实际到达、低速驻留后才确认动作，最终落地才确认整项任务完成。热检查和拍照是明确标注的仿真观测记录，不代表真实传感器或照片；条件只使用已经执行的同地点热检查结果。暂停清除当前未完成驻留，已完成事件证据保留。
+园区由 DeepSeek 解释自然语言，再由本地几何规划执行各段。任务先验证所有条件分支的静态可达性；高度和区域约束同时作用于规划与控制。`semantic_mission` 保存步骤及绑定 `mission_id / step_id / vehicle_id / target_id / simulation_time` 的证据，实际到达、低速驻留后才确认动作，实际达到指令规定的最终状态才确认整项任务完成。热检查、巡检和采样是明确标注的仿真观测记录，不代表真实传感器或照片；条件使用已交付且仍有效的绑定观测，允许跨地点引用。暂停清除当前未完成驻留，已完成事件证据保留。
+
+园区执行异常统一分层处理：可自由选择的执行参数先由本地几何修复，候选必须保留独立要求；无效读数先复测，持续无进展或重复失败再触发有预算、去重和冷却的任务复核。明确的用户硬约束冲突保持等待；电量、运行器及安全终止故障不会被排队的复核自动解除。详细行为见[任务框架](task-program.md)。
 
 ## 时间与观测
 
-HTML 的 UAV 和鸟类使用同一仿真时间。后台循环在未起飞、暂停和等待 API 时仍推进世界。每次推进不超过 0.1 秒；慢帧会使整个仿真相对墙钟减慢，累计差值在 diagnostics 中可见。重试间隔也基于这一仿真时间。浏览器对最近快照做显示平滑，不向未知的墙钟未来外推鸟类。
+HTML 模式的 UAV 和鸟类使用同一仿真时间。后台循环在未起飞、暂停和等待 API 时仍推进世界。每次推进不超过 0.1 秒；慢帧会使整个仿真相对墙钟减慢，累计差值在 diagnostics 中可见。重试间隔也基于这一仿真时间。浏览器对最近快照做显示平滑，不向未知的墙钟未来外推鸟类。
 
 GET `/api/state` 不推进时间、不生成鸟类路线、不查询 Runtime，也不重建静态地图；返回控制线程发布快照的副本。`sequence` 表示快照版本，多次读取同一快照可得到相同序号。
 
-`diagnostics.timing` 提供锁等待、交通、规划收集、环境检查、航点重连、避障、Runtime 和快照耗时。p95 使用最近 2048 次样本，max/count 为当前 run 累计。控制间隔超过 75ms 计一次 missed deadline；HTML 超过 300ms 记延迟事件并继续，AirSim 保留停止保护。局部碰撞检查不因调度延迟而关闭。
+`diagnostics.timing` 提供锁等待、交通、规划收集、环境检查、航点重连、避障、Runtime 和快照耗时。p95 使用最近 2048 次样本，max/count 为当前 run 累计。控制间隔超过 75ms 计一次 missed deadline；HTML 超过 300ms 记延迟事件并继续，Gazebo/PX4 保留停止保护。局部碰撞检查不因调度延迟而关闭。
 
 ## 运行日志
 
@@ -22,9 +24,17 @@ GET `/api/state` 不推进时间、不生成鸟类路线、不查询 Runtime，�
 
 每轮 run_id 关联场景、目标/交通种子、控制参数、源码指纹、数值航点、拒绝原因、重试、阶段完成、每秒遥测和控制延迟。Reset 建立新 run_id，旧日志保留。进程内最多保留 200 条规划记录，累计调用/拒绝/错误计数不随截断丢失。日志不保存 key、请求头、原始 Prompt、原始响应或自由文本模型推理。DeepSeek 数值用量日志包含同一 run_id/request_id；未返回 usage 与尚未返回的请求会明确标记，不计为零用量。
 
-园区额外记录 `semantic_requested / semantic_accepted / semantic_rejected / semantic_provider_failed / semantic_evidence`，格式或任务漏项纠错记录 `semantic_schema_rejected`，任务调整记录 `semantic_update_submitted`，执行预算或缺观测的安全等待记录 `semantic_execution_waiting`。语义解释次数在 `semantic_mission.provider_calls`，本地航段规划次数在 `flight.planner_calls`；当前提示版本 `semantic-tasks-v6` 与 Urban 的 `static-prefix-v1` 分开统计，历史记录保留原标记。循环、普通子任务切换和几何重规划不重复调用 DeepSeek；每次任务修改及执行评估会解释剩余任务，记录修订号及唯一执行实例。
+园区额外记录 `semantic_requested / semantic_accepted / semantic_rejected / semantic_provider_failed / semantic_evidence`，本地工具规划预算耗尽记录 `semantic_planning_failed`（保留最后一次候选诊断，与服务商故障区分），格式或任务漏项纠错记录 `semantic_schema_rejected`，任务调整记录 `semantic_update_submitted`，执行预算或缺观测的安全等待记录 `semantic_execution_waiting`。语义解释次数在 `semantic_mission.provider_calls`，本地航段规划次数在 `flight.planner_calls`；提取、审查、计划的提示版本分别为 `task-requirements-v4`、`requirements-audit-v4`、`semantic-tools-v4`（单次生成基线为 `semantic-tasks-v10`），与 Urban 的 `static-prefix-v1` 分开统计，历史记录保留原标记。循环、普通子任务切换和几何重规划不重复调用 DeepSeek；首次任务和用户修改各经提取、审查、计划三阶段，自主评估复用已接受要求；记录修订号及唯一执行实例。`semantic_requested.stage` 标识阶段，`semantic_requirements_verified` 记录审核通过的要求，预算统计全部请求及重试。
 
 源码指纹用于比较当前 Python 实现，不能代替依赖环境归档。任务日志保存几何场景和结构化规划响应，不是操作系统调度、图像或真实传感器的完整录制。
+
+工具规划另记录 `semantic_planning_tool` 的工具名、通过状态、候选编号及有界诊断；不记录完整工具提示或候选正文。每一轮模型请求都有独立 usage 计量，`semantic_mission.provider_calls` 包括工具对话中的请求。
+
+视觉闭环记录 `visual_requested / visual_feedback / visual_discarded / visual_no_progress`，保存相机位姿、图像和深度校验和、工具反馈及实际完成证据；不记录 RGB 原文。`onboard` 显示轮次、丢弃数、最近推理耗时和推理期间实测移动距离。感知和语言规划分别使用 `onboard-perception-v4`、`visual-feedback-planning-v6` 计量，多模态请求另记图像数量，不将图像数组长度误计为文本缓存命中。
+
+`python scripts/verify_visual_feedback.py --output /tmp/visual-offline.json` 使用独立服务、HTML 执行器、真实浏览器渲染和离线像素夹具验证控制链路。`--live --variant 1` 使用真实语言与视觉模型，同时交换目标／干扰物位置并加入遮挡。需要 Node.js、Playwright 和 Chromium，支持 `NODE_PATH`、`PLAYWRIGHT_CHROMIUM_EXECUTABLE` 指定已有运行时。目标和遮挡由浏览器夹具设置，模型目录无答案；独立评分检查两次定位是否落在目标上、确认距离、返航落地与安全结果，失败和超时也输出结果。该小样本入口用于功能验收，不是识别成功率、实时性能或物理飞行基准；Gazebo＋PX4 的原生视觉与飞行验收使用 `scripts/verify_gazebo.py`，详见 [README](../README.md#gazebopx4-sitl)。
+
+同一入口的 `--live --scene tree`、`--live --scene sculpture`、`--live --scene bin_orbit` 使用实际校园景物，不注入标记；`--instruction` 可换用自然语言表达。独立评分从记录的相机位置向所选表面射线，检查首个可见网格确为树木或目标雕塑且与深度点相符，不能仅凭模型自报或点落在包围盒内判成功。相机截图可检查“识别对物体、像素却落入孔洞或背景”的失败；感知提示要求选择可见实体内部，提示本身不构成正确性保证。垃圾桶绕行额外检查运动引用与视觉证据一致、实测轨迹绕物体一周及拟合圆心偏差，不能把绕搜索区域一圈当作成功；实际物体身份和坐标仅供独立评分，不传给模型。验收输出旁保存 `.events.jsonl`，保留拒绝与修复过程供复核。
 
 ## 两种评测协议
 
@@ -47,7 +57,7 @@ GET `/api/state` 不推进时间、不生成鸟类路线、不查询 Runtime，�
 
 `--seed` 可重复指定唯一种子。比较脚本要求场景、目标、交通种子与协议一致，明确报告失败变成功及成功变失败，不忽略未匹配样本。摘要的 Wilson 区间仅是独立运行层面的描述性统计；对有依赖的任务序列或重复同一环境应另做相应统计分析，不把几次本地回归当论文结论。
 
-成功分为 task_completed 和 safe_success。后者还要求没有记录到静态路径阻止或动态安全间距违规；HTML 间距指标不是网格物理碰撞证明，未测量动态障碍的 AirSim 对该项返回 null。电量仍是简化模型，不能用于真实能耗结论。
+成功分为 task_completed 和 safe_success。后者还要求没有记录到静态路径阻止或动态安全间距违规；HTML 间距指标不是网格物理碰撞证明，未测量动态障碍的 Gazebo/PX4 对该项返回 null。电量仍是简化模型，不能用于真实能耗结论。
 
 可选 `--prices-json prices.json` 接受 `input_miss`、`input_hit`、`output`（每百万 tokens 的数值费率）与 `currency`。费率由用户提供，不内置报价。费用只覆盖已报告 tokens；usage 缺失或请求未返回时，`complete_usage=false`。
 
@@ -59,4 +69,4 @@ GET `/api/state` 不推进时间、不生成鸟类路线、不查询 Runtime，�
 
 从日志还原初始场景、交通种子、结构化方案和记录中的仿真交付延迟，交给当前控制器重新执行，不调用 API。用于固定失败案例和成功回归案例，源码指纹不同时会在输出中标明。只支持没有手动改目标、切 Agent、暂停的单轮 HTML 导航任务；语义任务、跨轮转文件缺少记录、手动操作或响应耗尽时明确报错/失败，不偷偷补调 API。回放不保证复现原机的 CPU 调度和网络抖动。
 
-校园完整任务验收与人工标注语义基准见[任务框架](task-program.md)及[校园语义基准](semantic-benchmark.md)。服务成功与人工要求达成分开统计，超时、澄清及生成失败均保留在分母。
+校园完整任务验收与独立评分基准见[任务框架](task-program.md)及[校园语义基准](semantic-benchmark.md)。服务成功与独立要求达成分开统计，超时、澄清及生成失败均保留在分母。

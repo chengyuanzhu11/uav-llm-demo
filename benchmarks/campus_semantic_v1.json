@@ -1,6 +1,6 @@
 {
   "version": "campus-semantic-v1",
-  "annotation_source": "Human-authored instruction requirements, separate from response fixtures.",
+  "annotation_source": "Agent-assisted engineering requirements, authored separately from response fixtures; not independently human-reviewed.",
   "split_policy": "Split by the combination field; no combination crosses dev/holdout. This small public suite is regression coverage, not a hidden test distribution.",
   "units": {
     "position": "grid (east,south,up), scale=(3,3,5)m",
@@ -8,7 +8,7 @@
     "speed": "m/s",
     "time": "simulation seconds"
   },
-  "offline_policy": "Scripted candidate programs are deterministic fixtures, never evidence of LLM interpretation accuracy. One deliberately incorrect initial candidate must fail the oracle.",
+  "offline_policy": "Independent scripted requirements, audits, and candidate plans exercise production phases; each policy consumes only its own phases. Fixtures measure execution and evaluation, never LLM ability. Observation scenarios hold private world values and faults outside model input.",
   "cases": [
     {
       "id": "dev_home_pose",
@@ -99,7 +99,53 @@
             "occurrence": 1
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "takeoff",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 11,
+                "yaw_deg": 90,
+                "duration_seconds": 1
+              }
+            },
+            {
+              "id": "landing",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              }
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在基地垂直起飞至11米，朝东停留1秒，再降落停留1秒。",
+              "requirement_ids": [
+                "takeoff",
+                "landing"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "dev_east_boundary",
@@ -169,7 +215,50 @@
             "state": "landed"
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "garden_lap",
+              "action": "motion",
+              "target_id": "east_garden",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "clockwise",
+                  "laps": 1
+                }
+              }
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "沿着东侧花园顺时针转一圈然后返航。",
+              "requirement_ids": [
+                "garden_lap",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "dev_inspection_order",
@@ -243,7 +332,49 @@
             "state": "landed"
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "library_inspection",
+              "action": "inspect",
+              "target_id": "library"
+            },
+            {
+              "id": "conference_inspection",
+              "action": "inspect",
+              "target_id": "conference"
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "先巡检图书馆，再巡检会议中心，最后返航。",
+              "requirement_ids": [
+                "library_inspection",
+                "conference_inspection",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "dev_conditional_false",
@@ -373,7 +504,70 @@
             "state": "landed"
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "temperature",
+              "action": "thermal_scan",
+              "target_id": "library"
+            },
+            {
+              "id": "temperature_choice",
+              "action": "branch",
+              "condition": {
+                "step_id": "temperature",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library"
+                }
+              ],
+              "else": [
+                {
+                  "id": "fallback",
+                  "action": "inspect",
+                  "target_id": "conference"
+                }
+              ]
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+              "requirement_ids": [
+                "temperature",
+                "temperature_choice",
+                "sample",
+                "fallback",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "dev_repeat_observations",
@@ -488,7 +682,58 @@
             "state": "landed"
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "two_rounds",
+              "action": "repeat",
+              "count": 2,
+              "steps": [
+                {
+                  "id": "temperature",
+                  "action": "thermal_scan",
+                  "target_id": "library"
+                },
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library"
+                }
+              ],
+              "until": null
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在图书馆执行两轮测温和采样，每轮先测温再采样，完成两轮后返航。",
+              "requirement_ids": [
+                "two_rounds",
+                "temperature",
+                "sample",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "dev_remote_landing",
@@ -552,7 +797,41 @@
             }
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "landing",
+              "action": "control",
+              "target_id": "north_football",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 2
+              }
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "去北区足球场中央降落停留2秒，不用返航。",
+              "requirement_ids": [
+                "landing"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "holdout_west_two_laps",
@@ -623,7 +902,54 @@
             "state": "landed"
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "garden_laps",
+              "action": "motion",
+              "target_id": "west_garden",
+              "motion": {
+                "path": {
+                  "direction": "counterclockwise",
+                  "laps": 2,
+                  "kind": "boundary"
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "west_garden"
+                }
+              }
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "到西侧花园逆时针环绕两圈，机头保持朝向花园中心，之后回基地。",
+              "requirement_ids": [
+                "garden_laps",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "holdout_conditional_true",
@@ -753,7 +1079,70 @@
             "state": "landed"
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "temperature",
+              "action": "thermal_scan",
+              "target_id": "laboratory"
+            },
+            {
+              "id": "temperature_choice",
+              "action": "branch",
+              "condition": {
+                "step_id": "temperature",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "laboratory"
+                }
+              ],
+              "else": [
+                {
+                  "id": "fallback",
+                  "action": "inspect",
+                  "target_id": "conference"
+                }
+              ]
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+              "requirement_ids": [
+                "temperature",
+                "temperature_choice",
+                "sample",
+                "fallback",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "holdout_task_update",
@@ -869,6 +1258,80 @@
           },
           "instruction": "取消尚未执行的实验楼巡检，改为到会议中心采样，然后返航。"
         }
+      ],
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "library_inspection",
+              "action": "inspect",
+              "target_id": "library"
+            },
+            {
+              "id": "lab_inspection",
+              "action": "inspect",
+              "target_id": "laboratory"
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_ids": [
+                "library_inspection",
+                "lab_inspection",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "replacement_sample",
+              "action": "capture",
+              "target_id": "conference"
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "取消尚未执行的实验楼巡检，改为到会议中心采样，然后返航。",
+              "requirement_ids": [
+                "replacement_sample",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        },
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
       ]
     },
     {
@@ -976,7 +1439,49 @@
             "state": "landed"
           }
         ]
-      }
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "assessment",
+              "action": "review",
+              "instruction": "根据当前观测复核安排。"
+            },
+            {
+              "id": "library_inspection",
+              "action": "inspect",
+              "target_id": "library"
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "先根据当前观测复核安排，然后巡检图书馆并返航。",
+              "requirement_ids": [
+                "assessment",
+                "library_inspection",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
     },
     {
       "id": "holdout_initial_omission",
@@ -988,6 +1493,30 @@
           "status": "ready",
           "summary": "执行指定任务。",
           "steps": [
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        {
+          "status": "ready",
+          "summary": "巡检会议中心后返航。",
+          "steps": [
+            {
+              "id": "conference",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": null,
+              "when": null
+            },
             {
               "id": "home",
               "action": "return_home",
@@ -1030,10 +1559,1054 @@
           }
         ]
       },
-      "offline_expected_success": false,
-      "note": "Deliberately wrong initial interpretation. Internal contract alone cannot recover intent absent independent requirements; oracle must expose false completion."
+      "note": "The independently authored requirement fixtures first omit inspection, then an audit requests correction; the first execution plan also omits inspection and must be repaired before flight. The oracle scores measured execution independently.",
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_ids": [
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        {
+          "status": "ready",
+          "summary": "保留指令明确要求的事项和顺序。",
+          "steps": [
+            {
+              "id": "conference_inspection",
+              "action": "inspect",
+              "target_id": "conference"
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_ids": [
+                "conference_inspection",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "revision_required",
+          "summary": "提取遗漏了返航之前的巡检任务。",
+          "issues": [
+            {
+              "code": "missing_requirement",
+              "message": "应保存会议中心巡检及其发生在返航前的要求。",
+              "quote": "巡检会议中心"
+            }
+          ]
+        },
+        {
+          "status": "approved",
+          "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
+          "issues": []
+        }
+      ]
+    },
+    {
+      "id": "holdout_observation_unknown",
+      "split": "holdout",
+      "combination": "laboratory_temperature_cross_target_branch_recovery",
+      "instruction": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "if",
+                "observation": {
+                  "type": "evidence",
+                  "action": "thermal_scan",
+                  "target": "laboratory",
+                  "count": 1
+                },
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40,
+                "then": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "library",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                },
+                "else": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "测量实验楼后只执行实际触发的分支，最终返航落地。",
+          "steps": [
+            {
+              "id": "temperature",
+              "action": "thermal_scan",
+              "target_id": "laboratory"
+            },
+            {
+              "id": "choice",
+              "action": "branch",
+              "condition": {
+                "step_id": "temperature",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "inspect",
+                  "action": "inspect",
+                  "target_id": "library"
+                }
+              ],
+              "else": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library"
+                }
+              ]
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_ids": [
+                "temperature",
+                "choice",
+                "inspect",
+                "sample",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "要求与原文逐项一致，无额外执行约束。",
+          "issues": []
+        }
+      ],
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "测温并执行所需分支后返航。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "library_inspection",
+                  "action": "inspect",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "lab_sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        {
+          "status": "ready",
+          "summary": "测温并执行所需分支后返航。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "library_inspection",
+                  "action": "inspect",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "lab_sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "task_observation": {
+        "faults": [
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 1,
+            "status": "unknown"
+          },
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 2,
+            "status": "unknown"
+          },
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 3,
+            "status": "unknown"
+          }
+        ]
+      },
+      "task_world": {
+        "laboratory": {
+          "temperature_c": 48.0
+        }
+      }
+    },
+    {
+      "id": "holdout_observation_conflict",
+      "split": "holdout",
+      "combination": "laboratory_temperature_cross_target_branch_recovery",
+      "instruction": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "if",
+                "observation": {
+                  "type": "evidence",
+                  "action": "thermal_scan",
+                  "target": "laboratory",
+                  "count": 1
+                },
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40,
+                "then": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "library",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                },
+                "else": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "测量实验楼后只执行实际触发的分支，最终返航落地。",
+          "steps": [
+            {
+              "id": "temperature",
+              "action": "thermal_scan",
+              "target_id": "laboratory"
+            },
+            {
+              "id": "choice",
+              "action": "branch",
+              "condition": {
+                "step_id": "temperature",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "inspect",
+                  "action": "inspect",
+                  "target_id": "library"
+                }
+              ],
+              "else": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library"
+                }
+              ]
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_ids": [
+                "temperature",
+                "choice",
+                "inspect",
+                "sample",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "要求与原文逐项一致，无额外执行约束。",
+          "issues": []
+        }
+      ],
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "测温并执行所需分支后返航。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "library_inspection",
+                  "action": "inspect",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "lab_sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        {
+          "status": "ready",
+          "summary": "测温并执行所需分支后返航。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "library_inspection",
+                  "action": "inspect",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "lab_sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "task_observation": {
+        "faults": [
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 1,
+            "status": "conflict"
+          },
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 2,
+            "status": "conflict"
+          },
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 3,
+            "status": "conflict"
+          }
+        ]
+      },
+      "task_world": {
+        "laboratory": {
+          "temperature_c": 31.0
+        }
+      }
+    },
+    {
+      "id": "holdout_observation_stale",
+      "split": "holdout",
+      "combination": "laboratory_temperature_cross_target_branch_recovery",
+      "instruction": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "if",
+                "observation": {
+                  "type": "evidence",
+                  "action": "thermal_scan",
+                  "target": "laboratory",
+                  "count": 1
+                },
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40,
+                "then": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "library",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                },
+                "else": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "offline_requirements": [
+        {
+          "status": "ready",
+          "summary": "测量实验楼后只执行实际触发的分支，最终返航落地。",
+          "steps": [
+            {
+              "id": "temperature",
+              "action": "thermal_scan",
+              "target_id": "laboratory"
+            },
+            {
+              "id": "choice",
+              "action": "branch",
+              "condition": {
+                "step_id": "temperature",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "inspect",
+                  "action": "inspect",
+                  "target_id": "library"
+                }
+              ],
+              "else": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library"
+                }
+              ]
+            },
+            {
+              "id": "return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_ids": [
+                "temperature",
+                "choice",
+                "inspect",
+                "sample",
+                "return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        }
+      ],
+      "offline_audits": [
+        {
+          "status": "approved",
+          "summary": "要求与原文逐项一致，无额外执行约束。",
+          "issues": []
+        }
+      ],
+      "offline_responses": [
+        {
+          "status": "ready",
+          "summary": "测温并执行所需分支后返航。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "library_inspection",
+                  "action": "inspect",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "lab_sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        {
+          "status": "ready",
+          "summary": "测温并执行所需分支后返航。",
+          "steps": [
+            {
+              "id": "scan",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "duration_seconds": null,
+              "when": null
+            },
+            {
+              "id": "decision",
+              "action": "branch",
+              "condition": {
+                "step_id": "scan",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 40
+              },
+              "then": [
+                {
+                  "id": "library_inspection",
+                  "action": "inspect",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "lab_sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": null,
+                  "when": null
+                }
+              ]
+            },
+            {
+              "id": "home",
+              "action": "return_home",
+              "target_id": "home",
+              "duration_seconds": 0,
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        }
+      ],
+      "task_observation": {
+        "faults": [
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 1,
+            "status": "stale"
+          },
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 2,
+            "status": "stale"
+          },
+          {
+            "action": "thermal_scan",
+            "target_id": "laboratory",
+            "attempt": 3,
+            "status": "stale"
+          }
+        ]
+      },
+      "task_world": {
+        "laboratory": {
+          "temperature_c": 53.0
+        }
+      }
     }
   ],
-  "revision": "2026-10-22-r2",
-  "revision_notes": "Clarify the scope of the two-round observation loop; require return after the selected conditional branch. Previous live reports are retained unchanged."
+  "revision": "2026-10-26-r4",
+  "revision_notes": "Independently author sparse requirement fixtures for each user instruction and update; cover audited extraction repair and plan omission repair in the existing initial-omission case.",
+  "task_world": {
+    "conference": {
+      "temperature_c": 27.0
+    },
+    "library": {
+      "temperature_c": 29.0
+    },
+    "teaching": {
+      "temperature_c": 27.0
+    },
+    "c4": {
+      "temperature_c": 27.0
+    },
+    "exhibition": {
+      "temperature_c": 27.0
+    },
+    "c6": {
+      "temperature_c": 27.0
+    },
+    "c7": {
+      "temperature_c": 27.0
+    },
+    "c8": {
+      "temperature_c": 27.0
+    },
+    "north_teaching": {
+      "temperature_c": 27.0
+    },
+    "research_one": {
+      "temperature_c": 27.0
+    },
+    "research_two": {
+      "temperature_c": 27.0
+    },
+    "r3": {
+      "temperature_c": 27.0
+    },
+    "laboratory": {
+      "temperature_c": 68.0
+    },
+    "l2": {
+      "temperature_c": 27.0
+    },
+    "l3": {
+      "temperature_c": 27.0
+    },
+    "l4": {
+      "temperature_c": 27.0
+    },
+    "l5": {
+      "temperature_c": 27.0
+    },
+    "l6": {
+      "temperature_c": 27.0
+    },
+    "north_lab_wing": {
+      "temperature_c": 27.0
+    },
+    "s2_s4": {
+      "temperature_c": 27.0
+    },
+    "south_canteen": {
+      "temperature_c": 27.0
+    },
+    "north_canteen": {
+      "temperature_c": 27.0
+    },
+    "d1": {
+      "temperature_c": 27.0
+    },
+    "d2": {
+      "temperature_c": 27.0
+    },
+    "d3": {
+      "temperature_c": 27.0
+    },
+    "d4": {
+      "temperature_c": 27.0
+    },
+    "d5": {
+      "temperature_c": 27.0
+    },
+    "d6": {
+      "temperature_c": 27.0
+    },
+    "d7": {
+      "temperature_c": 27.0
+    },
+    "d8": {
+      "temperature_c": 27.0
+    },
+    "d9": {
+      "temperature_c": 27.0
+    },
+    "d10": {
+      "temperature_c": 27.0
+    },
+    "d11": {
+      "temperature_c": 27.0
+    },
+    "d12": {
+      "temperature_c": 27.0
+    },
+    "d13": {
+      "temperature_c": 27.0
+    },
+    "d14": {
+      "temperature_c": 27.0
+    },
+    "a1": {
+      "temperature_c": 27.0
+    },
+    "a2": {
+      "temperature_c": 27.0
+    },
+    "a3": {
+      "temperature_c": 27.0
+    },
+    "a4": {
+      "temperature_c": 27.0
+    },
+    "a5": {
+      "temperature_c": 27.0
+    },
+    "south_plaza": {
+      "temperature_c": 27.0
+    },
+    "central_garden": {
+      "temperature_c": 27.0
+    },
+    "west_garden": {
+      "temperature_c": 27.0
+    },
+    "east_garden": {
+      "temperature_c": 27.0
+    },
+    "south_court": {
+      "temperature_c": 27.0
+    },
+    "north_court": {
+      "temperature_c": 27.0
+    },
+    "stadium": {
+      "temperature_c": 27.0
+    },
+    "north_football": {
+      "temperature_c": 27.0
+    },
+    "north_volleyball": {
+      "temperature_c": 27.0
+    },
+    "north_tennis": {
+      "temperature_c": 27.0
+    },
+    "north_basketball": {
+      "temperature_c": 27.0
+    },
+    "laboratory_court": {
+      "temperature_c": 27.0
+    },
+    "home": {
+      "temperature_c": 27.0
+    },
+    "east_gate": {
+      "temperature_c": 27.0
+    },
+    "north_gate": {
+      "temperature_c": 27.0
+    }
+  }
 }

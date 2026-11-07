@@ -193,11 +193,11 @@ class UAVEnvironment:
             buildings=self.buildings,
         )
 
-    def snapshot(self, feedback: str | None = None) -> dict[str, object]:
+    def snapshot(self, feedback: str | None = None, *, scenario_metadata=None) -> dict[str, object]:
         observation = self.get_observation()
         return {
             "scenario_id": self.scenario_id,
-            "scenario": self.scenario.to_dict(),
+            "scenario": self.scenario.to_dict() if scenario_metadata is None else scenario_metadata,
             "grid_size": self.grid_size,
             "meters_per_cell": METERS_PER_CELL,
             "meters_per_altitude_level": METERS_PER_ALTITUDE_LEVEL,

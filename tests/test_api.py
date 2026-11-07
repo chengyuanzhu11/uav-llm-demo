@@ -1,10 +1,14 @@
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from uav_llm_demo import create_app
 from uav_llm_demo.agents import MockLLMAgent
 from uav_llm_demo.mission_service import MissionService
+from uav_llm_demo.gazebo_runtime import GazeboRuntime
+from uav_llm_demo.motion import VehicleState
+from uav_llm_demo.scenarios import load_scenario
 from tests.test_mission_service import FailingRuntime, RecordingRuntime
 
 
@@ -24,9 +28,9 @@ class RuntimeApiTest(unittest.TestCase):
         self.addCleanup(app.extensions["mission_service"].close)
         return app
 
-    def test_app_starts_in_html_without_constructing_airsim(self):
+    def test_app_starts_in_html_without_constructing_gazebo(self):
         def forbidden_factory(backend, config):
-            raise AssertionError("AirSim must be lazy")
+            raise AssertionError("Gazebo must be lazy")
 
         app = self.make_app(runtime_factory=forbidden_factory)
         response = app.test_client().get("/api/state")
@@ -69,14 +73,21 @@ class RuntimeApiTest(unittest.TestCase):
         self.assertTrue(payload["flight"]["running"])
         self.assertGreaterEqual(payload["flight"]["planner_calls"], 1)
 
-    def test_html_wind_is_an_unsupported_capability(self):
-        response = self.make_app().test_client().post(
-            "/api/runtime/wind",
-            json={"north": 1, "east": 0, "down": 0},
-        )
-
-        self.assertEqual(response.status_code, 409)
-        self.assertTrue(response.get_json()["error"].startswith("Runtime error:"))
+    def test_retired_physics_controls_cannot_reset_or_stop_the_runtime(self):
+        app = self.make_app()
+        service = app.extensions["mission_service"]
+        runtime, run_id = service.runtime, service.trace.run_id
+        with patch.object(runtime, "stop") as stop, patch.object(runtime, "reset") as reset:
+            response = app.test_client().post("/api/runtime", json={"backend": "physics"})
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("'html' or 'gazebo'", response.get_json()["error"])
+            response = app.test_client().post("/api/runtime/wind", json={"north": 1})
+            self.assertEqual(response.status_code, 410)
+            self.assertEqual(response.get_json()["error_code"], "runtime_removed")
+            stop.assert_not_called()
+            reset.assert_not_called()
+        self.assertIs(service.runtime, runtime)
+        self.assertEqual(service.trace.run_id, run_id)
 
     def test_runtime_failure_is_reported_without_commit(self):
         service = MissionService(agent=MockLLMAgent(), runtime=FailingRuntime())
@@ -89,22 +100,79 @@ class RuntimeApiTest(unittest.TestCase):
         self.assertEqual(after["uav"], before["uav"])
         self.assertEqual(after["step_count"], before["step_count"])
 
+    def test_native_state_conflicts_preserve_flight_and_reset_succeeds_after_landing(self):
+        # Exercise the real adapter guards and API, without a transport or model call.
+        runtime = GazeboRuntime()
+        scenario = load_scenario("visual_garden")
+        runtime._scene = scenario
+        runtime._mav = Mock()
+        runtime.camera = SimpleNamespace(time=20., close=Mock())
+        runtime.read_state = Mock(return_value=VehicleState(scenario.base))
+        runtime.read_telemetry = Mock(return_value={})
+        runtime.connected = True
+        runtime._last_message = time.monotonic()
+        runtime.stop = Mock(wraps=runtime.stop)
+        factory = Mock(side_effect=AssertionError("Must reuse the existing Gazebo connection"))
+        service = MissionService(runtime=runtime, runtime_factory=factory, scenario_id="visual_garden")
+        client = self.make_app(service=service).test_client()
+        service._running = True
+        service._publish_state()
+        before = service.state()
+        seed = service._traffic_seed
+        runtime._command = (1., .2, 0.)
+        for landed, armed, position, code in (
+            (False, True, (2, 12, 1), "runtime_requires_landed"),
+            (True, True, scenario.base, "runtime_requires_landed"),
+            (None, False, scenario.base, "runtime_requires_landed"),
+            (True, False, (5, 12, 0), "runtime_requires_home"),
+        ):
+            with self.subTest(landed=landed, armed=armed, position=position):
+                runtime._landed, runtime.armed = landed, armed
+                runtime.read_state.return_value = VehicleState(position)
+                response = client.post("/api/reset")
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.get_json()["error_code"], code)
+                if code == "runtime_requires_landed":
+                    response = client.post("/api/runtime", json={"backend": "html"})
+                    self.assertEqual(response.status_code, 409)
+                    self.assertEqual(response.get_json()["error_code"], code)
+                self.assertEqual(service.state(), before)
+                self.assertEqual(service._traffic_seed, seed)
+                runtime.stop.assert_not_called()
+                self.assertEqual(runtime._command, (1., .2, 0.))
+        response = client.post("/api/scenario", json={"scenario_id": "semantic_campus"})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.get_json()["error_code"], "runtime_world_mismatch")
+        self.assertEqual(service.state(), before)
+        runtime.stop.assert_not_called()
+
+        runtime._landed, runtime.armed = True, False
+        runtime.read_state.return_value = VehicleState(scenario.base)
+        response = client.post("/api/runtime", json={"backend": "gazebo", "config": {
+            "world": "visual_garden", "port": 14540, "vehicle_name": "x500_rgbd_0"}})
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.get_json()["flight"]["running"])
+        self.assertEqual(runtime._command, (0., 0., 0.))
+        runtime.stop.assert_called_once()
+        factory.assert_not_called()
+        self.assertEqual(client.post("/api/runtime", json={"backend": "html"}).status_code, 200)
+
     def test_switch_runtime_uses_nested_config_and_resets(self):
-        airsim = RecordingRuntime("airsim")
-        app = self.make_app(runtime_factory=lambda backend, config: airsim)
+        gazebo = RecordingRuntime("gazebo")
+        app = self.make_app(runtime_factory=lambda backend, config: gazebo)
         client = app.test_client()
 
         response = client.post(
             "/api/runtime",
             json={
-                "backend": "airsim",
-                "config": {"host": "127.0.0.1", "port": 41451},
+                "backend": "gazebo",
+                "config": {"world": "visual_garden", "port": 14540},
             },
         )
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["runtime_backend"], "airsim")
+        self.assertEqual(payload["runtime_backend"], "gazebo")
         self.assertEqual(payload["step_count"], 0)
 
     def test_agent_config_does_not_echo_api_key(self):

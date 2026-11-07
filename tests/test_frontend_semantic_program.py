@@ -8,7 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FUNCTIONS = [
-    "isSemanticScenario", "semanticStatusLabel", "submitSemanticTask", "pointOfInterestLabel",
+    "isSemanticScenario", "semanticStatusLabel", "semanticCompletionLabel", "submitSemanticTask", "handleTaskInstructionKeydown", "pointOfInterestLabel",
     "semanticElement", "semanticConditionLabel", "semanticProgramNodes", "semanticProgramLabel",
     "semanticEvidenceForStep", "renderSemanticMission", "evidenceResultLabel",
     "semanticMotionSummary", "semanticMotionProgressLabel", "semanticStepLabel",
@@ -54,6 +54,7 @@ const semanticPanel = new Element(), semanticProgram = new Element(), semanticSt
 const taskForm = new Element(), taskInstruction = new Element(), submitTaskBtn = new Element();
 const recommendedTasks = new Element(), flightDiagnostics = new Element();
 let commandPending = false, commandError = '', renderedMissionMode = null, recommendationKey = '', semanticStepsKey = '';
+let semanticStepStatuses = [];
 let state = {scenario_id:'semantic_campus', deepseek_key_configured:true, flight:{running:true},
   scenario:{mission_mode:'semantic', points_of_interest:[{id:'lab',label:'实验楼'}, {id:'library',label:'图书馆'}]},
   semantic_mission:{mission_id:'m', vehicle_id:'uav-1', status:'running', revision:1, instruction:'初始任务'}};
@@ -167,14 +168,20 @@ assert.match(semanticSteps.textContent,/循环第 2 次/);
 const active = semanticSteps.children.filter(child => child.attributes['aria-current'] === 'step');
 assert.equal(active.length,1); assert.equal(active[0].dataset.status,'active');
 assert.doesNotMatch(semanticSteps.textContent,/模拟采样/); // The untaken branch is a plan, not an execution record.
-assert.match(document.getElementById('plannerProgress').textContent,/当前任务已完成 1 步/);
+assert.match(document.getElementById('plannerProgress').textContent,/当前方案已完成 1 步/);
 state.semantic_mission.plan_revision = 2;
 state.semantic_mission.revision = 3;
 state.semantic_mission.status = 'needs_clarification';
 renderSemanticMission();
 assert.match(semanticSteps.textContent,/当前任务 · 第 2 版/);
 assert.match(semanticProgram.textContent,/循环 2 次 · 第 2 次/);
-assert.match(document.getElementById('plannerProgress').textContent,/当前任务已完成 1 步/);
+assert.match(document.getElementById('plannerProgress').textContent,/当前方案已完成 1 步/);
+state.semantic_mission.task_contract={matched_occurrences:1};
+assert.match(semanticCompletionLabel(state.semantic_mission,true),/^本次任务已验证 1 项要求 · 历史累计 /);
+state.semantic_mission.plan_revision=4;
+renderSemanticMission();
+assert.match(document.getElementById('plannerProgress').textContent,/本次任务已验证 1 项要求/);
+assert.doesNotMatch(document.getElementById('plannerProgress').textContent,/已验证 0/);
 ''')
 
     def test_motion_progress_uses_confirmed_path_progress_and_updates_without_step_changes(self):
@@ -188,12 +195,14 @@ state.semantic_mission = {mission_id:'m',vehicle_id:'uav-1',status:'running',rev
   motion_progress:{execution_id:'flight-2',phase:'transit',distance_m:0,total_length_m:150,progress:0}};
 renderSemanticMission();
 assert.match(semanticSteps.textContent,/轨迹飞行 · 图书馆/);
+const activeItem = semanticSteps.children[0];
 assert.match(semanticSteps.textContent,/顺时针 2 圈 · 2 m\/s · 朝向图书馆/);
 assert.match(semanticSteps.textContent,/前往轨迹起点/);
 assert.doesNotMatch(semanticSteps.textContent,/NaN|undefined|停留/);
 state.semantic_mission.motion_progress = {execution_id:'flight-2',phase:'tracking',distance_m:75.8,total_length_m:150.2,progress:0.504};
 renderSemanticMission();
 assert.match(semanticSteps.textContent,/轨迹进度 50% · 75 \/ 151 m/);
+assert.equal(semanticSteps.children[0], activeItem); // Progress must not replace the visible task row.
 assert.doesNotMatch(semanticSteps.textContent,/已完成 .*圈/);
 state.semantic_mission.motion_progress.progress = 1;
 renderSemanticMission();

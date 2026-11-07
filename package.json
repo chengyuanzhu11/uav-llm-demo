@@ -1,0 +1,9 @@
+{
+  "name": "uav-llm-scene-tools",
+  "private": true,
+  "description": "Browser validation and export of the existing scene geometry to Gazebo",
+  "devDependencies": {
+    "playwright": "1.64.1",
+    "three": "0.185.0"
+  }
+}

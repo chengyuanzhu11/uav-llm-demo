@@ -101,11 +101,11 @@ class RandomTargetTest(unittest.TestCase):
         service.configure_agent({"backend": "mock"})
         self.assertEqual(service.state()["target"], target)
 
-    def test_runtime_switch_retains_target_and_airsim_reset_updates_scene(self):
-        runtime = RecordingRuntime("airsim")
+    def test_runtime_switch_retains_target_and_gazebo_reset_updates_scene(self):
+        runtime = RecordingRuntime("gazebo")
         service = self.service(target_seed=2, runtime_factory=lambda backend, config: runtime)
         target = service.state()["target"]
-        switched = service.switch_runtime("airsim")
+        switched = service.switch_runtime("gazebo")
         self.assertEqual(switched["target"], target)
         self.assertEqual(point_to_dict(runtime.scene.target), target)
         reset = service.reset()
