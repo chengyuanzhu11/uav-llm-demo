@@ -15,14 +15,14 @@ export function addCampusLandscape(THREE, parent, layout, {X, Z, instance, mater
   for (const [index, tree] of (layout.trees || []).entries()) {
     const h = tree.height * 5, r = tree.radius * 3, x = X(tree.x), z = Z(tree.y);
     const mats = leaves[tree.species] || leaves.broadleaf;
-    instance('campus_tree_trunks', trunk, bark, x, h * .31, z, 1, h * .62, 1);
+    instance('campus_tree_trunks', trunk, bark, x, h * .31, z, 1, h * .62, 1, 0, tree.id);
     if (tree.species === 'conifer') {
       for (let i = 0; i < 3; i++) instance('campus_tree_conifers', cone, mats[i],
-        x, h * (.48 + i * .17), z, r * (1 - i * .25), h * .36, r * (1 - i * .25));
+        x, h * (.48 + i * .17), z, r * (1 - i * .25), h * .36, r * (1 - i * .25), 0, tree.id);
     } else {
-      instance('campus_tree_canopies', sphere, mats[index % 3], x, h * .72, z, r * .72, h * .28, r * .72);
+      instance('campus_tree_canopies', sphere, mats[index % 3], x, h * .72, z, r * .72, h * .28, r * .72, 0, tree.id);
       for (const side of [-1, 1]) instance('campus_tree_canopies', sphere, mats[(index + 1) % 3],
-        x + side * r * .32, h * .60, z + side * r * .10, r * .62, h * .24, r * .64);
+        x + side * r * .32, h * .60, z + side * r * .10, r * .62, h * .24, r * .64, 0, tree.id);
     }
   }
 

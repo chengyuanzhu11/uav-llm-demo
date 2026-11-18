@@ -65,6 +65,7 @@ async function main() {
       toGazebo.setPosition(half * 3, -half * 3, 0);
       let meshCount = 0, triangleCount = 0;
       const batches = new Map();
+      const targetSurfaces = {};
       source.traverseVisible(object => {
         // Labels, task overlays and camera-facing sprites are not physical scenery.
         if (!object.isMesh) return;
@@ -80,6 +81,19 @@ async function main() {
           // are costly (and unstable on WSLg's D3D12 backend); keep the same triangles.
           const geometry = object.geometry.index ? object.geometry.toNonIndexed() : object.geometry.clone();
           geometry.applyMatrix4(toGazebo.clone().multiply(transform));
+          // Evaluator-only surfaces use the same triangles as the exported RGB scene.
+          // The registry is a separate file and never enters either model's input.
+          let targetId = object.userData.objectIds?.[index];
+          for (let parent = object; !targetId && parent; parent = parent.parent) {
+            if (parent.userData.landmarkId) targetId = 'campus_fixture_' + parent.userData.landmarkId;
+          }
+          if (targetId) {
+            if (!targetSurfaces[targetId]) targetSurfaces[targetId] = [];
+            const vertices = geometry.attributes.position;
+            for (let i = 0; i < vertices.count; i++) {
+              targetSurfaces[targetId].push(vertices.getX(i), vertices.getY(i), vertices.getZ(i));
+            }
+          }
           const groups = Array.isArray(object.material) ? geometry.groups
             : [{start: 0, count: geometry.attributes.position.count, materialIndex: 0}];
           for (const group of groups) {
@@ -108,12 +122,15 @@ async function main() {
         const reader = new FileReader(); reader.onload = () => resolve(reader.result.split(',')[1]);
         reader.readAsDataURL(new Blob([binary]));
       });
-      return {data, meshCount, drawMeshCount: world.children.length, triangleCount,
+      return {data, targetSurfaces, meshCount, drawMeshCount: world.children.length, triangleCount,
         bounds: [bounds.min.toArray(), bounds.max.toArray()]};
     }, payload);
     fs.mkdirSync(path.dirname(path.resolve(output)), {recursive: true});
     fs.writeFileSync(output, Buffer.from(exported.data, 'base64'));
     delete exported.data;
+    const surfacePath = path.join(path.dirname(path.resolve(output)), 'target-surfaces.json');
+    fs.writeFileSync(surfacePath, JSON.stringify({frame: 'gazebo_enu_metres', objects: exported.targetSurfaces}));
+    delete exported.targetSurfaces;
     console.log(JSON.stringify(exported));
   } finally {
     if (browser) await browser.close();

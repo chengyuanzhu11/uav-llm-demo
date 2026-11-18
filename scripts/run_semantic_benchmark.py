@@ -1,4 +1,4 @@
-"""Run the campus task benchmark; remote API calls are opt-in."""
+"""Run the campus task benchmark; real model inference is opt-in."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from uav_llm_demo.provider_config import is_provider_configured, load_planner_config
 from uav_llm_demo.semantic_benchmark import (
     DEFAULT_DATASET, SEMANTIC_POLICIES, compare_policies, load_dataset, run_case, summarize,
 )
@@ -39,7 +40,7 @@ def main():
     parser.add_argument("--output", type=Path, help="Optional JSON result path; must not already exist")
     args = parser.parse_args()
     if args.backend == "deepseek" and args.mode != "realtime":
-        parser.error("Real API requests require --mode realtime --backend deepseek")
+        parser.error("Real model requests require --mode realtime --backend deepseek")
     if args.runtime == "gazebo" and (args.mode != "realtime" or args.traffic != "none"):
         parser.error("Gazebo requires --mode realtime --traffic none; close other project SITL sessions first")
     if args.control_delay_ms and args.mode != "realtime":
@@ -63,6 +64,8 @@ def main():
     if args.backend == "deepseek":
         from dotenv import load_dotenv
         load_dotenv(Path(__file__).resolve().parents[1]/".env")
+        if not is_provider_configured(load_planner_config()):
+            parser.error("Configure the planner model and endpoint; non-local endpoints also require an API key")
     report = dict(dataset_version=data["version"], dataset_revision=data.get("revision"),
                   selected_runs=len(seeds)*len(cases)*len(policies), results=results)
     if args.output:

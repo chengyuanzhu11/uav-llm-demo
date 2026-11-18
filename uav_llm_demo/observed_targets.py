@@ -14,13 +14,23 @@ def validate_target_reference(node, preceding, evidence, path):
     reference = node.get("target_ref")
     if reference is None:
         if (node.get("motion", {}).get("heading") or {}).get("mode") == "face_reference":
+            if node.get("target_id") is not None:
+                raise TaskProtocolError(path.removesuffix(".target_ref") + ".motion.heading.mode", "missing_target_reference",
+                    "For a named map target, use motion.heading.mode=face_target with motion.heading.target_id set to its published ID; "
+                    "keep the named node target_id. face_reference is only for a target_ref bound to a preceding visual observation "
+                    "or valid mission evidence. Do not invent a visual step or self-reference.")
             raise TaskProtocolError(path, "missing_target_reference", "face_reference requires target_ref.")
         return
     if "step_id" in reference:
         source = preceding.get(reference["step_id"])
         if source is None or source["action"] != "visual":
-            raise TaskProtocolError(path, "invalid_target_reference",
-                "target_ref must name a guaranteed preceding visual step in this revision.")
+            message = "target_ref must name a guaranteed preceding visual step in this revision, never the current or a future step."
+            if node.get("target_id") is not None:
+                message += (" target_ref is optional for named map targets: if the requirement concerns that map place, "
+                            "remove the invalid target_ref and keep target_id. If the requirement concerns an observed object, "
+                            "retain the observation binding and use its actual preceding visual step or valid mission evidence. "
+                            "Do not create an unrequested visual step to satisfy this error.")
+            raise TaskProtocolError(path, "invalid_target_reference", message)
     else:
         record = evidence.get(reference["evidence_id"])
         if record is None:

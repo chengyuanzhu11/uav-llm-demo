@@ -45,6 +45,10 @@ class TaskProtocolTests(unittest.TestCase):
         for variant in nodes:
             self.assertFalse(variant["additionalProperties"])
             self.assertIn("action", variant["required"])
+        home = next(v for v in nodes if v["properties"]["action"]["const"] == "return_home")
+        self.assertEqual(home["properties"]["target_id"]["const"], "home")
+        visit = next(v for v in nodes if v["properties"]["action"]["const"] == "visit")
+        self.assertNotIn("const", visit["properties"]["target_id"])
         value = program(motion())
         validate_structure(value, schema)
         plan = self.parse(value)
@@ -90,6 +94,11 @@ class TaskProtocolTests(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 candidate = program(motion(path={"kind": "boundary", field: value}))
                 self.error(candidate, f"$.steps[0].motion.path.{field}")
+        home = dict(id="return", action="return_home", target_id="home", duration_seconds=1, when=None)
+        error = self.error(program(home), "$.steps[0].duration_seconds", "number_range")
+        self.assertEqual(error["expected"], ["minimum=0", "maximum=0"])
+        home.update(duration_seconds=0, target_id="library")
+        self.error(program(home), "$.steps[0].target_id", "invalid_choice")
 
     def test_heading_fields_and_missing_discriminators_are_precise(self):
         node = motion()

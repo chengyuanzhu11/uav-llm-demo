@@ -19,6 +19,7 @@ const followBtn = document.getElementById("followBtn");
 const agentButtons = [...document.querySelectorAll("[data-agent]")];
 const runtimeButtons = [...document.querySelectorAll("[data-runtime]")];
 const agentKeyBtn = document.getElementById("agentKeyBtn");
+const agentModelLabel = document.getElementById("agentModelLabel");
 const gazeboConfigBtn = document.getElementById("gazeboConfigBtn");
 const vehicleName = document.getElementById("vehicleName");
 const gazeboWorld = document.getElementById("gazeboWorld");
@@ -47,6 +48,7 @@ const deepseekBaseUrl = document.getElementById("deepseekBaseUrl");
 const saveAgentBtn = document.getElementById("saveAgentBtn");
 const agentDialogError = document.getElementById("agentDialogError");
 const agentKeyStatus = document.getElementById("agentKeyStatus");
+const agentVisionStatus = document.getElementById("agentVisionStatus");
 const agentDialogStatus = document.getElementById("agentDialogStatus");
 const agentAdvanced = document.getElementById("agentAdvanced");
 const loadModelsBtn = document.getElementById("loadModelsBtn");
@@ -1110,11 +1112,12 @@ function renderToolbarState() {
   const missionPhase = semantic ? "语言任务" : { fly_to_target: "Outbound", returning_home: "Returning", completed: "Completed" }[state?.phase] || "--";
   setText(phaseValue, `${missionPhase} / ${state?.flight?.stage || "--"} / ${state?.flight?.mode || "idle"}`);
   const traceDecision = getHistoryEntries()[0]?.decision;
-  const traceBackend = semantic ? "DeepSeek" : traceDecision?.agent_backend || state?.agent_backend;
-  const traceModel = semantic ? null : traceDecision?.agent_backend
+  const traceBackend = semantic ? state?.agent_backend : traceDecision?.agent_backend || state?.agent_backend;
+  const traceModel = semantic ? state?.agent_model : traceDecision?.agent_backend
     ? traceDecision.agent_model
     : state?.agent_model;
-  setText(backendValue, traceModel ? `${traceBackend}:${traceModel}` : traceBackend);
+  setText(backendValue, traceModel || (traceBackend === "deepseek" ? "LLM API" : traceBackend));
+  setText(agentModelLabel, state?.agent_model || "LLM API");
   const flight = state?.flight || {};
   const active = Boolean(semantic ? flight.running : flight.running || flight.planning);
   const unavailable = !state || state.status !== "active";
@@ -1126,6 +1129,7 @@ function renderToolbarState() {
   scenarioSelect.disabled = commandPending || !state;
   agentButtons.forEach((button) => {
     const selected = button.dataset.agent === state?.agent_backend;
+    if (button.dataset.agent === "deepseek") button.title = state?.agent_model || "LLM API";
     button.setAttribute("aria-checked", String(selected));
     button.classList.toggle("active", selected);
     button.hidden = semantic && button.dataset.agent === "mock";
@@ -1178,7 +1182,7 @@ async function submitSemanticTask(event) {
   if (!isSemanticScenario() || commandPending) return false;
   const instruction = taskInstruction.value.trim();
   if (!instruction) return false;
-  if (!state.deepseek_key_configured) {
+  if (!state.agent_configured) {
     openAgentDialog();
     return false;
   }
@@ -1371,7 +1375,7 @@ function renderSemanticMission() {
   const mission = state.semantic_mission || {};
   const steps = Array.isArray(mission.steps) ? mission.steps : [];
   const evidence = Array.isArray(mission.evidence) ? mission.evidence : [];
-  const configured = Boolean(state.deepseek_key_configured);
+  const configured = Boolean(state.agent_configured);
   const planRevision = mission.plan_revision ?? mission.revision;
   setText(document.getElementById("plannerProgress"), `${semanticCompletionLabel(mission)} · ${state.flight?.planner_calls || 0} 次本地规划`);
   taskInstruction.disabled = commandPending;
@@ -1815,14 +1819,19 @@ function refreshAgentConfigControls() {
   deepseekBaseUrl.disabled = unavailable;
   const ready = agentModelsContext === agentConfigContext() && Boolean(deepseekModel.value);
   deepseekModel.disabled = unavailable || agentModelsLoading || !ready;
-  loadModelsBtn.disabled = unavailable || agentModelsLoading || !deepseekBaseUrl.value.trim()
-    || (!deepseekApiKey.value.trim() && !agentKeyReusable());
+  loadModelsBtn.disabled = unavailable || agentModelsLoading || !deepseekBaseUrl.value.trim();
   saveAgentBtn.disabled = unavailable || agentModelsLoading || !ready;
   loadModelsBtn.textContent = agentModelsLoading ? "读取中…" : "读取模型";
   saveAgentBtn.textContent = agentConfigSaving ? "验证中…" : "验证并保存";
-  deepseekApiKey.placeholder = agentKeyReusable() ? "已保存此服务 Key；留空复用" : "输入此服务的 API Key";
+  deepseekApiKey.placeholder = agentKeyReusable() ? "已保存此服务 Key；留空复用" : "API Key（本地接口可留空）";
   setText(agentKeyStatus, agentKeyReusable()
-    ? "已保存此服务的 Key；填写新 Key 可替换。" : "Key 仅保存在当前服务进程内。");
+    ? "已保存此服务的 Key；填写新 Key 可替换。" : "本地无认证接口可留空；Key 仅保存在当前服务进程内。");
+  const vision = agentConfigCatalog?.vision;
+  const strategy = {direct: "直接视觉决策", two_stage: "视觉理解 + 语言规划"}[vision?.strategy] || vision?.strategy;
+  setText(agentVisionStatus, !agentConfigCatalog ? "视觉模型：—" : `视觉模型：${vision?.model || "未配置"}`
+    + (vision?.model && strategy ? ` · ${strategy}` : "")
+    + (vision?.model && !vision.configured ? " · 配置不完整" : ""));
+  agentVisionStatus.title = vision?.base_url || "";
 }
 
 
@@ -1844,7 +1853,7 @@ function selectAgentProvider() {
   deepseekBaseUrl.value = agentProviderProfile()?.base_url || provider?.default_base_url || "";
   agentAdvanced.open = agentProvider.value === "custom";
   refreshAgentConfigControls();
-  if (agentKeyReusable()) void loadAgentModels();
+  if (agentKeyReusable() || agentProviderProfile()?.model) void loadAgentModels();
 }
 
 
@@ -1855,8 +1864,8 @@ async function loadAgentModels() {
   const request = ++agentModelRequest;
   const body = {provider: agentProvider.value, base_url: deepseekBaseUrl.value.trim()};
   if (deepseekApiKey.value.trim()) body.api_key = deepseekApiKey.value.trim();
-  if (!body.base_url || (!body.api_key && !agentKeyReusable())) {
-    showAgentConfigError("请填写此服务的 API Key 和接口地址。");
+  if (!body.base_url) {
+    showAgentConfigError("请填写此服务的接口地址。");
     return;
   }
   agentModelsLoading = true;

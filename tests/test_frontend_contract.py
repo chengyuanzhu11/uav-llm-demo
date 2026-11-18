@@ -219,7 +219,7 @@ const element = () => ({value:'', disabled:false, textContent:'', hidden:false, 
 });
 const agentProvider=element(), deepseekApiKey=element(), deepseekModel=element(),
   deepseekBaseUrl=element(), saveAgentBtn=element(), agentDialogError=element(),
-  agentKeyStatus=element(), agentDialogStatus=element(), loadModelsBtn=element();
+  agentKeyStatus=element(), agentVisionStatus=element(), agentDialogStatus=element(), loadModelsBtn=element();
 const agentAdvanced={open:false}, agentDialog={open:true};
 const document={createElement:()=>element()};
 const setText=(node,text)=>{node.textContent=text;};
@@ -256,7 +256,7 @@ const drain=async()=>{await Promise.resolve();await Promise.resolve();};
         self.assertIn('id="agentAdvanced"', html)
         self.assertNotIn('id="deepseekModel" value=', html)
         self.assertNotIn('value="deepseek-v4-flash"', html)
-        self.assertIn('if (backend === "deepseek") {\n      openAgentDialog();', javascript)
+        self.assertIn('if (normalized === "deepseek") {\n    openAgentDialog();', javascript)
         self.assertIn('addEventListener("cancel", clearAgentDialog)', javascript)
         self.assertIn('addEventListener("close", () => { if (!agentDialog.open) clearAgentDialog(); })', javascript)
 
@@ -290,6 +290,35 @@ assert.equal(saveAgentBtn.disabled,true);
 assert.equal(loadModelsBtn.disabled,true);
 ''')
 
+    def test_local_model_setup_without_key_shows_the_actual_vision_model(self):
+        self.run_agent_config_functions(r'''
+const model='Qwen/Qwen3-VL-4B-Instruct';
+catalog.active_provider='custom';
+catalog.profiles.push({id:'custom',base_url:'http://127.0.0.1:8001/v1',model,key_configured:false});
+catalog.vision={model:'vision-instance-model',strategy:'direct',base_url:'http://127.0.0.1:8002/v1',configured:true};
+requestJson=async(url,options)=>{
+  if(!options)return catalog;
+  const body=JSON.parse(options.body);requests.push(body);
+  return url==='/api/config/models'?{provider:'custom',models:[model]}:{};
+};
+await openAgentDialog();await drain();
+assert.equal(deepseekApiKey.value,'');assert.equal(agentKeyReusable(),false);
+assert.equal(deepseekModel.value,model);assert.equal(saveAgentBtn.disabled,false);
+assert.equal(agentVisionStatus.textContent,'视觉模型：vision-instance-model · 直接视觉决策');
+assert.equal(agentVisionStatus.title,catalog.vision.base_url);
+assert.equal(requests[0].api_key,undefined);
+await configureDeepSeekFromDialog();
+assert.equal(agentDialog.open,false);
+assert.deepEqual(requests.at(-1),{backend:'deepseek',provider:'custom',model,
+  base_url:'http://127.0.0.1:8001/v1',verify:true});
+// Key requirements are decided by the endpoint on the server, not guessed in the UI.
+agentDialog.open=true;agentConfigCatalog=catalog;agentProvider.value='custom';
+deepseekBaseUrl.value='https://remote.example/v1';deepseekApiKey.value='';
+requestJson=async()=>{const error=Error('此接口需要 API Key。');error.code='missing_key';throw error;};
+await loadAgentModels();
+assert.equal(saveAgentBtn.disabled,true);assert.equal(agentDialogError.textContent,'此接口需要 API Key。');
+''')
+
     def test_api_model_responses_cannot_cross_provider_or_key_changes(self):
         self.run_agent_config_functions(r'''
 agentConfigCatalog=catalog;agentProvider.value='deepseek';
@@ -313,7 +342,7 @@ resolveKey({provider:'bailian',models:['stale-key-model']});await oldKeyRequest;
 assert.equal(deepseekModel.value,'');assert.equal(saveAgentBtn.disabled,true);
 deepseekApiKey.value='';deepseekBaseUrl.value='https://other.example';
 invalidateAgentModels();refreshAgentConfigControls();
-assert.equal(agentKeyReusable(),false);assert.equal(loadModelsBtn.disabled,true);
+assert.equal(agentKeyReusable(),false);assert.equal(loadModelsBtn.disabled,false);
 ''')
 
     def test_api_close_erases_key_and_discards_delayed_catalog_and_model_reads(self):
@@ -521,7 +550,7 @@ assert.equal(agentConfigSaving,false);assert.equal(agentDialog.open,true);
             history:[{decision:{agent_backend:'mock', agent_model:null}}],
           };
           const commandError = '', commandPending = false;
-          const backendValue = {}, phaseValue = {};
+          const backendValue = {}, phaseValue = {}, agentModelLabel = {};
           const setText = (node, value) => { node.textContent = value; };
           const simulator = {setAttribute() {}};
           const getHistoryEntries = () => state.history;
@@ -533,11 +562,11 @@ assert.equal(agentConfigSaving,false);assert.equal(agentDialog.open,true);
           assert.equal(backendValue.textContent, 'mock');
           state.history = [];
           renderToolbarState();
-          assert.equal(backendValue.textContent, 'deepseek:deepseek-v4-flash');
+          assert.equal(backendValue.textContent, 'deepseek-v4-flash');
           assert.equal(planBtn.hidden, false);
           assert.equal(agentButtons[0].hidden, false);
-          // Semantic decisions are always attributed to DeepSeek, while the
-          // most recent geometry plan may have come from the local planner.
+          // The task model remains visible when geometry uses the local planner.
+          state.agent_model = 'Qwen/Qwen3-VL-4B-Instruct';
           state.scenario = {mission_mode:'semantic'};
           state.semantic_mission = {status:'interpreting'};
           state.flight = {running:true, planning:true, mode:'planning'};
@@ -545,7 +574,9 @@ assert.equal(agentConfigSaving,false);assert.equal(agentDialog.open,true);
           const mockButton = button(); mockButton.dataset.agent = 'mock';
           agentButtons.push(mockButton);
           renderToolbarState();
-          assert.equal(backendValue.textContent, 'DeepSeek');
+          assert.equal(backendValue.textContent, 'Qwen/Qwen3-VL-4B-Instruct');
+          assert.equal(agentModelLabel.textContent, state.agent_model);
+          assert.equal(agentButtons[0].title, state.agent_model);
           assert.equal(planBtn.hidden, true);
           assert.equal(mockButton.hidden, true);
           assert.equal(startBtn.disabled, false); // Interpretation can pause.

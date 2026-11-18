@@ -50,53 +50,21 @@
         }
       ],
       "oracle": {
-        "type": "all",
+        "type": "sequence",
         "items": [
-          {
-            "type": "sequence",
-            "items": [
-              {
-                "type": "evidence",
-                "action": "control",
-                "target": "home",
-                "count": 1,
-                "occurrence": 1,
-                "result": {
-                  "state": "airborne"
-                }
-              },
-              {
-                "type": "evidence",
-                "action": "control",
-                "target": "home",
-                "count": 1,
-                "occurrence": 2,
-                "result": {
-                  "state": "landed"
-                }
-              }
-            ]
-          },
-          {
-            "type": "evidence",
-            "action": "control",
-            "target": "home",
-            "count": 2
-          },
-          {
-            "type": "goal",
-            "target": "home",
-            "state": "landed",
-            "dwell_seconds": 1
-          },
           {
             "type": "pose",
             "target": "home",
             "state": "airborne",
             "altitude_m": 11,
             "yaw_deg": 90,
-            "dwell_seconds": 1,
-            "occurrence": 1
+            "dwell_seconds": 1
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed",
+            "dwell_seconds": 1
           }
         ]
       },
@@ -143,7 +111,24 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在基地垂直起飞至11米，朝东停留1秒，再降落停留1秒。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"takeoff\", \"landing\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在基地垂直起飞至11米，朝东停留1秒，再降落停留1秒。",
+              "requirement_id": "takeoff",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"airborne\", \"altitude_m\": 11, \"yaw_deg\": 90, \"duration_seconds\": 1}}"
+            },
+            {
+              "quote": "在基地垂直起飞至11米，朝东停留1秒，再降落停留1秒。",
+              "requirement_id": "landing",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"landed\", \"duration_seconds\": 1}}"
+            }
+          ]
         }
       ]
     },
@@ -256,7 +241,24 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "沿着东侧花园顺时针转一圈然后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"garden_lap\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "沿着东侧花园顺时针转一圈然后返航。",
+              "requirement_id": "garden_lap",
+              "expected_json": "{\"action\": \"motion\", \"target_id\": \"east_garden\", \"motion\": {\"path\": {\"kind\": \"boundary\", \"direction\": \"clockwise\", \"laps\": 1}}}"
+            },
+            {
+              "quote": "沿着东侧花园顺时针转一圈然后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -372,7 +374,29 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "先巡检图书馆，再巡检会议中心，最后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"library_inspection\", \"conference_inspection\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检会议中心，最后返航。",
+              "requirement_id": "library_inspection",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检会议中心，最后返航。",
+              "requirement_id": "conference_inspection",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\"}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检会议中心，最后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -565,7 +589,39 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"temperature\", \"temperature_choice\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+              "requirement_id": "temperature",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+              "requirement_id": "sample",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+              "requirement_id": "fallback",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\"}"
+            },
+            {
+              "quote": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+              "requirement_id": "temperature_choice",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"temperature\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 40}, \"then\": [\"sample\"], \"else\": [\"fallback\"]}"
+            },
+            {
+              "quote": "检查图书馆温度，如果超过40摄氏度就采样，否则巡检会议中心，最后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -731,7 +787,34 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在图书馆执行两轮测温和采样，每轮先测温再采样，完成两轮后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"two_rounds\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在图书馆执行两轮测温和采样，每轮先测温再采样，完成两轮后返航。",
+              "requirement_id": "temperature",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "在图书馆执行两轮测温和采样，每轮先测温再采样，完成两轮后返航。",
+              "requirement_id": "sample",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "在图书馆执行两轮测温和采样，每轮先测温再采样，完成两轮后返航。",
+              "requirement_id": "two_rounds",
+              "expected_json": "{\"action\": \"repeat\", \"count\": 2, \"steps\": [\"temperature\", \"sample\"], \"until\": null}"
+            },
+            {
+              "quote": "在图书馆执行两轮测温和采样，每轮先测温再采样，完成两轮后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -829,7 +912,19 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "去北区足球场中央降落停留2秒，不用返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"landing\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "去北区足球场中央降落停留2秒，不用返航。",
+              "requirement_id": "landing",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"north_football\", \"control\": {\"state\": \"landed\", \"duration_seconds\": 2}}"
+            }
+          ]
         }
       ]
     },
@@ -947,7 +1042,24 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "到西侧花园逆时针环绕两圈，机头保持朝向花园中心，之后回基地。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"garden_laps\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "到西侧花园逆时针环绕两圈，机头保持朝向花园中心，之后回基地。",
+              "requirement_id": "garden_laps",
+              "expected_json": "{\"action\": \"motion\", \"target_id\": \"west_garden\", \"motion\": {\"path\": {\"direction\": \"counterclockwise\", \"laps\": 2, \"kind\": \"boundary\"}, \"heading\": {\"mode\": \"face_target\", \"target_id\": \"west_garden\"}}}"
+            },
+            {
+              "quote": "到西侧花园逆时针环绕两圈，机头保持朝向花园中心，之后回基地。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -1140,7 +1252,39 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"temperature\", \"temperature_choice\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+              "requirement_id": "temperature",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+              "requirement_id": "sample",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+              "requirement_id": "fallback",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\"}"
+            },
+            {
+              "quote": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+              "requirement_id": "temperature_choice",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"temperature\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 40}, \"then\": [\"sample\"], \"else\": [\"fallback\"]}"
+            },
+            {
+              "quote": "测量实验楼温度，高于40摄氏度就在实验楼采样，不高于则检查会议中心，最后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -1325,12 +1469,51 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"library_inspection\", \"lab_inspection\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_id": "library_inspection",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_id": "lab_inspection",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         },
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"replacement_sample\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_id": "replacement_sample",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"conference\"}"
+            },
+            {
+              "quote": "先巡检图书馆，再巡检实验楼，最后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -1479,7 +1662,29 @@
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "先根据当前观测复核安排，然后巡检图书馆并返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"assessment\", \"library_inspection\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "先根据当前观测复核安排，然后巡检图书馆并返航。",
+              "requirement_id": "assessment",
+              "expected_json": "{\"action\": \"review\", \"instruction\": \"根据当前观测复核安排。\"}"
+            },
+            {
+              "quote": "先根据当前观测复核安排，然后巡检图书馆并返航。",
+              "requirement_id": "library_inspection",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "先根据当前观测复核安排，然后巡检图书馆并返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -1620,12 +1825,46 @@
               "message": "应保存会议中心巡检及其发生在返航前的要求。",
               "quote": "巡检会议中心"
             }
+          ],
+          "assertions": [
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"conference_inspection\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_id": "conference_inspection",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\"}"
+            },
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
           ]
         },
         {
           "status": "approved",
           "summary": "原指令的必要要求已覆盖，未增加执行方案参数。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"conference_inspection\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_id": "conference_inspection",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\"}"
+            },
+            {
+              "quote": "巡检会议中心后返航。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ]
     },
@@ -1761,7 +2000,39 @@
         {
           "status": "approved",
           "summary": "要求与原文逐项一致，无额外执行约束。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"temperature\", \"choice\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "temperature",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "inspect",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "sample",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "choice",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"temperature\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 40}, \"then\": [\"inspect\"], \"else\": [\"sample\"]}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ],
       "offline_responses": [
@@ -2030,7 +2301,39 @@
         {
           "status": "approved",
           "summary": "要求与原文逐项一致，无额外执行约束。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"temperature\", \"choice\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "temperature",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "inspect",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "sample",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "choice",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"temperature\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 40}, \"then\": [\"inspect\"], \"else\": [\"sample\"]}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ],
       "offline_responses": [
@@ -2299,7 +2602,39 @@
         {
           "status": "approved",
           "summary": "要求与原文逐项一致，无额外执行约束。",
-          "issues": []
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"temperature\", \"choice\", \"return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "temperature",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "inspect",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "sample",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "choice",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"temperature\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 40}, \"then\": [\"inspect\"], \"else\": [\"sample\"]}"
+            },
+            {
+              "quote": "给实验楼测温：超过四十度就检查图书馆，否则到图书馆采样；做完后回基地降落。",
+              "requirement_id": "return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
         }
       ],
       "offline_responses": [
@@ -2437,7 +2772,7 @@
       }
     }
   ],
-  "revision": "2026-10-26-r4",
+  "revision": "2026-11-10-r5",
   "revision_notes": "Independently author sparse requirement fixtures for each user instruction and update; cover audited extraction repair and plan omission repair in the existing initial-omission case.",
   "task_world": {
     "conference": {

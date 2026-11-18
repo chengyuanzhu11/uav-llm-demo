@@ -16,9 +16,10 @@ from types import SimpleNamespace
 from threading import Event, RLock, Thread
 
 from .agents import DeepSeekAgent, GeometricPlanner, MockLLMAgent, PlannerProviderError, SemanticPlanError, PlanValidationError, build_agent, checked_plan
-from .agents import _redact_task_data, MAX_REPAIR_CANDIDATE_CHARS, TaskPlanningError
+from .agents import _redact_task_data, MAX_REPAIR_CANDIDATE_CHARS, TaskPlanningError, task_interaction_trace
 from .task_contract import TaskContractError
-from .provider_config import ProviderConfigError, ProviderProfiles, discover_models
+from .task_requirements import compare_requirement_assertions
+from .provider_config import ProviderConfigError, ProviderProfiles, discover_models, load_planner_config, is_provider_configured, normalize_endpoint
 from .avoidance import LocalAvoidance
 from .environment import UAVEnvironment, point_to_dict
 from .evaluation import EvaluationLog, MissionEvidence
@@ -51,10 +52,11 @@ SEMANTIC_POLICIES = ("single_pass", "current_repair", "event_review", "contract"
 
 class MissionService:
     CONTROL_DT = 0.05
+    MAX_SEMANTIC_PROVIDER_FAILURES = 3
     MIN_TARGET_HORIZONTAL_DISTANCE_M = 30.0
     MIN_URBAN_TARGET_HORIZONTAL_DISTANCE_M = 75.0
 
-    def __init__(self, *, agent=None, runtime=None, runtime_factory=None, scenario_id="urban_crossing", target_seed=None, traffic_seed=None, journal=None, scenario=None, planner_latency_seconds=0.0, traffic_policy="fixed", observation_config=None, semantic_policy="contract", task_observation_config=None, task_world=None, vision_agent=None):
+    def __init__(self, *, agent=None, runtime=None, runtime_factory=None, scenario_id="urban_crossing", target_seed=None, traffic_seed=None, journal=None, scenario=None, planner_latency_seconds=0.0, traffic_policy="fixed", observation_config=None, semantic_policy="contract", task_observation_config=None, task_world=None, vision_agent=None, trajectory_recorder=None):
         if semantic_policy not in SEMANTIC_POLICIES:
             raise ValueError("Unknown semantic evaluation policy.")
         self._semantic_policy = semantic_policy
@@ -75,11 +77,11 @@ class MissionService:
         self._scenario_template = scenario or load_scenario(scenario_id)
         self._environment = UAVEnvironment(scenario or self._random_scenario(self._scenario_template))
         # Backend selection is a browser action; environment variables only seed
-        # the in-memory DeepSeek configuration and never select the active agent.
+        # the in-memory model configuration and never select the active agent.
         semantic = self._environment.scenario.mission_mode == "semantic"
         self.agent = agent or build_agent("deepseek" if semantic else "mock")
         if semantic and self.agent.backend_name != "deepseek":
-            raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
+            raise ValueError("园区任务需要语言模型理解自然语言，不支持 Mock 模式。")
         self._deepseek_config = self._capture_deepseek_config(self.agent)
         self._provider_profiles = ProviderProfiles(self._deepseek_config)
         self.runtime = runtime or HtmlRuntime()
@@ -97,7 +99,8 @@ class MissionService:
         self._traffic_observer = TrafficObserver(self._observation_config, seed=self._traffic_seed)
         self._safety_armed = False
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uav-planner")
-        self.visual = VisualExecution(vision_agent)
+        self._trajectory_recorder = trajectory_recorder
+        self.visual = VisualExecution(vision_agent, recorder=trajectory_recorder)
         self._shutdown = Event()
         self._thread = None
         self._future = None
@@ -133,6 +136,7 @@ class MissionService:
         self._semantic_repair = None
         self._semantic_stage = "requirements"
         self._pending_requirements = None
+        self._confirmed_source_assertions = ()
         self._future_semantic_stage = None
         self._autonomous_reviews = 0
         self._semantic_review_pending = False
@@ -375,6 +379,7 @@ class MissionService:
                 agent_provider=self._provider_profiles.active,
                 agent_base_url=self._deepseek_config.get("base_url"),
                 deepseek_key_configured=bool(self._deepseek_config.get("api_key")),
+                agent_configured=is_provider_configured(self._deepseek_config),
                 runtime_backend=self.runtime.backend_name, runtime=runtime_status,
                 flight=dict(stage=("landed" if self._environment.position[2] * SCALE[2] <= 0.18 and speed <= 0.02
                                    else "landing" if self._environment.target[2] == 0 and self._vehicle.velocity[2] < 0 and self._environment.position[2] < self._environment.min_altitude - ALTITUDE_EPSILON
@@ -513,9 +518,9 @@ class MissionService:
             if not isinstance(instruction, str) or not 1 <= len(instruction.strip()) <= 2000:
                 raise ValueError("请输入 1–2000 字的任务指令。")
             key = self._deepseek_config.get("api_key")
-            if not key:
-                raise ValueError("请先在 Key 设置中配置 DeepSeek API key。")
-            if key in instruction:
+            if not is_provider_configured(self._deepseek_config):
+                raise ValueError("请先在 API 设置中配置任务模型、接口及所需密钥；本机回环接口可不填写密钥。")
+            if key and key in instruction:
                 raise ValueError("请勿在任务指令中填写 API key。")
             updating = self.semantic.status != "idle"
             if self._vehicle is None:
@@ -527,6 +532,7 @@ class MissionService:
             self._semantic_repair = None
             self._semantic_stage = "requirements" if self._semantic_policy == "contract" else "plan"
             self._pending_requirements = None
+            self._confirmed_source_assertions = ()
             self._semantic_review_pending = False
             self.visual.reset()
             self._invalidate_planning()
@@ -537,7 +543,8 @@ class MissionService:
             self._clear_motion()
             self.semantic.instruction = instruction.strip()
             self.semantic.status = "interpreting"
-            self.semantic.message = "正在理解任务调整，保持安全等待。" if updating else "DeepSeek 正在理解任务及约束。"
+            model_name = self._deepseek_config.get("model") or "语言模型"
+            self.semantic.message = "正在理解任务调整，保持安全等待。" if updating else f"{model_name} 正在理解任务及约束。"
             self._semantic_interpretation_pending = True
             self._environment.status = "active"
             self._terminal_wall = None
@@ -580,6 +587,8 @@ class MissionService:
                 return
             if requirements is not None:
                 catalog["task_requirements"] = requirements.to_dict()
+        if self._confirmed_source_assertions and not self._semantic_review_pending:
+            catalog["confirmed_source_assertions"] = deepcopy(list(self._confirmed_source_assertions))
         context = deepcopy(self._context(semantic_constraints=False))
         agent, instruction, feedback = self.agent, self.semantic.instruction, self._feedback
         target_evidence = deepcopy(catalog.get("mission_context", {}).get("evidence", []))
@@ -600,7 +609,14 @@ class MissionService:
         trace.event("semantic_requested", self._time, request_id=request_id, generation=self._generation, stage=stage)
         generation = self._generation
         def execute():
-            with request_trace(trace.run_id, request_id, trace.usage_event), trace.stage("semantic_" + stage):
+            with request_trace(trace.run_id, request_id, trace.usage_event), trace.stage("semantic_" + stage), \
+                    task_interaction_trace(self._trajectory_recorder, run_id=trace.run_id,
+                        request_id=request_id, stage=stage,
+                        context={"instruction": instruction, "feedback": feedback, "generation": generation,
+                                 "mission_id": catalog["mission_context"]["mission_id"],
+                                 "vehicle_id": catalog["vehicle"]["id"],
+                                 "position": context["position"], "simulation_time": telemetry["simulation_time"]},
+                        cancelled=lambda: self._shutdown.is_set() or generation != self._generation):
                 if stage == "requirements":
                     return agent.extract_task_requirements(catalog, instruction, feedback, repair=repair)
                 if stage == "audit":
@@ -641,6 +657,9 @@ class MissionService:
         plan = None
         try:
             result = future.result()
+            # A parsed reply ends the transport-failure streak, even when an
+            # audit sends requirements back for correction.
+            self.recovery.provider_streak = 0
             if stage in ("requirements", "audit"):
                 if result.status == "needs_clarification":
                     # Keep the existing revision/history semantics for a user
@@ -650,13 +669,24 @@ class MissionService:
                     self._hold_semantic_task(result.summary)
                     return
                 if stage == "requirements":
+                    changed, _, _ = compare_requirement_assertions(result, self._confirmed_source_assertions,
+                                                                  self.semantic.instruction)
+                    if changed:
+                        candidate = json.dumps(result.to_dict(), ensure_ascii=False, allow_nan=False)
+                        raise SemanticPlanError("修正时改动了已确认的任务要求。", candidate=candidate,
+                            diagnostic={"code": "confirmed_requirement_changed", "path": "$",
+                                        "message": "Preserve all confirmed source assertions while correcting other fields.",
+                                        "issues": changed})
                     self._pending_requirements = deepcopy(result)
                     self._advance_semantic_stage("audit")
                 elif result.status == "approved":
                     self.trace.event("semantic_requirements_verified", self._time,
-                                     requirements=self._pending_requirements.to_dict())
+                                     requirements=self._pending_requirements.to_dict(), audit=result.to_dict())
                     self._advance_semantic_stage("plan")
                 else:
+                    combined = [*self._confirmed_source_assertions, *result.confirmed_assertions]
+                    self._confirmed_source_assertions = tuple({json.dumps(item, sort_keys=True): item
+                                                              for item in combined}.values())
                     self._semantic_stage = "requirements"
                     diagnostic = {"code": "source_requirements_mismatch", "path": "$",
                         "message": result.summary, "issues": result.to_dict()["issues"]}
@@ -704,6 +734,7 @@ class MissionService:
                     if site not in self._ground_sites:
                         self._ground_sites.append(site)
         except (SemanticPlanError, TaskContractError) as exc:
+            self.recovery.provider_streak = 0
             if isinstance(exc, TaskContractError):
                 plan = getattr(exc, "candidate_plan", plan)
                 candidate = json.dumps(_redact_task_data(plan.to_dict() if plan else {}, getattr(self.agent, "api_key", None)),
@@ -720,7 +751,8 @@ class MissionService:
                 self.semantic.message = "任务要求核查或方案校验未通过，正在依据具体原因修正。"
                 self._retry_at = self._time + 1.0
             else:
-                self._hold_semantic_task("任务程序生成失败，自动修正仍未通过；可重试原指令。",
+                stage_label = {"requirements": "任务要求解析", "audit": "任务要求复核", "plan": "执行方案生成"}[self._semantic_stage]
+                self._hold_semantic_task(f"{stage_label}失败，自动修正仍未通过；具体原因已记录在飞行与避障详情中。",
                                          status="generation_failed")
             return
         except TaskPlanningError as exc:
@@ -750,9 +782,22 @@ class MissionService:
                 self._retry_at = self._time + self.recovery.provider_failed(
                     self._feedback, self._environment.position, self._time,
                     invalid_response="invalid" in self._feedback)
-                self.trace.event("retry_scheduled", self._time, recovery=self.recovery.snapshot())
+                if self.recovery.provider_streak >= self.MAX_SEMANTIC_PROVIDER_FAILURES:
+                    self.recovery.last_action = "await_user_retry"
+                    message = (f"模型请求连续 {self.recovery.provider_streak} 次失败，已停止自动重试。"
+                               "已完成记录保留；检查模型服务后可重新提交任务。最后一次错误：" + self._feedback)
+                    self._hold_semantic_task(message,
+                        status="safety_wait" if self._semantic_review_pending else "generation_failed")
+                    self.trace.event("semantic_provider_retry_exhausted", self._time,
+                        request_id=request_id, stage=stage, failures=self.recovery.provider_streak)
+                else:
+                    self.semantic.message = (self._feedback +
+                        f" 自动重试 {self.recovery.provider_streak}/{self.MAX_SEMANTIC_PROVIDER_FAILURES - 1}，"
+                        f"等待 {self.recovery.retry_delay:g} 秒。")
+                    self.trace.event("retry_scheduled", self._time, recovery=self.recovery.snapshot())
             return
         except SemanticConstraintError as exc:
+            self.recovery.provider_streak = 0
             # A rejected model-selected height/path is a planning failure. The
             # immutable requirements, not this choice, decide user feasibility.
             candidate = getattr(exc, "candidate_plan", plan)
@@ -1781,6 +1826,7 @@ class MissionService:
         self._semantic_repair = None
         self._semantic_stage = "requirements"
         self._pending_requirements = None
+        self._confirmed_source_assertions = ()
         self.avoidance.evidence.interrupt(self._time)
         for kind, episode in self.avoidance.evidence.events():
             self.trace.event(kind, self._time, episode=episode)
@@ -1956,7 +2002,9 @@ class MissionService:
 
     def provider_config(self):
         with self._lock:
-            return self._provider_profiles.public(self.agent.backend_name)
+            result = self._provider_profiles.public(self.agent.backend_name)
+            result["vision"] = self.visual.configuration(self._deepseek_config)
+            return result
 
     def provider_models(self, config):
         if not isinstance(config, Mapping):
@@ -1979,7 +2027,7 @@ class MissionService:
             raise ProviderConfigError("configuration_invalid", "配置校验开关格式无效。")
         with self._lock:
             if self.semantic is not None and backend != "deepseek":
-                raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
+                raise ValueError("园区任务需要语言模型理解自然语言，不支持 Mock 模式。")
             revision = self._provider_profiles.revision
             if backend == "deepseek":
                 profile = self._provider_profiles.prepare(config)
@@ -1991,13 +2039,14 @@ class MissionService:
                 if profile["model"] not in discovery["models"]:
                     raise ProviderConfigError("model_unavailable", "所选模型不在当前服务商列表中，请重新读取并选择模型。")
             candidate = DeepSeekAgent(api_key=profile["api_key"], model=profile["model"] or None,
-                                      base_url=profile["base_url"])
-            next_config = dict(api_key=candidate.api_key, model=candidate.model, base_url=candidate.base_url)
+                                      base_url=profile["base_url"], task_response_format=profile["task_response_format"])
+            next_config = dict(api_key=candidate.api_key, model=candidate.model, base_url=candidate.base_url,
+                               task_response_format=candidate.task_response_format)
         with self._lock:
             if revision != self._provider_profiles.revision:
                 raise ProviderConfigError("provider_changed", "配置已在另一次操作中更新，请重新打开设置。")
             if self.semantic is not None and backend != "deepseek":
-                raise ValueError("园区任务需要 DeepSeek 理解自然语言，不支持 Mock 模式。")
+                raise ValueError("园区任务需要语言模型理解自然语言，不支持 Mock 模式。")
             was_requested = self._plan_requested
             if backend == "deepseek":
                 self._provider_profiles.commit({**profile, **next_config})
@@ -2016,20 +2065,21 @@ class MissionService:
                 self.trace.secrets += (key,)
             self.trace.event("agent_changed", self._time, backend=backend)
             self._environment.last_feedback = (
-                f"Agent switched to {backend}; mission continues from current position."
+                f"Agent switched to {getattr(self.agent, 'model', None) or backend}; mission continues from current position."
             )
             self._publish_state()
             return self.state()
 
     @staticmethod
     def _capture_deepseek_config(agent) -> dict[str, str | None]:
-        return {
-            "api_key": getattr(agent, "api_key", None) or os.getenv("DEEPSEEK_API_KEY"),
-            "model": getattr(agent, "model", None)
-            or os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
-            "base_url": getattr(agent, "base_url", None)
-            or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        }
+        defaults = load_planner_config()
+        endpoint = normalize_endpoint(getattr(agent, "base_url", None) or defaults["base_url"])
+        # Preserve injected agents' explicit credentials, including None/empty.
+        # Only absent attributes may inherit a key for the same exact endpoint.
+        return dict(api_key=getattr(agent, "api_key", defaults["api_key"] if endpoint == defaults["base_url"] else None),
+                    model=getattr(agent, "model", None) or defaults["model"], base_url=endpoint,
+                    task_response_format=getattr(agent, "task_response_format",
+                        defaults["task_response_format"] if endpoint == defaults["base_url"] else "json_object"))
 
     @staticmethod
     def _close_quietly(runtime: SimulationRuntime) -> None:

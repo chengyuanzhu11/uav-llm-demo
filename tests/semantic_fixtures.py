@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.semantic_tasks import task_catalog
-from uav_llm_demo.task_requirements import requirements_from_json_text
+from uav_llm_demo.task_requirements import requirements_from_json_text, audit_requirements_projection
 
 
 def fixture_requirements(plan, catalog=None, instruction="执行预置测试要求。"):
@@ -45,6 +45,14 @@ def fixture_requirements(plan, catalog=None, instruction="执行预置测试要�
     return requirements_from_json_text(json.dumps(raw), catalog, instruction)
 
 
+def fixture_audit(requirements, instruction, *, projection=False):
+    """Assertions for explicitly authored execution fixtures, not language labels."""
+    nodes = requirements if projection else audit_requirements_projection(requirements)
+    return dict(status="approved", summary="执行器测试要求由测试作者预置。", issues=[], assertions=[
+        dict(quote=instruction, requirement_id=identifier, expected_json=json.dumps(fields, ensure_ascii=False))
+        for identifier, fields in nodes.items()])
+
+
 def response(data):
     return Mock(status_code=200, json=Mock(return_value={
         "choices": [{"message": {"content": json.dumps(data, ensure_ascii=False)}}],
@@ -66,9 +74,9 @@ def semantic_responses(intent, replies=None):
         catalog_text, _, rest = source.removeprefix("Catalog:\n").partition("\nInstruction:\n")
         catalog = json.loads(catalog_text)
         instruction = rest.partition("\nFeedback:\n")[0]
-        if "proposed_requirements" in catalog:
-            return response(dict(status="approved", summary="执行器测试的要求由测试作者预置。", issues=[]))
         declared = intent(instruction) if callable(intent) else intent
+        if "proposed_requirements" in catalog:
+            return response(fixture_audit(fixture_requirements(declared, catalog, instruction).to_dict(), instruction))
         if "task_requirements_schema" in catalog:
             return response(fixture_requirements(declared, catalog, instruction).to_dict())
         if pending is None:

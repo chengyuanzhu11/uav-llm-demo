@@ -5,12 +5,14 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from uav_llm_demo.agents import DeepSeekAgent, GeometricPlanner, MockLLMAgent, PlannerProviderError, checked_plan
+from uav_llm_demo.agents import DeepSeekAgent, GeometricPlanner, MockLLMAgent, PlannerProviderError, SemanticPlanError, checked_plan
 from uav_llm_demo.safety import SafetyChecker
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.semantic_navigation import apply_task_constraints, validate_task_routes
 from uav_llm_demo.semantic_tasks import SemanticConstraintError, SemanticMission, SemanticPlan, semantic_plan_from_json_text, task_catalog
-from tests.semantic_fixtures import fixture_requirements
+from uav_llm_demo.task_protocol import TaskProtocolError, validate_structure
+from uav_llm_demo.task_requirements import requirement_schema
+from tests.semantic_fixtures import fixture_audit, fixture_requirements
 
 
 def scene():
@@ -318,11 +320,14 @@ class SemanticProviderTests(unittest.TestCase):
         self.assertEqual(plan.steps[0]["action"], "inspect")
         request = post.call_args.kwargs
         self.assertEqual(request["json"]["max_tokens"], 12000)
+        self.assertEqual(request["json"]["response_format"], {"type": "json_object"})
         self.assertIn("Catalog:", request["json"]["messages"][1]["content"])
         self.assertIn("巡检图书馆后返航。", request["json"]["messages"][1]["content"])
         self.assertNotIn("Plan a complete UAV route", request["json"]["messages"][0]["content"])
         sent_catalog = json.loads(request["json"]["messages"][1]["content"].split("\nInstruction:\n")[0].removeprefix("Catalog:\n"))
         self.assertEqual(sent_catalog["default_constraints"], {"max_altitude_m": None, "avoid_regions": []})
+        self.assertEqual(sent_catalog["spatial"]["objects"], task_catalog(scene())["spatial"]["objects"])
+        self.assertTrue(all("position" in point for point in sent_catalog["points_of_interest"]))
 
     def test_semantic_usage_has_separate_prompt_version_on_success_and_failure(self):
         for response in (self.response(proposal()), self.response({}), Mock(status_code=429)):
@@ -334,7 +339,7 @@ class SemanticProviderTests(unittest.TestCase):
                 except PlannerProviderError:
                     pass
             self.assertEqual(usage.call_count, 1)
-            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v10")
+            self.assertEqual(usage.call_args.kwargs["prompt_version"], "semantic-tasks-v11")
 
     def test_source_audit_repairs_omission_before_plan_and_keeps_stages_independent(self):
         instruction = "先巡检图书馆，再去会议中心采样，最后回家。"
@@ -343,13 +348,14 @@ class SemanticProviderTests(unittest.TestCase):
             {"id": "home", "action": "return_home", "target_id": "home"}],
             "constraints": {}, "coverage": [{"quote": instruction,
                 "requirement_ids": ["inspect", "home"], "constraint_keys": []}]}
-        rejected = {"status": "revision_required", "summary": "遗漏会议中心采样。", "issues": [
+        rejected = {"status": "revision_required", "summary": "遗漏会议中心采样。", "assertions": fixture_audit(missing, instruction)["assertions"], "issues": [
             {"code": "missing_obligation", "message": "补上巡检后、返航前的会议中心采样。", "quote": "再去会议中心采样"}]}
         corrected = deepcopy(missing)
         corrected["summary"] = "巡检图书馆、会议中心采样后返航。"
         corrected["steps"].insert(1, {"id": "capture", "action": "capture", "target_id": "conference"})
         corrected["coverage"][0]["requirement_ids"].insert(1, "capture")
-        approved = {"status": "approved", "summary": "原任务要求齐全。", "issues": []}
+        rejected["assertions"] = fixture_audit(corrected, instruction)["assertions"]
+        approved = fixture_audit(corrected, instruction)
         executable = proposal([step("inspect", "inspect", "library"),
                                step("capture", "capture", "conference"), step("home", "return_home", "home")])
         catalog = task_catalog(scene())
@@ -357,7 +363,12 @@ class SemanticProviderTests(unittest.TestCase):
             "mission_id": "prior-mission", "accepted_instruction": "此前的任务。",
             "accepted_requirements": {"steps": [{"id": "old", "action": "inspect", "target_id": "library"}]},
             "plan": {"old_plan_marker": True}, "current_step": {"old_current_marker": True},
-            "uncompleted_steps": [{"old_pending_marker": True}], "evidence": []}
+            "uncompleted_steps": [{"old_pending_marker": True}],
+            "observations": {"route_only_marker": "never output flight-control actions", "goal": "stale-route-goal"},
+            "task_observations": {"library": {"temperature_c": 29}},
+            "telemetry": {"yaw_deg": 90}, "position": {"x": 8, "y": 13, "z": 4},
+            "evidence": [{"evidence_id": "prior-inspection", "mission_id": "prior-mission",
+                          "vehicle_id": "uav-1", "action": "inspect", "target_id": "library"}]}
         catalog["task_requirements"] = {"stale_candidate_marker": True}
         before = deepcopy(catalog)
         agent = DeepSeekAgent(api_key="test-credential")
@@ -384,11 +395,27 @@ class SemanticProviderTests(unittest.TestCase):
             sent = json.loads(encoded_catalog)
             sent_catalogs.append(sent)
             self.assertEqual(source.split("\nFeedback:\n", 1)[0], instruction)
+            self.assertIsInstance(call.kwargs["response_schema"], dict)
             if index < 4:
+                self.assertNotIn("objects", sent["spatial"])
+                self.assertTrue({"objects", "surfaces", "ground_obstacles"}.isdisjoint(sent["control"]))
+                self.assertEqual(sent["points_of_interest"], [
+                    {key: value for key, value in point.items()
+                     if key in {"id", "label", "code", "kind", "allowed_actions"}}
+                    for point in before["points_of_interest"]])
+                self.assertEqual(sent["regions"], [
+                    {key: value for key, value in region.items() if key != "bounds"}
+                    for region in before["regions"]])
+                for field in ("vehicle", "condition_operators", "control_nodes", "telemetry_fields", "coordinate_units"):
+                    self.assertEqual(sent[field], before[field])
+                self.assertEqual(sent["mission_context"]["evidence"], before["mission_context"]["evidence"])
                 self.assertNotIn("default_constraints", sent)
                 self.assertNotIn("defaults", sent["spatial"])
                 self.assertFalse(any("default_duration_seconds" in action for action in sent["actions"].values()))
-                self.assertTrue({"plan", "current_step", "uncompleted_steps"}.isdisjoint(sent["mission_context"]))
+                self.assertTrue({"plan", "current_step", "uncompleted_steps", "observations"}.isdisjoint(sent["mission_context"]))
+                for field in ("task_observations", "telemetry", "position"):
+                    self.assertEqual(sent["mission_context"][field], before["mission_context"][field])
+                self.assertNotIn("route_only_marker", message)
                 self.assertNotIn("task_program_schema", sent)
                 self.assertNotIn("task_requirements", sent)
                 self.assertEqual(sent["mission_context"]["accepted_requirements"], before["mission_context"]["accepted_requirements"])
@@ -396,7 +423,109 @@ class SemanticProviderTests(unittest.TestCase):
                 self.assertNotIn("stale_candidate_marker", message)
             else:
                 self.assertEqual(sent["task_requirements"], corrected)
-        self.assertEqual(sent_catalogs[1]["proposed_requirements"], missing)
+                self.assertEqual(sent["spatial"]["objects"], before["spatial"]["objects"])
+                self.assertEqual(sent["points_of_interest"], before["points_of_interest"])
+        self.assertEqual(sent_catalogs[1]["proposed_requirements"]["$"], {"steps": ["inspect", "home"], "constraints": {}})
+        self.assertNotIn("summary", sent_catalogs[1]["proposed_requirements"])
+        self.assertNotIn("coverage", sent_catalogs[1]["proposed_requirements"])
+        self.assertEqual(sent_catalogs[1]["proposed_requirements"]["home"]["action"], "<derive action from original instruction>")
+        self.assertEqual(first.to_dict()["steps"][-1]["action"], "return_home")
+
+    def test_decoder_schema_keeps_complete_local_requirement_checks_in_both_modes(self):
+        catalog = task_catalog(scene())
+        instruction = "巡检图书馆后返航。"
+        valid = fixture_requirements(proposal(), catalog, instruction).to_dict()
+        duplicate = deepcopy(valid)
+        duplicate["coverage"][0]["requirement_ids"].append(duplicate["coverage"][0]["requirement_ids"][0])
+        unknown = deepcopy(valid)
+        unknown["steps"][0]["target_id"] = "unpublished_place"
+        for mode in ("json_object", "json_schema"):
+            for data, code in ((valid, None), (duplicate, "duplicate_item"), (unknown, "invalid_reference")):
+                with self.subTest(mode=mode, code=code), patch(
+                        "uav_llm_demo.agents._post_deepseek", return_value=self.response(data)) as post:
+                    agent = DeepSeekAgent(api_key="test-credential", task_response_format=mode)
+                    if code is None:
+                        self.assertEqual(agent.extract_task_requirements(catalog, instruction).to_dict(), valid)
+                    else:
+                        with self.assertRaises(SemanticPlanError) as caught:
+                            agent.extract_task_requirements(catalog, instruction)
+                        self.assertEqual(caught.exception.diagnostic["code"], code)
+                    request = post.call_args.kwargs["json"]
+                    sent = json.loads(request["messages"][1]["content"].removeprefix("Catalog:\n").split("\nInstruction:\n")[0])
+                    full = requirement_schema(for_extraction=True)
+                    self.assertIn('"uniqueItems": true', json.dumps(full))
+                    if mode == "json_object":
+                        self.assertEqual(request["response_format"], {"type": "json_object"})
+                        self.assertEqual(sent["task_requirements_schema"], full)
+                    else:
+                        output = request["response_format"]["json_schema"]
+                        self.assertTrue(output["strict"])
+                        decoder = output["schema"]
+                        self.assertNotIn('"uniqueItems"', json.dumps(decoder))
+                        # JSON text comparison includes every nested property order, unlike dict equality.
+                        from uav_llm_demo.agents import _decoder_schema, _task_output_schema
+                        self.assertEqual(json.dumps(sent["task_requirements_schema"]), json.dumps(_decoder_schema(_task_output_schema(full, catalog), keep_string_limits=True)))
+                        for bound in ("minLength", "maxLength"):
+                            self.assertNotIn(bound, json.dumps(decoder))
+                        with self.assertRaises(TaskProtocolError):
+                            validate_structure("", full["properties"]["summary"])
+                        validate_structure("", decoder["properties"]["summary"])
+                        inspect = next(item for item in decoder["$defs"]["node"]["oneOf"]
+                                       if item.get("properties", {}).get("action", {}).get("const") == "inspect")
+                        if code == "invalid_reference":
+                            with self.assertRaises(TaskProtocolError):
+                                validate_structure(data["steps"][0]["target_id"], inspect["properties"]["target_id"])
+                        else:
+                            validate_structure(data["steps"][0]["target_id"], inspect["properties"]["target_id"])
+                            # Duplicate references fit this decoder subset, but the full local parser rejects them.
+                            validate_structure(data["coverage"], decoder["properties"]["coverage"])
+
+    def test_planning_schema_disables_unavailable_observation_references_but_keeps_visual_dependencies(self):
+        from uav_llm_demo.agents import _task_output_schema
+        catalog=task_catalog(scene())
+        catalog["task_requirements"] = dict(steps=[dict(action="motion",target_id="stadium")])
+        schema=_task_output_schema(catalog["task_program_schema"],catalog)
+        self.assertNotIn('"target_ref"',json.dumps(schema))
+        self.assertNotIn('"face_reference"',json.dumps(schema))
+        self.assertNotIn('"within_target"',json.dumps(schema))
+        catalog["task_requirements"]["steps"][0]["motion"] = dict(within_target=True)
+        self.assertIn('"within_target"',json.dumps(_task_output_schema(catalog["task_program_schema"],catalog)))
+        catalog["task_requirements"]["steps"].append(dict(action="repeat",body=[dict(action="visual")]))
+        self.assertIn('"target_ref"',json.dumps(_task_output_schema(catalog["task_program_schema"],catalog)))
+        catalog["task_requirements"]["steps"].pop()
+        catalog["mission_context"] = dict(mission_id="m",evidence=[dict(evidence_id="seen",mission_id="m",vehicle_id="uav-1")])
+        self.assertIn('"target_ref"',json.dumps(_task_output_schema(catalog["task_program_schema"],catalog)))
+
+    def test_decoder_target_references_are_scoped_to_published_mission_facts(self):
+        catalog = task_catalog(scene())
+        instruction = "巡检图书馆后返航。"
+        valid = fixture_requirements(proposal(), catalog, instruction).to_dict()
+        for evidence in ([], [
+                {"evidence_id": "current-view", "mission_id": "current", "vehicle_id": "uav-1"},
+                {"evidence_id": "other-mission-view", "mission_id": "previous", "vehicle_id": "uav-1"},
+                {"evidence_id": "other-vehicle-view", "mission_id": "current", "vehicle_id": "uav-2"}]):
+            source = {**catalog, "mission_context": {"mission_id": "current", "evidence": evidence}}
+            with self.subTest(evidence=bool(evidence)), patch(
+                    "uav_llm_demo.agents._post_deepseek", return_value=self.response(valid)) as post:
+                DeepSeekAgent(api_key="test-credential", task_response_format="json_schema").extract_task_requirements(source, instruction)
+            decoder = post.call_args.kwargs["json"]["response_format"]["json_schema"]["schema"]
+            motion = next(variant for definition in decoder["$defs"].values()
+                          for union in definition.get("oneOf", [])
+                          for variant in union.get("anyOf", [union])
+                          if variant.get("properties", {}).get("action", {}).get("const") == "motion")
+            properties = motion["properties"]
+            self.assertEqual(set(properties["target_id"]["enum"]), {point["id"] for point in catalog["points_of_interest"]})
+            reference = properties["target_ref"]
+            validate_structure({"step_id": "future-visual-step"}, reference)
+            for identifier in ("invented-view", "other-mission-view", "other-vehicle-view"):
+                with self.assertRaises(TaskProtocolError):
+                    validate_structure({"evidence_id": identifier}, reference)
+            if evidence:
+                validate_structure({"evidence_id": "current-view"}, reference)
+            else:
+                with self.assertRaises(TaskProtocolError):
+                    validate_structure({"evidence_id": "current-view"}, reference)
+            self.assertEqual(source["mission_context"]["evidence"], evidence)
 
     def test_api_errors_are_sanitized_and_invalid_semantic_output_never_becomes_route(self):
         agent = DeepSeekAgent(api_key="test-credential")

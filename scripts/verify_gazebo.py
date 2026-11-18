@@ -9,6 +9,8 @@ import argparse
 import base64
 import json
 import math
+import os
+import subprocess
 from pathlib import Path
 import sys
 import time
@@ -18,14 +20,18 @@ sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
 from uav_llm_demo import _build_runtime
+from uav_llm_demo.agents import DeepSeekAgent
+from uav_llm_demo.provider_config import load_planner_config
 from uav_llm_demo.gazebo_runtime import GazeboRuntime, GazeboRuntimeConfig
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import TrajectoryController, distance, norm
 from uav_llm_demo.onboard_observation import accept_frame, camera_request, ground_pixel
-from uav_llm_demo.run_log import JournalWriter
+from uav_llm_demo.run_log import JournalWriter, source_fingerprint
+from uav_llm_demo.runtime import RuntimeUnavailableError
+from uav_llm_demo.interaction_trajectory import InteractionRecorder, validate_trajectory
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.safety import SafetyChecker
-from uav_llm_demo.simulation_scene import load_scene, scene_boxes, campus_collision_geometry
+from uav_llm_demo.simulation_scene import load_scene, scene_boxes
 
 
 def save_image(frame, output):
@@ -137,13 +143,133 @@ def target_error(point, parts, object_id):
     return min(error(part) for part in parts)
 
 
-def visual_check(args, output, runtime=None):
-    journal = JournalWriter(output.with_suffix(".events.jsonl"))
-    service = MissionService(scenario_id=args.scene, runtime=runtime, runtime_factory=_build_runtime, journal=journal)
+
+def visual_acceptance(views, scenario, targets, final_position, runtime, *, maximum_distance_m=None):
+    """Score the observed surface, requested distance and final pose independently."""
+    targets = [targets] if isinstance(targets, str) else list(targets)
+    if not targets or any(not isinstance(t, str) or not t for t in targets):
+        raise ValueError("Evaluation needs explicit target IDs")
+    if maximum_distance_m is not None and (not math.isfinite(maximum_distance_m) or maximum_distance_m <= 0):
+        raise ValueError("Evaluation distance must be finite and positive")
+    if scenario.campus_layout:
+        registry = ROOT/'.sim/worlds/models'/scenario.scenario_id/'target-surfaces.json'
+        queries = [dict(point_grid=view['point_grid'], targets=targets) for view in views]
+        response = subprocess.run(['node', str(ROOT/'scripts/score_visual_geometry.cjs'), str(registry)],
+            input=json.dumps(queries), text=True, capture_output=True, check=True, timeout=30)
+        scores = json.loads(response.stdout)
+        geometry_kind = "rendered_triangle_surface"
+    else:
+        parts = scene_boxes(load_scene(scenario.asset_scene))
+        scores = [min((dict(distance_m=target_error(view['point_grid'], parts, target), target_id=target)
+                       for target in targets), key=lambda item: item['distance_m']) for view in views]
+        geometry_kind = "scene_solid"
+    errors = [item['distance_m'] for item in scores]
+    selected = {item['target_id'] for item in scores}
+    ranges = [view.get('range_m') for view in views]
+    distance_ok = maximum_distance_m is None or all(
+        isinstance(value, (int,float)) and math.isfinite(value) and 0 < value <= maximum_distance_m
+        for value in ranges)
+    home_error = math.sqrt(sum(((final_position[i]-scenario.base[i])*scale)**2
+                              for i,scale in enumerate((3,3,5))))
+    checks = dict(target_surface=bool(errors) and max(errors) < .25,
+        same_target=len(selected)==1,
+        fresh_views=len({v.get('frame_id') for v in views if v.get('frame_id')})>=2,
+        native_depth=bool(views) and all(v.get('source')=='gazebo_rgbd' for v in views),
+        requested_distance=distance_ok,
+        home_position=home_error <= 1.0,
+        landed=runtime.get('landed') is True and runtime.get('armed') is False)
+    return dict(passed=all(checks.values()), checks=checks, geometry_kind=geometry_kind,
+        target_geometry_errors_m=errors, matched_targets=[s['target_id'] for s in scores],
+        confirmation_ranges_m=ranges, maximum_distance_m=maximum_distance_m,
+        home_error_m=home_error, final_position_grid=list(final_position))
+
+
+def _events(path):
+    with path.open(encoding="utf-8") as stream:
+        for line in stream:
+            if line.strip():
+                yield json.loads(line)
+
+
+def infrastructure_failure(result, journal_events=(), model_events=()):
+    """Classify failed episodes from status fields and machine events, never prose."""
+    if result.get("passed"):
+        return None
+    if result.get("failure_code"):
+        return result["failure_code"]
+    runtime = result.get("runtime", {})
+    if runtime.get("connected") is False:
+        return "runtime_disconnected"
+    if runtime.get("last_error"):
+        return "runtime_error"
+    feedback_lost, last_request = False, None
+    for event in journal_events:
+        kind = event.get("event")
+        if kind == "camera_failed":
+            return "camera_failed"
+        if kind == "semantic_execution_event" and event.get("reason") == "missing_telemetry":
+            return "runtime_telemetry_failed"
+        if kind == "feedback_hold":
+            feedback_lost = True
+        elif kind == "feedback_restored":
+            feedback_lost = False
+        elif kind == "provider_request":
+            last_request = event.get("request", {})
+    if feedback_lost:
+        return "runtime_telemetry_failed"
+    last_response = None
+    for event in model_events:
+        if event.get("kind") == "model_response":
+            last_response = event["payload"]
+    if last_response is not None:
+        if (last_response.get("outcome") == "error" and
+                (last_response.get("http_status") != 200 or last_response.get("error") in
+                 {"network_timeout", "network_TLS", "network_proxy", "network_connection"})):
+            return "vision_provider_failed"
+    elif last_request is not None and last_request.get("http_status") != 200:
+        return "provider_failed"
+    return None
+
+
+def terminal_without_visual_decisions(result, validation):
+    """A recorded upstream termination is not a visual training trajectory."""
+    return (result.get("semantic", {}).get("status") in
+            {"generation_failed", "needs_clarification", "safety_wait"}
+            and result.get("vision", {}).get("calls") == 0
+            and isinstance(validation.get("outcome"), dict)
+            and validation["outcome"].get("status") == "failed"
+            and validation.get("decisions") == 0
+            and validation.get("errors") == ["Episode contains no decisions"]
+            and not any(result.get("journal", {}).values()))
+
+
+def visual_check(args, output, runtime=None, *, planner_timeout=25):
+    if any(not math.isfinite(value) or value <= 0 for value in (args.timeout, planner_timeout)):
+        raise ValueError("Episode and planner timeouts must be finite positive seconds")
+    planner_timeout = min(planner_timeout, args.timeout)
+    trajectory_dir = getattr(args, "trajectory_dir", None)
+    if trajectory_dir and os.getenv("VISION_STRATEGY", "two_stage") != "direct":
+        raise ValueError("Complete model-input collection currently requires VISION_STRATEGY=direct.")
+    recorder = None
+    if trajectory_dir:
+        recorder = InteractionRecorder(trajectory_dir, metadata=dict(
+            case_id=getattr(args, "case_id", output.stem), scene=args.scene,
+            seed=getattr(args, "seed", None), split=getattr(args, "split", "pilot"),
+            instruction=args.instruction, source_sha256=source_fingerprint(), strategy="direct",
+            wall_budget_seconds=args.timeout, planner_timeout_seconds=planner_timeout,
+            model=os.getenv("VISION_MODEL"), model_revision=os.getenv("VISION_MODEL_REVISION"),
+            simulator=getattr(args, "simulator_manifest", {})),
+            secrets=tuple(os.getenv(k) for k in ("VISION_API_KEY", "LLM_API_KEY", "DEEPSEEK_API_KEY")))
+    journal, service = None, None
     started = time.monotonic()
-    result = {"mode": "actual_px4_live_models", "passed": False}
+    result = {"mode": "actual_px4_live_models", "passed": False,
+              "wall_budget_seconds": args.timeout, "planner_timeout_seconds": planner_timeout}
     last_frame = None
     try:
+        journal = JournalWriter(output.with_suffix(".events.jsonl"))
+        planner = DeepSeekAgent(**load_planner_config(), timeout_seconds=planner_timeout)
+        service = MissionService(scenario_id=args.scene, runtime=runtime, runtime_factory=_build_runtime,
+                                 agent=planner, journal=journal, trajectory_recorder=recorder)
         if runtime is None:
             service.switch_runtime("gazebo", dict(world=args.scene))
         else:
@@ -165,26 +291,93 @@ def visual_check(args, output, runtime=None):
         else:
             result["error"] = "End-to-end wall-clock budget exhausted"
         scenario = load_scenario(args.scene)
-        parts = (campus_collision_geometry(scenario.campus_layout) if scenario.campus_layout
-                 else scene_boxes(load_scene(scenario.asset_scene)))
         views = [view for e in semantic["evidence"] if e["action"] == "visual"
                  for view in e["result"].get("views", [])]
-        errors = [target_error(view["point_grid"], parts, args.oracle_target) for view in views]
         runtime = service.runtime.status()
+        final_position = tuple(state['observation']['position'][axis] for axis in 'xyz')
+        acceptance = visual_acceptance(views, scenario, args.oracle_target, final_position, runtime,
+            maximum_distance_m=getattr(args, 'oracle_maximum_distance_m', None))
         result.update(instruction=args.instruction, milestones=state["milestones"],
                       runtime=runtime, semantic=semantic, vision=state["onboard"],
-                      target_geometry_errors_m=errors, diagnostics=state["diagnostics"],
+                      target_geometry_errors_m=acceptance['target_geometry_errors_m'],
+                      independent_acceptance=acceptance, diagnostics=state["diagnostics"],
                       simulation_seconds=service._time)
-        result["passed"] = (state["milestones"]["safe_success"] and runtime["landed"] and not runtime["armed"]
-                            and len(errors) >= 2 and max(errors) < .6
-                            and all(view["source"] == "gazebo_rgbd" for view in views))
+        result["passed"] = bool(state["milestones"]["safe_success"] and acceptance['passed'])
+        if not result["passed"] and not result.get("error"):
+            result["error"] = (state["flight"]["error"]
+                               or ("Independent target and safe landing checks did not pass"
+                                   if state["milestones"]["safe_success"] else semantic.get("message"))
+                               or "Independent target and safe landing checks did not pass")
     except Exception as exc:
         # Provider exceptions are already sanitized by the project's transport.
         result["error"] = str(exc)
+        if isinstance(exc, RuntimeUnavailableError):
+            result["failure_code"] = "runtime_unavailable"
     finally:
-        service.close()
-        journal.close()
+        if service is not None:
+            # Check before close() intentionally disconnects the runtime. The
+            # mission loop may already have caught a telemetry exception.
+            if not result.get("passed"):
+                try:
+                    result["runtime"] = service.runtime.status()
+                    service.runtime.read_state()
+                    if service.runtime.backend_name == "gazebo":
+                        service.runtime.simulation_time()
+                except RuntimeUnavailableError:
+                    result.setdefault("failure_code", "runtime_unavailable")
+                except Exception:
+                    result.setdefault("failure_code", "runtime_health_check_failed")
+            try:
+                service.close()
+            except Exception as exc:
+                result.update(passed=False, error="Shutdown failed: " + type(exc).__name__,
+                              failure_code="shutdown_failed")
+            finally:
+                # Finalization waits for bounded in-flight requests after stopping
+                # control, so late replies cannot arrive after the journal closes.
+                if recorder is not None:
+                    service.visual.executor.shutdown(wait=True, cancel_futures=True)
+                    service._executor.shutdown(wait=True, cancel_futures=True)
+        if journal is not None:
+            journal.flush()
+            result["journal"] = dict(dropped=journal.dropped, errors=journal.errors)
+            journal.close()
+        else:
+            result["journal"] = dict(dropped=0, errors=1)
+        if any(result["journal"].values()):
+            result.update(passed=False, error="Execution journal is incomplete", failure_code="journal_incomplete")
         result["wall_seconds"] = time.monotonic()-started
+        if recorder is not None:
+            recorder.close(outcome=dict(status="completed" if result.get("passed") else "failed",
+                error=result.get("error"), wall_seconds=result["wall_seconds"],
+                simulation_seconds=result.get("simulation_seconds"), journal=result["journal"]),
+                oracle=dict(target_id=args.oracle_target, passed=result.get("passed", False),
+                    independent_acceptance=result.get("independent_acceptance"),
+                    target_geometry_errors_m=result.get("target_geometry_errors_m"),
+                    milestones=result.get("milestones"), runtime=result.get("runtime")))
+            result["trajectory"] = dict(path=str(Path(trajectory_dir).resolve()),
+                                        validation=validate_trajectory(trajectory_dir))
+            validation = result["trajectory"]["validation"]
+            upstream_terminal = terminal_without_visual_decisions(result, validation)
+            result["terminal_complete"] = bool(validation["complete"] or upstream_terminal)
+            if not result["terminal_complete"] or any(result["journal"].values()):
+                result["passed"] = False
+                result["error"] = "Interaction trajectory or execution journal is incomplete"
+                result.setdefault("failure_code", "trajectory_incomplete")
+        try:
+            result["failure_code"] = infrastructure_failure(result,
+                _events(output.with_suffix(".events.jsonl")) if journal is not None else (),
+                _events(Path(trajectory_dir)/"events.jsonl") if recorder is not None else ())
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            result["failure_code"] = "failure_evidence_unreadable"
+        result["infrastructure_failed"] = result["failure_code"] is not None
+        if result["infrastructure_failed"]:
+            result["failure_stage"] = "infrastructure"
+        elif not result.get("passed"):
+            result["failure_stage"] = (
+                "semantic_generation" if result.get("semantic", {}).get("status") in
+                {"generation_failed", "needs_clarification"} else
+                "visual_execution" if result.get("vision", {}).get("calls", 0) else "semantic_execution")
     return result
 
 
@@ -194,10 +387,16 @@ def main():
     parser.add_argument("--scene", default="visual_garden", choices=("visual_garden", "semantic_campus"))
     parser.add_argument("--managed", action="store_true", help="Own and close a fresh headless Gazebo/PX4 session")
     parser.add_argument("--output", required=True)
+    parser.add_argument("--trajectory-dir", help="New directory for complete direct-policy interaction data")
     parser.add_argument("--timeout", type=float, default=900)
+    parser.add_argument("--planner-timeout", type=float, default=25,
+                        help="Per-request planner timeout; capped by episode timeout; web defaults are unchanged")
     parser.add_argument("--instruction", default="到花园寻找绿色垃圾桶，接近到8米内从机载图像确认并定位后返航降落。")
     parser.add_argument("--oracle-target", default="bin", help="Evaluation only; never sent to either model")
+    parser.add_argument("--oracle-maximum-distance-m", type=float, help="Evaluation-only confirmation range from source task")
     args = parser.parse_args()
+    if any(not math.isfinite(value) or value <= 0 for value in (args.timeout, args.planner_timeout)):
+        parser.error("Episode and planner timeouts must be finite positive seconds")
     output = Path(args.output).resolve()
     if output.exists():
         parser.error("Choose a new result path; existing evidence is not overwritten")
@@ -210,8 +409,10 @@ def main():
             from uav_llm_demo.gazebo_session import GazeboSession
             session = GazeboSession(load_scenario(args.scene))
             session.start(timeout=min(180, args.timeout))
+            args.simulator_manifest = session.manifest
+            args.seed = session.seed
         runtime = session.runtime if session else None
-        result = control_check(output, args.scene, runtime) if args.control_only else visual_check(args, output, runtime)
+        result = control_check(output, args.scene, runtime) if args.control_only else visual_check(args, output, runtime, planner_timeout=args.planner_timeout)
         if session:
             result.update(simulator=session.manifest, simulator_logs=str(session.log_dir))
     except Exception as exc:

@@ -13,6 +13,7 @@ from uav_llm_demo.planning_tools import PlanningTools, MAX_PLANNING_ROUNDS
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.semantic_tasks import task_catalog
 from uav_llm_demo.task_requirements import requirements_from_json_text
+from uav_llm_demo.task_protocol import TaskProtocolError, validate_structure
 
 
 class PlanningToolTests(unittest.TestCase):
@@ -51,6 +52,8 @@ class PlanningToolTests(unittest.TestCase):
                    dict(tool="preview_plan", arguments=dict(plan=wrong_rise)),
                    dict(tool="preview_plan", arguments=dict(plan=good)),
                    dict(tool="submit_plan", arguments=dict(candidate_id="candidate-1"))]
+        for reply in replies:
+            validate_structure(reply, self.tools.response_schema())
         agent = DeepSeekAgent(api_key="offline-tool-key")
         with patch("uav_llm_demo.agents._post_deepseek", side_effect=[response(v) for v in replies]) as post:
             accepted = agent.interpret_task(self.catalog, self.instruction, planning=self.tools)
@@ -66,6 +69,13 @@ class PlanningToolTests(unittest.TestCase):
         self.assertIn("nearby_obstacles", post.call_args_list[1].kwargs["json"]["messages"][-1]["content"])
         self.assertIsNone(agent._previous_messages)
         self.assertEqual(self.context["position"], dict(zip("xyz", self.scene.base)))
+        geometry, _ = self.tools.call(dict(tool="query_geometry", arguments=dict(target_id="conference")))
+        expected = next(item for item in self.catalog["control"]["objects"] if item["id"] == "conference")
+        self.assertEqual(geometry["control_geometry"]["object"], expected)
+        self.assertNotEqual(geometry["object"]["center_grid"][2], expected["center_grid"][2])
+        self.assertTrue(set(expected["surface_ids"]).issubset(
+            {item["id"] for item in geometry["control_geometry"]["surfaces"]}))
+        self.assertIn("not landing authorization", geometry["control_geometry"]["note"])
 
     def test_preview_cannot_drop_obligations_or_submit_an_unknown_candidate(self):
         result, accepted = self.tools.call(dict(tool="preview_plan", arguments=dict(plan=program([home()]))))
@@ -74,6 +84,21 @@ class PlanningToolTests(unittest.TestCase):
         result, accepted = self.tools.call(dict(tool="submit_plan", arguments=dict(candidate_id="candidate-1")))
         self.assertEqual(result["diagnostic"]["code"], "unknown_candidate")
         self.assertIsNone(accepted)
+        for request in (
+            dict(tool="query_geometry", arguments=dict(target_id="stadium", radius_m=101)),
+            dict(tool="submit_plan", arguments=dict(candidate_id="candidate-1", plan=self.candidate())),
+        ):
+            with self.subTest(request=request):
+                with self.assertRaises(TaskProtocolError) as caught:
+                    validate_structure(request, self.tools.response_schema())
+                rejected, accepted = self.tools.call(request)
+                self.assertIsNone(accepted)
+                self.assertEqual(rejected["diagnostic"], caught.exception.diagnostic)
+        nested = deepcopy(self.candidate())
+        nested["steps"][0]["motion"]["path"]["radius_m"] = 5
+        with self.assertRaises(TaskProtocolError) as caught:
+            validate_structure(dict(tool="preview_plan", arguments=dict(plan=nested)), self.tools.response_schema())
+        self.assertEqual(caught.exception.path, "$.arguments.plan.steps[0].motion.path.radius_m")
 
     def test_collision_feedback_contains_location_and_expanded_obstacle(self):
         tools = PlanningTools(self.scene, self.context, self.catalog)

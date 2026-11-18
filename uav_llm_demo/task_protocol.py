@@ -52,7 +52,7 @@ def motion_schema(limits, defaults):
     coordinate = _number()
     vector = {"oneOf": [_array(coordinate, minItems=3, maxItems=3),
                          _object({axis: coordinate for axis in "xyz"})]}
-    path = {"oneOf": [
+    path = {"description": "Nested under motion.path; path kind, geometry and direction belong here, not directly under motion.", "oneOf": [
         _object({"kind": {"const": "boundary"},
                  "direction": {"enum": ["clockwise", "counterclockwise"], "default": defaults["direction"]},
                  "laps": {"type": "number", "exclusiveMinimum": 0, "maximum": limits["max_laps"], "default": defaults["laps"]},
@@ -70,7 +70,8 @@ def motion_schema(limits, defaults):
         _object({"mode": {"const": "face_reference"}}),
         _object({"mode": {"const": "fixed"}, "yaw_deg": _number(minimum=-180, maximum=180)}),
         _object({"mode": {"const": "face_target"}, "target_id": {"type": "string"}}),
-    ], "default": deepcopy(defaults["heading"])}
+    ], "description": "Nested under motion.heading. Fixed yaw_deg uses 0 north, 90 east, 180 south, -90 west.",
+        "default": deepcopy(defaults["heading"])}
     return _object({"path": path, "within_target": {"type": "boolean"},
                     "speed_mps": {**_number(True, minimum=.1, maximum=limits["max_speed_mps"]),
                                                  "default": defaults["speed_mps"]}, "heading": heading}, ["path"])
@@ -104,6 +105,8 @@ def task_program_schema(limits, motion_limits, motion_defaults, control_defaults
                       "when": {"type": "null"}}
         else:
             fields = {**common, "action": {"const": action}}
+            if action == "return_home":
+                fields["target_id"] = {"type": "string", "const": "home"}
             if action == "motion":
                 fields[action] = motion_schema(motion_limits, motion_defaults)
             elif action == "control":
@@ -161,6 +164,17 @@ def validate_structure(value, schema, path="$", *, root=None, depth=0):
         raise TaskProtocolError(path, "nesting_limit", "Structure exceeds the supported nesting limit.")
     if "$ref" in schema:
         return validate_structure(value, root["$defs"][schema["$ref"].split("/")[-1]], path, root=root, depth=depth + 1)
+    if "anyOf" in schema:
+        for variant in schema["anyOf"]:
+            try:
+                validate_structure(value, variant, path, root=root, depth=depth + 1)
+            except TaskProtocolError:
+                continue
+            break
+        else:
+            raise TaskProtocolError(path, "invalid_variant", "Value must satisfy at least one published alternative.",
+                allowed=["/".join(item.get("required", [])) or item.get("type", "object") for item in schema["anyOf"]])
+        # Matching an alternative does not replace constraints beside anyOf.
     if "oneOf" in schema:
         variants = schema["oneOf"]
         # Nullable objects/conditions and vector representations discriminate by type.
@@ -170,7 +184,7 @@ def validate_structure(value, schema, path="$", *, root=None, depth=0):
         if len(variants) == 1:
             return validate_structure(value, variants[0], path, root=root, depth=depth + 1)
         if isinstance(value, dict):
-            for discriminator in ("action", "kind", "mode"):
+            for discriminator in ("action", "kind", "mode", "tool"):
                 choices = [item.get("properties", {}).get(discriminator, {}).get("const") for item in variants]
                 if all(choice is not None for choice in choices):
                     selected = next((item for item, choice in zip(variants, choices)
@@ -235,4 +249,6 @@ def validate_structure(value, schema, path="$", *, root=None, depth=0):
             finite = False
         if (not finite or value < schema.get("minimum", -math.inf) or value > schema.get("maximum", math.inf)
                 or value <= schema.get("exclusiveMinimum", -math.inf)):
-            raise TaskProtocolError(path, "number_range", "Number must be finite and within the published bounds.")
+            bounds = [f"{key}={schema[key]}" for key in ("minimum", "maximum", "exclusiveMinimum") if key in schema]
+            message = "Number must be finite" + (" and satisfy " + ", ".join(bounds) if bounds else "") + "."
+            raise TaskProtocolError(path, "number_range", message, expected=bounds or ["finite number"])

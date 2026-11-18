@@ -34,7 +34,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     with patch.dict(os.environ), patch.object(DeepSeekAgent, "_request_json_content",
                                              side_effect=AssertionError("Provider access is forbidden")) as provider:
-        for name in ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"):
+        for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"):
             os.environ.pop(name, None)
         service = MissionService(agent=MockLLMAgent(), scenario_id="urban_crossing",
                                  target_seed=9, traffic_seed=17, traffic_policy="fixed")

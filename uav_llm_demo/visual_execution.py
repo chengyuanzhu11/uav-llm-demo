@@ -18,6 +18,7 @@ from .motion import distance, norm
 from .onboard_observation import (FOV_DEG, accept_frame, camera_request, copy_frame, finite, frame_metadata, ground_pixel,
                                   validate_visual_evidence)
 from .provider_config import identify_provider
+from .direct_vision import DirectVisionAgent, VisualDecisionError
 from .provider_usage import request_trace
 from .safety import SafetyChecker
 from .spatial_motion import spatial_catalog
@@ -107,12 +108,11 @@ class VisionAgent:
         self.model = model
         self.client = DeepSeekAgent(api_key=key, model=model or "unconfigured", base_url=endpoint,
                                     timeout_seconds=45)
-        # DeepSeekAgent normally falls back to DEEPSEEK_API_KEY. An independent
-        # vision endpoint must retain the explicit credential decision above.
+        # Keep this vision profile's explicit credential selection.
         self.client.api_key = key
         self.planner = DeepSeekAgent(api_key=config.get("api_key"), model=config.get("model"),
                                     base_url=config.get("base_url"), timeout_seconds=45)
-        self.configured = bool(key and model)
+        self.configured = bool(model and self.client.configured and self.planner.configured)
         self.current_frame_id, self.perception, self.perception_frames, self.dialogue = None, None, [], []
 
     def decide(self, context, frames, *, additional_request=lambda: None, cancelled=lambda: False):
@@ -122,7 +122,7 @@ class VisionAgent:
             raise ValueError("请配置支持图像的 VISION_MODEL；独立接口还需 VISION_API_KEY。")
         if frames[-1]["frame_id"] != self.current_frame_id:
             self.perception = self._perceive(context["visual_goal"], frames)
-            self.perception_frames = [frame_metadata(f) for f in frames]
+            self.perception_frames = [frame_metadata(frames[-1])]
             self.current_frame_id, self.dialogue = frames[-1]["frame_id"], []
             if cancelled():
                 raise CancelledError("Visual task changed after perception.")
@@ -140,22 +140,20 @@ class VisionAgent:
             targets = next(report["targets"] for report in self.perception if report["frame_id"] == frames[-1]["frame_id"])
             if (not isinstance(args, dict) or set(args) != {"target_index"}
                     or type(args["target_index"]) is not int or not 0 <= args["target_index"] < len(targets)):
-                raise ValueError("ground must select a visible target_index from the CURRENT perception report.")
+                raise VisualDecisionError("ground must select a visible target_index from the CURRENT perception report; if targets is empty, inspect another view.")
             target = targets[args["target_index"]]
             decision["arguments"] = dict(frame_id=frames[-1]["frame_id"], pixel=deepcopy(target["pixel"]), confidence=target["confidence"])
         return decision
 
     def _perceive(self, goal, frames):
         """Read-only geometry tools reuse this exact frame's perception report."""
-        content = [{"type": "text", "text": json.dumps(dict(visual_goal=goal), ensure_ascii=False)}]
-        for index, frame in enumerate(frames):
-            metadata = frame_metadata(frame)
-            metadata.pop("frame_id")
-            content.extend([{"type": "text", "text": json.dumps(dict(metadata, frame_index=index))},
-                            {"type": "image_url", "image_url": {"url": frame["rgb"]}}])
+        frames = frames[-1:]
+        content = [{"type": "image_url", "image_url": {"url": frames[0]["rgb"]}},
+                   {"type": "text", "text": json.dumps(dict(frame_index=0,
+                       requested_appearance=goal["description"]), ensure_ascii=False)}]
         value = self.client._request_json_content(
             [{"role": "system", "content": PERCEPTION_PROMPT}, {"role": "user", "content": content}],
-            "image perception", max_tokens=2500, prompt_version="onboard-perception-v4", structured_task=True)
+            "image perception", max_tokens=2500, prompt_version="onboard-perception-v5", structured_task=True)
         reports = json.loads(value)
         point = dict(type="array", minItems=2, maxItems=2, items=dict(type="integer", minimum=0, maximum=999))
         def obj(properties):
@@ -176,11 +174,23 @@ class VisionAgent:
         return reports["frames"]
 
 
+def build_vision_agent(config):
+    strategy = os.getenv("VISION_STRATEGY", "two_stage").strip()
+    if strategy == "two_stage":
+        return VisionAgent(config)
+    if strategy == "direct":
+        return DirectVisionAgent(config)
+    raise ValueError("VISION_STRATEGY must be two_stage or direct.")
+
+
 class VisualExecution:
     MAX_CALLS = 32
+    MAX_NO_PROGRESS_CALLS = 12
     MAX_FRAME_AGE = 60.0
 
-    def __init__(self, agent=None):
+    def __init__(self, agent=None, *, recorder=None):
+        self.recorder = recorder
+        self.future_decision_id = self.pending_decision_id = self.moving_decision_id = None
         self.provided_agent = agent
         self.agent = agent
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uav-vision")
@@ -190,7 +200,34 @@ class VisualExecution:
         self.identity = None
         self.reset()
 
+    def configuration(self, config):
+        # A running instance can outlive a settings edit. Report that instance,
+        # and inspect defaults only before the first visual task creates one.
+        agent = self.agent or build_vision_agent(config)
+        client = getattr(agent, "client", agent)
+        return dict(model=getattr(agent, "model", None),
+                    strategy="direct" if isinstance(agent, DirectVisionAgent) else "two_stage",
+                    base_url=getattr(client, "base_url", ""),
+                    configured=bool(getattr(agent, "configured", False)))
+
+    def _record(self, kind, **payload):
+        if self.recorder is not None:
+            self.recorder.record(kind, **payload)
+
+    def _finish_decision(self, decision_id, status, service=None, **payload):
+        if decision_id is None:
+            return
+        if service is not None:
+            payload["state"] = dict(simulation_time=service._time,
+                position_grid=list(service._vehicle.position), velocity=list(service._vehicle.velocity))
+        self._record("decision_result", decision_id=decision_id, status=status, **payload)
+
     def reset(self):
+        for decision_id in (self.future_decision_id, self.pending_decision_id):
+            self._finish_decision(decision_id, "cancelled", feedback={"code": "visual_execution_reset"})
+        if self.moving_decision_id:
+            self._record("motion_aborted", decision_id=self.moving_decision_id, reason="visual_execution_reset")
+        self.future_decision_id = self.pending_decision_id = self.moving_decision_id = None
         if self.camera_future is not None:
             self.camera_future.cancel()
         self.camera_future = None
@@ -206,6 +243,7 @@ class VisualExecution:
         self.coverage, self.image_counts = [], {}
         self.calls, self.errors, self.discarded = 0, 0, 0
         self.last_progress_call = self.last_progress_event_call = 0
+        self.best_confirmation_count = 0
         self.best_range_gap = math.inf
         self.yaw, self.pitch = 0., -25.
         self.fov = FOV_DEG
@@ -235,9 +273,16 @@ class VisualExecution:
         self.frame = frame
         digest = self.frame["rgb_sha256"]
         self.image_counts[digest] = self.image_counts.get(digest, 0) + 1
-        self.coverage = [*self.coverage[-31:], dict(position_grid=self.frame["position_grid"],
-                         yaw_deg=self.frame["yaw_deg"], pitch_deg=self.frame["pitch_deg"],
-                         vertical_fov_deg=self.frame["vertical_fov_deg"])]
+        pose = dict(position_grid=frame["position_grid"], yaw_deg=frame["yaw_deg"],
+                    pitch_deg=frame["pitch_deg"], vertical_fov_deg=frame["vertical_fov_deg"])
+        def same_view(previous):
+            yaw_delta = abs((pose["yaw_deg"] - previous["yaw_deg"] + 180) % 360 - 180)
+            return (distance(pose["position_grid"], previous["position_grid"]) < 1.0
+                    and yaw_delta < 10 and abs(pose["pitch_deg"] - previous["pitch_deg"]) < 10
+                    and abs(pose["vertical_fov_deg"] - previous["vertical_fov_deg"]) < 5)
+        if not any(same_view(previous) for previous in self.coverage):
+            self.last_progress_call = self.calls
+            self.coverage = [*self.coverage[-31:], pose]
         self.request = None
         if self.first_frame is None:
             self.first_frame = self.frame
@@ -260,7 +305,7 @@ class VisualExecution:
         if self.identity != identity:
             self.reset()
             self.identity = identity
-            self.agent = self.agent or VisionAgent(service._deepseek_config)
+            self.agent = self.agent or build_vision_agent(service._deepseek_config)
             self.status = "transit"
         if self.status == "transit":
             if not arrived:
@@ -284,6 +329,7 @@ class VisualExecution:
             return self._stop(service, "机载图像未及时送达，请检查相机连接后重新提交任务。")
         if self.future is not None and self.future.done():
             future, self.future = self.future, None
+            decision_id, self.future_decision_id = self.future_decision_id, None
             self.last_latency_ms = round((time.monotonic() - self.inference_started) * 1000)
             stale_future = self.future_identity != identity
             try:
@@ -292,44 +338,66 @@ class VisualExecution:
                         or distance(service._vehicle.position, frame["position_grid"]) > 15):
                     self.discarded += 1
                     self.feedback = {"ok": False, "code": "stale_observation", "message": "Reply discarded; request a current image."}
+                    self._finish_decision(decision_id, "discarded", service, action=decision, feedback=self.feedback)
                     service.trace.event("visual_discarded", service._time, reason="stale_revision_pose_or_time")
                     if self.request is None:
                         self._request_frame(service, step)
                 else:
                     self.errors = 0
                     self.pending = (frame, decision)
+                    self.pending_decision_id = decision_id
             except Exception as exc:
                 if stale_future:
+                    self._finish_decision(decision_id, "discarded", service, feedback={"code": "stale_task"})
                     self.discarded += 1
                     if self.request is None:
                         self._request_frame(service, step)
                     return False
-                # Provider errors already contain bounded, credential-free messages.
-                self.errors += 1
-                self.feedback = {"ok": False, "code": "vision_request_failed", "message":
-                    str(exc)[:240] if isinstance(exc, (PlannerProviderError, ValueError)) else type(exc).__name__}
+                # Invalid model actions get task feedback; transport failures keep
+                # their separate bounded retry budget and fresh-frame recovery.
+                invalid_action = isinstance(exc, VisualDecisionError)
+                self.errors = 0 if invalid_action else self.errors + 1
+                self.feedback = {"ok": False, "code": "invalid_visual_decision" if invalid_action else "vision_request_failed", "message":
+                    str(exc)[:360] if isinstance(exc, (PlannerProviderError, ValueError)) else type(exc).__name__}
+                self._finish_decision(decision_id, "rejected" if invalid_action else "error", service, feedback=self.feedback)
                 if self.errors >= 3:
                     return self._stop(service, "视觉模型连续请求失败，任务未完成；请检查视觉模型配置。")
-                if self.request is None:
+                if not invalid_action and self.request is None:
                     self._request_frame(service, step)
         # A reply may arrive while a validated segment is still executing. Keep
         # that segment stable; commit the next intent only at its stopping point.
         moving = service.waypoints.current is not None or norm(service._vehicle.velocity) > .05
+        if self.moving_decision_id and not moving:
+            self._record("motion_completed", decision_id=self.moving_decision_id,
+                simulation_time=service._time, position_grid=list(service._vehicle.position))
+            self.moving_decision_id = None
         if self.pending is not None and not moving and not service.avoidance.active and not service._plan_requested:
             frame, decision = self.pending
             self.pending = None
+            decision_id, self.pending_decision_id = self.pending_decision_id, None
+            done, outcome = False, "applied"
             try:
                 done = self._apply(service, step, frame, decision)
                 if done:
-                    return True
+                    outcome = "completed"
+                elif self.feedback.get("ok") is False:
+                    outcome = "rejected"
             except (ValueError, KeyError, TypeError) as exc:
+                outcome = "rejected"
                 self.feedback = {"ok": False, "code": "invalid_visual_action", "message": str(exc)[:300]}
+            self._finish_decision(decision_id, outcome, service, action=decision, feedback=deepcopy(self.feedback))
+            if outcome == "applied" and decision.get("tool") == "submit_move":
+                self.moving_decision_id = decision_id
+                self._record("motion_started", decision_id=decision_id, simulation_time=service._time)
             entry = dict(frame_id=frame["frame_id"], tool=decision.get("tool") if isinstance(decision, dict) else None,
                          reason=decision.get("reason", "")[:300] if isinstance(decision, dict) and isinstance(decision.get("reason"), str) else "",
                          camera=[frame["yaw_deg"], frame["pitch_deg"]], feedback=deepcopy(self.feedback))
             self.history = [*self.history[-11:], entry]
             service.trace.event("visual_feedback", service._time, **entry)
-            if (isinstance(decision, dict) and decision.get("tool") in ("preview_move", "probe")
+            if done:
+                return True
+            if (outcome == "rejected"
+                    or isinstance(decision, dict) and decision.get("tool") in ("preview_move", "probe")
                     or self.feedback.get("code") == "viewing_distance_unmet"):
                 # A numerical query does not change the view. Continue the same
                 # tool dialogue instead of paying for identical image perception.
@@ -340,6 +408,8 @@ class VisualExecution:
         if self.future is None and self.pending is None and self.request is None and self.frame is not None:
             if self.calls >= self.MAX_CALLS:
                 return self._stop(service, "视觉反馈已达到预算，尚未确认目标，保持安全等待。")
+            if self.calls - self.last_progress_call >= self.MAX_NO_PROGRESS_CALLS:
+                return self._stop(service, "视觉决策多轮未取得新视角、有效确认或距离改善，已停止重复尝试；目标尚未确认。")
             if service._time - self.frame["simulation_time"] > self.MAX_FRAME_AGE:
                 self.discarded += 1
                 self._request_frame(service, step)
@@ -368,13 +438,30 @@ class VisualExecution:
             for view in (self.first_frame, self.reference_frame, frame):
                 if view and view["frame_id"] not in {f["frame_id"] for f in frames}:
                     frames.append(copy_frame(view))
-            agent, trace, request_id = self.agent, service.trace, f"vision-{identity[0]}-{self.calls}"
+            agent, trace = self.agent, service.trace
+            request_id = f"vision-{identity[0]}-{identity[1]}-{self.calls}"
+            decision_id = f"{trace.run_id}:{request_id}"
+            self.future_decision_id = decision_id
+            self._record("decision_input", decision_id=decision_id, context=context, frames=frames,
+                run_id=trace.run_id, revision=identity[0], execution_id=identity[1], decision_index=self.calls)
             trace.provider_started()
             trace.event("visual_requested", service._time, frame=frame_metadata(frame), request_id=request_id)
+            recorder = self.recorder
+            def observe_model(record):
+                if recorder is not None:
+                    if record.get("purpose") == "grounding_verification":
+                        recorder.record("grounding_verification", decision_id=decision_id,
+                            **{k: v for k, v in record.items() if k != "kind"})
+                        return
+                    recorder.record("model_request", decision_id=decision_id,
+                        model=record["model"], prompt_version=record["prompt_version"], request=record["request"])
+                    recorder.record("model_response", decision_id=decision_id,
+                        **{key: record.get(key) for key in ("response", "http_status", "elapsed_ms", "outcome", "error", "source")})
             def execute():
                 with request_trace(trace.run_id, request_id, trace.usage_event):
+                    extra = {"interaction_observer": observe_model} if isinstance(agent, DirectVisionAgent) else {}
                     return captured_identity, frame, agent.decide(context, frames, additional_request=trace.provider_started,
-                        cancelled=lambda: self.identity != captured_identity or service._closed)
+                        cancelled=lambda: self.identity != captured_identity or service._closed, **extra)
             self.future = self.executor.submit(execute)
             self.inference_started = time.monotonic()
             self.future_identity = identity
@@ -400,10 +487,27 @@ class VisualExecution:
                   "probe": {"frame_id", "pixel"}, "wait": set()}
         if tool not in fields or not isinstance(args, dict) or set(args) != fields[tool]:
             raise ValueError("Unknown tool or invalid argument fields.")
+        previous_measurement = self.feedback.get("measured")
+        if previous_measurement is None:
+            previous_measurement = next((entry.get("feedback", {}).get("measured")
+                for entry in reversed(self.history) if entry.get("feedback", {}).get("measured")), None)
         self.feedback = {"ok": True, "tool": tool}
         if tool == "look":
             yaw = (number_argument(args, "yaw_deg", -36000, 36000) + 180) % 360 - 180
             pitch = number_argument(args, "pitch_deg", -90, 30)
+            if (abs((yaw - self.yaw + 180) % 360 - 180) < .5
+                    and abs(pitch - self.pitch) < .5 and self.fov == FOV_DEG):
+                self.feedback.update(ok=False, code="unchanged_view",
+                    message="These camera angles are unchanged. Choose an unobserved direction, correct the selected target point, or preview a safe move. Use wait only for a changing scene.")
+                return False
+            visited = any(distance(service._vehicle.position, view["position_grid"]) < 1.0
+                and abs((yaw-view["yaw_deg"]+180)%360-180) < 10
+                and abs(pitch-view["pitch_deg"]) < 10
+                for view in self.coverage)
+            if visited:
+                self.feedback.update(ok=False, code="revisited_view",
+                    message="This direction was already inspected from this position. Select a different yaw/pitch, or preview a safe viewpoint translation. The current image remains available for grounding.")
+                return False
             self.yaw, self.pitch = yaw, pitch
             self.fov, self.views = FOV_DEG, []
         elif tool in {"preview_move", "submit_move"}:
@@ -427,6 +531,12 @@ class VisualExecution:
             if tool == "preview_move":
                 self.candidates = {f"view-{self.calls}": point}
                 self.feedback.update(candidate_id=f"view-{self.calls}", endpoint_grid=list(point))
+                if previous_measurement is not None:
+                    target = previous_measurement["point_grid"]
+                    before, after = distance(service._vehicle.position, target), distance(point, target)
+                    self.feedback.update(predicted_range_m=after, range_change_m=after-before,
+                        remaining_distance_gap_m=max(0., after-step["visual"]["max_distance_m"]),
+                        note="Negative range_change_m approaches the selected surface. This tests geometry, not target identity; submit only if this candidate helps the unresolved goal.")
             else:
                 self.candidates.clear()
                 self.fov, self.views = FOV_DEG, []
@@ -478,13 +588,14 @@ class VisualExecution:
                     self.feedback.update(code="viewing_distance_unmet", required_max_distance_m=step["visual"]["max_distance_m"],
                         message="Viewing distance is a 3D constraint. Use offset_from_current_m and its horizontal/vertical components to choose a safe new position; another measurement without movement cannot reduce distance.")
             else:
-                if confidence >= .8:
-                    self.last_progress_call = self.calls
                 self.reference_frame = frame
                 if self.views and distance(self.views[-1]["point_grid"], measured["point_grid"]) > 3:
                     self.views = []
                     self.feedback.update(message="Observations disagree; confirm the same physical surface.")
                 self.views = [*self.views[-1:], measured]
+                if len(self.views) > self.best_confirmation_count:
+                    self.best_confirmation_count = len(self.views)
+                    self.last_progress_call = self.calls
                 if len(self.views) == 2:
                     result = dict(observed=True, description=step["visual"]["description"],
                                   confidence=min(v["confidence"] for v in self.views), range_m=measured["range_m"],

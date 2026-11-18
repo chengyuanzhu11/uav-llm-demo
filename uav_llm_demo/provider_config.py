@@ -1,5 +1,6 @@
 """In-memory provider profiles and credential-safe model discovery."""
 import ipaddress
+import os
 import re
 import time
 from urllib.parse import urlsplit, urlunsplit
@@ -58,6 +59,40 @@ def normalize_endpoint(value):
         raise ProviderConfigError("configuration_invalid", "接口地址需为 HTTPS 基础地址，不能包含账号、查询参数或片段。") from None
 
 
+def is_loopback_endpoint(base_url):
+    try:
+        host = urlsplit(base_url).hostname
+        return host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def is_provider_configured(config):
+    try:
+        endpoint = normalize_endpoint(config.get("base_url") or "")
+    except ProviderConfigError:
+        return False
+    return bool(config.get("model") and (config.get("api_key") or is_loopback_endpoint(endpoint)))
+
+
+def task_response_format(value):
+    value = "json_object" if value is None or value == "" else value
+    if not isinstance(value, str) or value not in {"json_object", "json_schema"}:
+        raise ProviderConfigError("configuration_invalid", "任务输出格式须为 json_object 或 json_schema。")
+    return value
+
+
+def load_planner_config():
+    # Environment names are a published interface. An explicit generic profile
+    # is isolated from legacy provider credentials, including an empty local key.
+    names = ("API_KEY", "MODEL", "BASE_URL")
+    prefix = "LLM" if any("LLM_" + name in os.environ for name in names) else "DEEPSEEK"
+    return dict(api_key=os.getenv(prefix + "_API_KEY") or None,
+                model=os.getenv(prefix + "_MODEL") or "deepseek-flash",
+                base_url=normalize_endpoint(os.getenv(prefix + "_BASE_URL") or "https://api.deepseek.com"),
+                task_response_format=task_response_format(os.getenv(prefix + "_TASK_RESPONSE_FORMAT")))
+
+
 def identify_provider(base_url):
     host = urlsplit(base_url).hostname or ""
     if host == "api.deepseek.com":
@@ -94,14 +129,16 @@ class ProviderProfiles:
             raise ProviderConfigError("configuration_invalid", "接口地址与所选服务商不一致，请调整服务商或高级地址。")
         same_endpoint = endpoint == stored["base_url"]
         key = text_field(data, "api_key") or (stored.get("api_key") if same_endpoint else None)
-        if not key:
+        if not key and not is_loopback_endpoint(endpoint):
             raise ProviderConfigError("missing_key", "请填写该服务商及接口对应的 API Key。")
-        if key in endpoint:
+        if key and key in endpoint:
             raise ProviderConfigError("configuration_invalid", "密钥只能填写在 API Key 字段中。")
         model = text_field(data, "model") or (stored.get("model") if same_endpoint else "") or ""
-        if model and (not _MODEL_ID.fullmatch(model) or key in model):
+        if model and (not _MODEL_ID.fullmatch(model) or (key and key in model)):
             raise ProviderConfigError("configuration_invalid", "模型名称格式无效，请从模型列表选择。")
-        return dict(provider=provider, base_url=endpoint, api_key=key, model=model)
+        return dict(provider=provider, base_url=endpoint, api_key=key, model=model,
+                    task_response_format=task_response_format(data["task_response_format"] if "task_response_format" in data else
+                        stored.get("task_response_format") if same_endpoint else None))
 
     def commit(self, candidate):
         self.profiles[candidate["provider"]] = dict(candidate)
@@ -112,13 +149,15 @@ class ProviderProfiles:
         return dict(backend=backend, active_provider=self.active, providers=[dict(item) for item in PROVIDERS],
                     profiles=[dict(id=item["id"], label=item["label"], base_url=self.profiles[item["id"]]["base_url"],
                                    model=self.profiles[item["id"]].get("model") or "",
-                                   key_configured=bool(self.profiles[item["id"]].get("api_key"))) for item in PROVIDERS])
+                                   key_configured=bool(self.profiles[item["id"]].get("api_key")),
+                                    task_response_format=self.profiles[item["id"]].get("task_response_format", "json_object"))
+                              for item in PROVIDERS])
 
 
 def _get_json(url, key, params, timeout):
     response = None
     try:
-        response = requests.get(url, headers={"Authorization": "Bearer " + key}, params=params,
+        response = requests.get(url, headers={"Authorization": "Bearer " + key} if key else {}, params=params,
                                 timeout=timeout, allow_redirects=False)
         status = response.status_code
         if status in (401, 403):
@@ -176,7 +215,7 @@ def discover_models(candidate):
             if not isinstance(row, dict):
                 continue
             model = row.get("model" if bailian else "id")
-            if not isinstance(model, str) or not _MODEL_ID.fullmatch(model) or key in model:
+            if not isinstance(model, str) or not _MODEL_ID.fullmatch(model) or (key and key in model):
                 continue
             if bailian:
                 features = row.get("features")

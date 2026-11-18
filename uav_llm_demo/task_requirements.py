@@ -38,9 +38,12 @@ class RequirementsAudit:
     status: str
     summary: str
     issues: tuple[dict, ...]
+    assertions: tuple[dict, ...] = ()
+    confirmed_assertions: tuple[dict, ...] = ()
 
     def to_dict(self):
-        return {"status": self.status, "summary": self.summary, "issues": deepcopy(list(self.issues))}
+        return {"status": self.status, "summary": self.summary, "issues": deepcopy(list(self.issues)),
+                "assertions": deepcopy(list(self.assertions))}
 
 
 def _object(properties, required=None):
@@ -62,6 +65,9 @@ def _explicit_fields(schema):
             _explicit_fields(value)
 
 
+_REFERENCE_GEOMETRY_FIELDS = {"curve": ("x", "y", "t_start", "t_end"), "polyline": ("points_m",)}
+
+
 def requirement_schema(*, for_extraction=False):
     # Deferred import keeps semantic_tasks free to consume requirements without
     # duplicating its capability vocabulary or creating an import-time cycle.
@@ -72,7 +78,8 @@ def requirement_schema(*, for_extraction=False):
     schema["title"] = "Single UAV task requirements"
     schema["description"] = (
         "Only user-specified obligations and constraints. Omit unspecified parameters; "
-        "never copy execution defaults or planner choices. Source coverage requires a separate semantic audit.")
+        "never copy execution defaults or planner choices. Source coverage requires a separate semantic audit. "
+        "needs_clarification requires steps=[], constraints={}, coverage=[]; ready requires at least one obligation.")
     for variant in schema["$defs"]["node"]["oneOf"]:
         fields = variant["properties"]
         action = fields["action"]["const"]
@@ -90,6 +97,10 @@ def requirement_schema(*, for_extraction=False):
             variant["required"].append("visual")
             fields["visual"]["required"] = ["description"]
         if action == "motion":
+            if for_extraction:
+                variant["anyOf"] = [{"type": "object", "required": [key]} for key in ("target_id", "target_ref")]
+            variant["description"] = ("A motion obligation requires target_id or target_ref. target_id is a node-level "
+                                      "field, beside motion; geometry belongs under motion.path and orientation under motion.heading.")
             motion = fields["motion"]
             motion["required"] = []
             heading = motion["properties"]["heading"]
@@ -99,9 +110,10 @@ def requirement_schema(*, for_extraction=False):
                 path["properties"].pop("samples", None)
                 path["properties"]["altitude_delta_m"] = {"type": "number", "minimum": -100000, "maximum": 100000}
                 path["properties"]["altitude_trend"] = {"enum": ["nondecreasing", "nonincreasing", "level"]}
-                if path["properties"]["kind"]["const"] in ("curve", "polyline"):
+                kind = path["properties"]["kind"]["const"]
+                if kind in _REFERENCE_GEOMETRY_FIELDS:
                     if for_extraction:
-                        path["required"].append("flexible")
+                        path["required"].extend(["flexible", *_REFERENCE_GEOMETRY_FIELDS[kind]])
                     axes = {"type": "array", "items": {"type": "string", "enum": list("xyz")},
                             "uniqueItems": True, "maxItems": 3}
                     path["properties"]["flexible"] = {
@@ -133,6 +145,11 @@ def requirements_audit_schema():
     return _object({
         "status": {"enum": ["approved", "needs_clarification", "revision_required"]},
         "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "assertions": {"type": "array", "maxItems": 256, "items": _object({
+            "quote": {"type": "string", "minLength": 1, "maxLength": 10000},
+            "requirement_id": {"type": "string", "minLength": 1, "maxLength": 40},
+            "expected_json": {"type": "string", "minLength": 2, "maxLength": 16000},
+        })},
         "issues": {"type": "array", "maxItems": 128, "items": _object({
             "code": {"type": "string", "minLength": 1, "maxLength": 80},
             "message": {"type": "string", "minLength": 1, "maxLength": 600},
@@ -293,7 +310,7 @@ def requirements_from_json_text(text, catalog, instruction, *, for_extraction=Fa
                         if "flexible" in geometry:
                             flexible = geometry["flexible"]
                             geometry_path = f"{node_path}.motion.path"
-                            required = ("x", "y", "t_start", "t_end") if geometry["kind"] == "curve" else ("points_m",)
+                            required = _REFERENCE_GEOMETRY_FIELDS[geometry["kind"]]
                             missing = [key for key in required if key not in geometry]
                             if missing:
                                 raise TaskRequirementsError(f"{geometry_path}.{missing[0]}", "incomplete_reference_geometry",
@@ -305,8 +322,10 @@ def requirements_from_json_text(text, catalog, instruction, *, for_extraction=Fa
                                         "An axis cannot belong to more than one scale group.")
                                 scaled_axes.update(group)
                         if geometry.get("kind") == "curve":
-                            if "t_start" in geometry and "t_end" in geometry and geometry["t_end"] <= geometry["t_start"]:
-                                raise TaskRequirementsError(f"{node_path}.motion.path.t_end", "number_range", "Curve end parameter must exceed its start.")
+                            if ("t_start" in geometry and "t_end" in geometry
+                                    and not 0 < geometry["t_end"] - geometry["t_start"] <= 1000):
+                                raise TaskRequirementsError(f"{node_path}.motion.path.t_end", "parameter_range",
+                                    "t_end must be greater than t_start, by at most 1000.")
                             for axis in "xyz":
                                 if axis in geometry:
                                     try:
@@ -355,20 +374,153 @@ def requirements_from_json_text(text, catalog, instruction, *, for_extraction=Fa
                             deepcopy(data["constraints"]), tuple(deepcopy(data["coverage"])), instruction)
 
 
+def audit_requirements_projection(requirements):
+    """Expose structure and order without the extractor's persuasive prose."""
+    data = requirements.to_dict() if hasattr(requirements, "to_dict") else requirements
+    result = {"$": {"steps": [node["id"] for node in data["steps"]],
+                    "constraints": deepcopy(data.get("constraints", {}))}}
+
+    def visit(nodes):
+        for node in nodes:
+            item = {key: deepcopy(value) for key, value in node.items() if key != "id"}
+            for key in ("steps", "then", "else"):
+                if key in node:
+                    item[key] = [child["id"] for child in node[key]]
+                    visit(node[key])
+            result[node["id"]] = item
+    visit(data["steps"])
+    return result
+
+
+def _assertion_leaves(value, prefix=()):
+    if isinstance(value, dict) and value:
+        for key, item in value.items():
+            yield from _assertion_leaves(item, (*prefix, key))
+    else:
+        yield prefix, value
+
+
+def _semantic_assertion_fields(projection):
+    # Reference formulae are implementation choices for a requested shape. Its
+    # direction, amount, height predicates and all task structure remain audited.
+    basis = {"x", "y", "z", "t_start", "t_end", "points_m", "flexible"}
+    fields = {}
+    for identifier, item in projection.items():
+        fields[identifier] = [path for path, value in _assertion_leaves(item)
+            if not (len(path) >= 3 and path[:2] == ("motion", "path") and path[2] in basis)
+            and not (identifier == "$" and path == ("constraints",) and value == {})]
+    return fields
+
+
+def _assertion_expected(assertion, index):
+    location = f"$.assertions[{index}].expected_json"
+    try:
+        expected = json.loads(assertion["expected_json"], object_pairs_hook=_unique_object,
+                              parse_constant=_reject_nonfinite)
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        raise TaskRequirementsError(location, "invalid_assertion", "expected_json must encode one JSON object.") from None
+    if not isinstance(expected, dict) or not expected or "id" in expected:
+        raise TaskRequirementsError(location, "invalid_assertion", "Assert nonempty node fields; identify the node with requirement_id.")
+    for path, value in _assertion_leaves(expected):
+        if len(path) > 24 or any(not isinstance(key, str) or not key or len(key) > 80 for key in path):
+            raise TaskRequirementsError(location, "invalid_assertion", "Assertion field nesting is invalid.")
+        if isinstance(value, (float, int)) and not math.isfinite(value):
+            raise TaskRequirementsError(location, "invalid_assertion", "Assertion numbers must be finite.")
+    return expected
+
+
+def _asserted_equal(expected, actual):
+    # JSON booleans must not compare equal to the numbers 0 and 1.
+    if isinstance(expected, bool) or isinstance(actual, bool):
+        return type(expected) is type(actual) and expected == actual
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        return math.isclose(expected, actual, rel_tol=1e-9, abs_tol=1e-9)
+    if isinstance(expected, list) and isinstance(actual, (tuple, list)):
+        return len(expected) == len(actual) and all(_asserted_equal(a, b) for a, b in zip(expected, actual))
+    if isinstance(expected, dict) and isinstance(actual, dict):
+        return expected.keys() == actual.keys() and all(_asserted_equal(value, actual[key]) for key, value in expected.items())
+    return type(expected) is type(actual) and expected == actual
+
+
+def compare_requirement_assertions(requirements, assertions, instruction):
+    """Compare source assertions locally and retain matching facts across repair."""
+    projection = audit_requirements_projection(requirements)
+    issues, confirmed, asserted = [], [], {}
+    for index, assertion in enumerate(assertions):
+        quote = assertion.get("quote", "")
+        if not quote.strip() or quote not in instruction:
+            raise TaskRequirementsError(f"$.assertions[{index}].quote", "invalid_source", "Assertion quote must occur verbatim in the instruction.")
+        expected = _assertion_expected(assertion, index)
+        identifier = assertion["requirement_id"]
+        matched = {}
+        for path, wanted in _assertion_leaves(expected):
+            key = (identifier, path)
+            if key in asserted and not _asserted_equal(asserted[key], wanted):
+                raise TaskRequirementsError(f"$.assertions[{index}]", "conflicting_assertions", "Source assertions disagree about the same field.")
+            asserted[key] = wanted
+            actual, found = projection.get(identifier), identifier in projection
+            for name in path:
+                if not isinstance(actual, dict) or name not in actual:
+                    found = False
+                    break
+                actual = actual[name]
+            if found and _asserted_equal(wanted, actual):
+                branch = matched
+                for name in path[:-1]:
+                    branch = branch.setdefault(name, {})
+                branch[path[-1]] = deepcopy(wanted)
+            else:
+                field = identifier + "." + ".".join(path)
+                actual_text = json.dumps(actual, ensure_ascii=False) if found else "<missing>"
+                issues.append({"code": "source_assertion_mismatch", "quote": quote,
+                    "message": f"{field}: source requires {json.dumps(wanted, ensure_ascii=False)}, candidate has {actual_text}."[:600]})
+        if matched:
+            confirmed.append({"quote": quote, "requirement_id": identifier,
+                              "expected_json": json.dumps(matched, ensure_ascii=False, separators=(",", ":"))})
+    return issues, tuple(confirmed), asserted
+
+
 def audit_requirements_from_json_text(text, requirements, instruction):
-    """Validate a separate source-to-requirements audit; never inspect a plan."""
+    """Audit decisions are derived from field comparisons, never empty approval."""
     _instruction_text(instruction)
     if requirements.instruction != instruction:
         raise TaskRequirementsError("$.instruction", "source_mismatch", "Audit source differs from the extracted requirements source.")
     data = _read(text, requirements_audit_schema())
-    if data["status"] == "approved" and (data["issues"] or requirements.status != "ready"):
-        raise TaskRequirementsError("$.issues", "invalid_approval", "Approval requires ready requirements and no issues.")
-    if data["status"] == "revision_required" and not data["issues"]:
-        raise TaskRequirementsError("$.issues", "missing_issues", "A required revision must identify at least one source-grounded issue.")
-    for index, issue in enumerate(data["issues"]):
+    issues = deepcopy(data["issues"])
+    for index, issue in enumerate(issues):
         for key in ("code", "message", "quote"):
             if not issue[key].strip():
                 raise TaskRequirementsError(f"$.issues[{index}].{key}", "empty_text", "Audit issue fields cannot be blank.")
         if issue["quote"] not in instruction:
             raise TaskRequirementsError(f"$.issues[{index}].quote", "invalid_source", "Audit quote must occur verbatim in the instruction.")
-    return RequirementsAudit(data["status"], data["summary"].strip(), tuple(deepcopy(data["issues"])))
+    mismatches, confirmed, asserted = compare_requirement_assertions(requirements, data["assertions"], instruction)
+    issues.extend(mismatches)
+    if data["status"] == "needs_clarification":
+        return RequirementsAudit(data["status"], data["summary"].strip(), tuple(issues), tuple(data["assertions"]), confirmed)
+    if not data["assertions"]:
+        raise TaskRequirementsError("$.assertions", "missing_assertions", "Audit must independently state source obligations and compare their fields.")
+    # Every asserted clause and every source character is accounted for. Explicit
+    # issues can cover clauses whose required structure is still missing.
+    quoted = [item["quote"] for item in [*data["assertions"], *issues]]
+    covered = [False] * len(instruction)
+    for quote in quoted:
+        start = instruction.find(quote)
+        while start >= 0:
+            covered[start:start + len(quote)] = [True] * len(quote)
+            start = instruction.find(quote, start + 1)
+    if any(not seen and not char.isspace() and not unicodedata.category(char).startswith("P")
+           for char, seen in zip(instruction, covered)):
+        raise TaskRequirementsError("$.assertions", "source_coverage_missing", "Audit assertions must cover every source clause, including missing obligations.")
+    for identifier, paths in _semantic_assertion_fields(audit_requirements_projection(requirements)).items():
+        for path in paths:
+            if (identifier, path) not in asserted:
+                issues.append({"code": "unaudited_requirement", "quote": instruction,
+                    "message": f"{identifier}.{'.'.join(path)} has no source-grounded field assertion; audit it or remove an invented requirement."})
+    if data["status"] == "revision_required" and not issues:
+        raise TaskRequirementsError("$.issues", "missing_issues", "A required revision must identify a source-grounded difference.")
+    status = "revision_required" if issues else "approved"
+    if requirements.status != "ready":
+        raise TaskRequirementsError("$.status", "invalid_approval", "Audit requires ready requirements.")
+    summary = (f"原文事项与结构字段有 {len(issues)} 处差异，需要修正。"
+               if issues and data["status"] == "approved" else data["summary"].strip())
+    return RequirementsAudit(status, summary, tuple(issues[:128]), tuple(data["assertions"]), confirmed)

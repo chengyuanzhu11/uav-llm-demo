@@ -1,0 +1,185 @@
+{
+  "description": "20 engineering pilot episodes; shared layouts and paraphrases are not independent generalization splits. No target truth is sent to either model.",
+  "cases": [
+    {
+      "id": "bin-8m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找绿色垃圾桶，接近到8米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bin",
+      "seed": 17,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-8m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的绿色垃圾桶，在距离不超过8米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bin",
+      "seed": 18,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-10m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找绿色垃圾桶，接近到10米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bin",
+      "seed": 19,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-10m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的绿色垃圾桶，在距离不超过10米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bin",
+      "seed": 20,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-12m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找绿色垃圾桶，接近到12米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bin",
+      "seed": 21,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-12m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的绿色垃圾桶，在距离不超过12米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bin",
+      "seed": 22,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-15m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找绿色垃圾桶，接近到15米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bin",
+      "seed": 23,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-15m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的绿色垃圾桶，在距离不超过15米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bin",
+      "seed": 24,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-18m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找绿色垃圾桶，接近到18米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bin",
+      "seed": 25,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bin-18m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的绿色垃圾桶，在距离不超过18米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bin",
+      "seed": 26,
+      "split": "pilot",
+      "group": "bin"
+    },
+    {
+      "id": "bench-8m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找棕色长椅，接近到8米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bench",
+      "seed": 27,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-8m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的棕色长椅，在距离不超过8米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bench",
+      "seed": 28,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-10m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找棕色长椅，接近到10米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bench",
+      "seed": 29,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-10m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的棕色长椅，在距离不超过10米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bench",
+      "seed": 30,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-12m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找棕色长椅，接近到12米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bench",
+      "seed": 31,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-12m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的棕色长椅，在距离不超过12米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bench",
+      "seed": 32,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-15m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找棕色长椅，接近到15米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bench",
+      "seed": 33,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-15m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的棕色长椅，在距离不超过15米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bench",
+      "seed": 34,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-18m-v1",
+      "scene": "visual_garden",
+      "instruction": "到花园寻找棕色长椅，接近到18米内，从机载图像确认并定位后返航降落。",
+      "oracle_target": "bench",
+      "seed": 35,
+      "split": "pilot",
+      "group": "bench"
+    },
+    {
+      "id": "bench-18m-v2",
+      "scene": "visual_garden",
+      "instruction": "请用机载画面找到花园里的棕色长椅，在距离不超过18米的位置完成视觉确认和定位，然后返回基地降落。",
+      "oracle_target": "bench",
+      "seed": 36,
+      "split": "pilot",
+      "group": "bench"
+    }
+  ]
+}

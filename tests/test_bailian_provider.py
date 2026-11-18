@@ -1,10 +1,12 @@
 """Regression checks for DeepSeek over Alibaba Cloud Model Studio."""
 import json
+import os
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
 from uav_llm_demo import agents
+from uav_llm_demo.provider_config import ProviderConfigError
 
 
 class BailianProviderTests(unittest.TestCase):
@@ -44,12 +46,11 @@ class BailianProviderTests(unittest.TestCase):
                     self.assertIs(body["stream"], False)
                     response.close.assert_called_once_with()
 
-    def test_other_hosts_keep_existing_deepseek_parameters(self):
-        for endpoint in (
-            "https://api.deepseek.com",
-            "https://proxy.example/v1",
-            "https://dashscope.aliyuncs.com.example/v1",
-            "https://example.test/v1?upstream=dashscope.aliyuncs.com",
+    def test_provider_parameters_are_scoped_to_official_hosts_and_query_is_rejected(self):
+        for endpoint, official in (
+            ("https://api.deepseek.com", True),
+            ("https://proxy.example/v1", False),
+            ("https://dashscope.aliyuncs.com.example/v1", False),
         ):
             with self.subTest(endpoint=endpoint):
                 response = Mock(status_code=200)
@@ -61,8 +62,16 @@ class BailianProviderTests(unittest.TestCase):
                         api_key="test-key", base_url=endpoint,
                     )._request_json_content([], "route")
                 body = post.call_args.kwargs["json"]
-                self.assertEqual(body["thinking"], {"type": "disabled"})
+                if official:
+                    self.assertEqual(body["thinking"], {"type": "disabled"})
+                else:
+                    self.assertNotIn("thinking", body)
                 self.assertNotIn("enable_thinking", body)
+        with patch.object(agents, "_post_deepseek") as post:
+            with self.assertRaises(ProviderConfigError):
+                agents.DeepSeekAgent(api_key="test-key",
+                    base_url="https://example.test/v1?upstream=dashscope.aliyuncs.com")
+            post.assert_not_called()
 
     def test_windows_bridge_receives_bailian_parameters(self):
         reply = {
@@ -71,7 +80,7 @@ class BailianProviderTests(unittest.TestCase):
         }
         process = Mock(returncode=0, stdout=json.dumps(reply), stderr="")
         with (
-            patch.object(agents, "os", SimpleNamespace(name="nt")),
+            patch.object(agents, "os", SimpleNamespace(name="nt", getenv=os.getenv)),
             patch.object(agents.subprocess, "CREATE_NO_WINDOW", 0, create=True),
             patch.object(agents.subprocess, "run", return_value=process) as run,
         ):

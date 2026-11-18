@@ -1,0 +1,9 @@
+# Independent Python 3.11 training environment; never install in qwen-serve.
+# Install a CUDA build of torch compatible with the host before this file.
+torch==2.8.0
+torchvision==0.23.0
+transformers==4.57.1
+peft==0.17.1
+accelerate==1.10.1
+Pillow==13.0.0
+safetensors==0.6.2

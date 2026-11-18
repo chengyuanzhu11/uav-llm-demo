@@ -15,7 +15,7 @@ from uav_llm_demo.onboard_observation import (accept_frame, camera_request, grou
 from uav_llm_demo.visual_execution import VisualExecution, VisionAgent
 from uav_llm_demo.semantic_tasks import task_catalog, semantic_plan_from_json_text
 from uav_llm_demo.scenarios import load_scenario
-from uav_llm_demo.task_requirements import requirements_from_json_text
+from uav_llm_demo.task_requirements import requirement_schema, requirements_from_json_text
 from uav_llm_demo.provider_usage import prefix_metrics
 import json
 import math
@@ -72,6 +72,39 @@ class VisualFeedbackTests(unittest.TestCase):
         from uav_llm_demo.spatial_motion import compile_motion
         from uav_llm_demo.task_protocol import TaskProtocolError
         catalog, requirements, plan = self.observed_program()
+        from uav_llm_demo.task_protocol import validate_structure
+        source = requirements.to_dict()
+        for reference in (dict(target_id='west_garden'), dict(target_ref=dict(step_id='detect')),
+                          dict(target_id='west_garden',target_ref=dict(step_id='detect'))):
+            with self.subTest(reference=reference):
+                candidate = deepcopy(source)
+                candidate['steps'][1].pop('target_ref')
+                candidate['steps'][1].update(reference)
+                extracted = requirements_from_json_text(json.dumps(candidate),catalog,requirements.instruction,
+                                                        for_extraction=True)
+                self.assertEqual(extracted.steps[1],candidate['steps'][1])
+        missing = deepcopy(source)
+        missing['steps'][1].pop('target_ref')
+        validate_structure(missing,requirement_schema(for_extraction=False))
+        with self.assertRaises(TaskProtocolError) as caught:
+            validate_structure(missing,requirement_schema(for_extraction=True))
+        self.assertEqual(caught.exception.code,'invalid_variant')
+        self.assertEqual(caught.exception.diagnostic['allowed'],['target_id','target_ref'])
+        # anyOf only selects references; sibling types and allowed fields still apply.
+        for extra,code in ((dict(target_id=23),'wrong_type'),(dict(unknown=True),'object_fields')):
+            malformed=deepcopy(source)
+            malformed['steps'][1].update(extra)
+            with self.subTest(extra=extra),self.assertRaises(TaskProtocolError) as caught:
+                validate_structure(malformed,requirement_schema(for_extraction=True))
+            self.assertEqual(caught.exception.code,code)
+        named=plan.to_dict()
+        named['steps'][1].pop('target_ref')
+        named['steps'][1]['motion']['heading']=dict(mode='face_reference')
+        with self.assertRaises(TaskProtocolError) as caught:
+            semantic_plan_from_json_text(json.dumps(named),catalog)
+        self.assertEqual(caught.exception.path,'$.steps[1].motion.heading.mode')
+        self.assertIn('motion.heading.mode=face_target',caught.exception.diagnostic['message'])
+        self.assertEqual(named['steps'][1]['target_id'],'west_garden')
         scenario = load_scenario('semantic_campus')
         TaskContractMonitor(requirements,'m',plan=plan,scenario=scenario)
         with self.assertRaises(UnresolvedTargetReference):
@@ -82,9 +115,14 @@ class VisualFeedbackTests(unittest.TestCase):
             if change=='translate':bad['steps'][1]['motion']['path']['x']='20+6*cos(t)'
             if change=='forward':bad['steps'].reverse()
             if change=='conditional':bad['steps'][0]['when']=dict(source='telemetry',field='battery_percent',op='>',value=80)
-            with self.subTest(change=change), self.assertRaises((TaskContractError,TaskProtocolError)):
+            with self.subTest(change=change), self.assertRaises((TaskContractError,TaskProtocolError)) as caught:
                 candidate=semantic_plan_from_json_text(json.dumps(bad),catalog)
                 TaskContractMonitor(requirements,'m',plan=candidate,scenario=scenario)
+            if change=='forward':
+                self.assertEqual(caught.exception.code,'invalid_target_reference')
+                self.assertIn('target_ref is optional',caught.exception.diagnostic['message'])
+                self.assertIn('remove the invalid target_ref and keep target_id',caught.exception.diagnostic['message'])
+                self.assertIn('retain the observation binding',caught.exception.diagnostic['message'])
 
     def test_bound_motion_and_control_use_observation_and_require_matching_execution_evidence(self):
         from uav_llm_demo.semantic_tasks import SemanticMission
@@ -129,6 +167,10 @@ class VisualFeedbackTests(unittest.TestCase):
         geometry,_=tools.call(dict(tool='query_geometry',arguments=dict(
             evidence_id=visual['evidence_id'])))
         self.assertEqual(geometry['object']['center_grid'],binding['point_grid'])
+        original_control=next(item for item in catalog['control']['objects'] if item['id']=='west_garden')
+        self.assertEqual(geometry['control_geometry']['object']['center_grid'],binding['point_grid'])
+        self.assertEqual(geometry['control_geometry']['object']['arrival_grid'],binding['point_grid'])
+        self.assertNotEqual(original_control['center_grid'],binding['point_grid'])
         self.assertEqual(geometry['trajectory_bounds_m'][0][2],10.8)
         minimum_z=geometry['relative_path_offset_bounds_m'][0][2]
         revised=plan.to_dict();revised['steps']=revised['steps'][1:]
@@ -276,10 +318,82 @@ class VisualFeedbackTests(unittest.TestCase):
         service.semantic.complete_visual.assert_not_called()
         self.assertFalse(ground(frame(now=11,fov=loop.fov)))
         service.semantic.complete_visual.assert_not_called()
-        self.assertTrue(ground(frame(now=12,fov=loop.fov)))
+        # Exercise the final confirmation through tick: its early return must
+        # still retain the last action, feedback and terminal training record.
+        last_view = frame(now=12,fov=loop.fov)
+        decision = dict(tool='ground',arguments=dict(frame_id=last_view['frame_id'],
+            pixel=[.5,.5],confidence=.95),reason='确认可见表面')
+        loop.recorder = Mock()
+        loop.identity = (1,step['execution_id']); loop.status = 'reasoning'
+        loop.pending = (last_view,decision); loop.pending_decision_id = 'final-ground'
+        service._vehicle.velocity = (0,0,0)
+        service.waypoints = SimpleNamespace(current=None)
+        service.avoidance = SimpleNamespace(active=False); service._plan_requested = False
+        self.assertTrue(loop.tick(service,step,True))
+        saved = loop.recorder.record.call_args
+        self.assertEqual(saved.args,('decision_result',))
+        self.assertEqual(saved.kwargs['status'],'completed')
+        self.assertEqual(saved.kwargs['action'],decision)
+        self.assertEqual(loop.history[-1]['tool'],'ground')
+        loop.reset()
+        loop.recorder.record.assert_called_once()
         service.semantic.complete_visual.assert_called_once()
         evidence=service.semantic.complete_visual.call_args.args[2]['views']
         self.assertEqual([v['simulation_time'] for v in evidence],[11,12])
+
+    def test_noop_views_and_range_feedback_do_not_execute_or_claim_target_identity(self):
+        loop=VisualExecution(Mock(model='offline'))
+        self.addCleanup(loop.close)
+        service=SimpleNamespace(_time=10, _vehicle=SimpleNamespace(position=(20,30,3)),
+            _context=Mock(return_value={}))
+        step=dict(visual=dict(max_distance_m=8))
+        view=frame()
+        loop.yaw,loop.pitch=0,0
+        self.assertFalse(loop._apply(service,step,view,dict(tool='look',arguments=dict(yaw_deg=360,pitch_deg=0),reason='same')))
+        self.assertEqual(loop.feedback['code'],'unchanged_view')
+        loop.feedback=dict(measured=dict(point_grid=[24,30,3]))
+        with patch('uav_llm_demo.visual_execution.SafetyChecker') as checker:
+            checker.return_value.validate_waypoint.return_value=[]
+            checker.return_value.segment_safe.return_value=True
+            for dx,expected in ((3,9),(-3,15)):
+                loop._apply(service,step,view,dict(tool='preview_move',arguments=dict(offset_m=[dx,0,0]),reason='test'))
+                self.assertAlmostEqual(loop.feedback['predicted_range_m'],expected)
+                self.assertAlmostEqual(loop.feedback['range_change_m'],-dx)
+                self.assertEqual(service._vehicle.position,(20,30,3))
+                self.assertEqual(loop.views,[])
+                loop.history.append(dict(feedback=dict(measured=dict(point_grid=[24,30,3]))))
+        loop.calls=4
+        loop._receive_frame(view)
+        self.assertEqual(loop.last_progress_call,4)
+        loop.calls=10
+        loop._receive_frame(frame(now=11))
+        self.assertEqual(loop.last_progress_call,4)
+        loop._receive_frame(frame(now=12,yaw=30))
+        self.assertEqual(loop.last_progress_call,10)
+
+    def test_model_protocol_rejection_does_not_consume_transport_failure_budget(self):
+        from uav_llm_demo.direct_vision import VisualDecisionError
+        from uav_llm_demo.agents import PlannerProviderError
+        loop=VisualExecution(Mock(model='offline'))
+        self.addCleanup(loop.close)
+        step=dict(execution_id='execution-1')
+        service=SimpleNamespace(semantic=SimpleNamespace(revision=1),_time=12,
+            _vehicle=SimpleNamespace(position=(20,30,3),velocity=(0,0,0)),
+            waypoints=SimpleNamespace(current=None),avoidance=SimpleNamespace(active=False),
+            _plan_requested=False,_hold_semantic_task=Mock(),trace=Mock())
+        loop.identity=loop.future_identity=(1,'execution-1');loop.status='reasoning';loop.inference_started=time.monotonic()
+        with patch.object(loop,'_request_frame') as capture:
+            for error in [VisualDecisionError('point outside visible box')]*3:
+                loop.future=Future();loop.future.set_exception(error)
+                loop.tick(service,step,True)
+            self.assertEqual(loop.feedback['code'],'invalid_visual_decision')
+            self.assertEqual(loop.errors,0)
+            capture.assert_not_called();service._hold_semantic_task.assert_not_called()
+            for _ in range(3):
+                loop.future=Future();loop.future.set_exception(PlannerProviderError('timeout',retryable=True))
+                loop.tick(service,step,True)
+            self.assertEqual(loop.errors,3)
+            service._hold_semantic_task.assert_called_once()
 
     def test_completion_requires_fresh_consistent_execution_bound_images(self):
         node = dict(visual=dict(description='带白色圆形的蓝色标记',max_distance_m=15))
@@ -363,8 +477,10 @@ class VisualFeedbackTests(unittest.TestCase):
         self.assertNotIn('base64',sent);self.assertNotIn('depth_m',sent)
         self.assertEqual(json.loads(sent)['image_perception'][0]['frame_id'],observation['frame_id'])
         self.assertEqual(json.loads(sent)['image_perception'][0]['occlusions'][0]['pixel'],[500/999,400/999])
-        image_text=agent.client._request_json_content.call_args.args[0][1]['content'][0]['text']
+        image_text=next(part['text'] for part in agent.client._request_json_content.call_args.args[0][1]['content'] if part['type']=='text')
         self.assertNotIn('known_starting_area',image_text)
+        self.assertNotIn('position_grid',image_text)
+        self.assertNotIn('max_distance_m',image_text)
         context['feedback']=dict(candidate_id='safe-view',ok=True,tool='preview_move')
         agent.decide(context,[frame(now=9),observation],additional_request=started)
         agent.client._request_json_content.assert_called_once()

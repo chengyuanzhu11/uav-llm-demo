@@ -57,12 +57,13 @@ const url = process.env.UAV_VISUAL_URL, output = process.env.UAV_VISUAL_OUTPUT;
       }
       return {centre,distractor,depth,downDepth};
     },fixture);
+    const started=Date.now();
     await page.request.post(url+'/__verify__/start');
     let last='',decodedId=null,initialSaved=false,savedFrame=null,lastReport=0;
     const frames={};
     const tracked=new Map();
     let tracking=false;
-    const deadline=Date.now()+780000;
+    const deadline=started+fixture.wall_budget*1000;
     while(Date.now()<deadline){
       const state=await (await page.request.post(url+'/__verify__/advance')).json();
       await page.evaluate(async s=>{window.visualProbe.acceptState(s);await window.visualProbe.captureOnboardObservation();},state);
@@ -127,7 +128,7 @@ const url = process.env.UAV_VISUAL_URL, output = process.env.UAV_VISUAL_OUTPUT;
       // The paint is at 0.12m, above the 0.10m field. Depth calibration supports
       // a 1cm surface tolerance, so a nearby background pixel cannot score true.
       return y>=-3.15 && y<=3.15 && Math.abs(x)<=(y+3)/2+.15 && Math.abs(v.point_grid[2]*5-.12)<.01;
-    }) : await page.evaluate(({views,frames,kind})=>{
+    }) : await page.evaluate(({views,frames,kind,target})=>{
       const p=window.visualProbe,T=p.THREE,half=(p.state.grid_size-1)/2;
       p.scene.updateMatrixWorld(true);
       const surfaces=[];
@@ -146,9 +147,9 @@ const url = process.env.UAV_VISUAL_URL, output = process.env.UAV_VISUAL_OUTPUT;
         if(kind==='tree')return hit.object.name.startsWith('campus_tree_');
         let object=hit.object;
         while(object && !object.userData.landmarkId)object=object.parent;
-        return object?.userData.landmarkId===(kind==='bin_orbit'?'F14':'F01');
+        return object?.userData.landmarkId===(target || (kind==='bin_orbit'?'F14':'F01'));
       });
-    },{views,frames,kind:fixture.scene});
+    },{views,frames,kind:fixture.scene,target:fixture.target_landmark});
     const orbit=fixture.scene==='bin_orbit' ? await page.evaluate(samples=>{
       const p=window.visualProbe,T=p.THREE,layout=p.state.scenario.campus_layout;
       const target=layout.landmarks.find(o=>o.id==='F14').position;
@@ -174,7 +175,7 @@ const url = process.env.UAV_VISUAL_URL, output = process.env.UAV_VISUAL_OUTPUT;
       safe_success:final.milestones?.safe_success,calibration_depth_m:geometry.depth,
       vertical_calibration_depth_m:geometry.downDepth,browser_errors:errors};
     fs.mkdirSync(path.dirname(output),{recursive:true});
-    fs.writeFileSync(output,JSON.stringify({live:fixture.live,variant:fixture.variant,scene:fixture.scene,oracle,semantic:final.semantic_mission,
+    fs.writeFileSync(output,JSON.stringify({live:fixture.live,variant:fixture.variant,scene:fixture.scene,wall_seconds:(Date.now()-started)/1000,oracle,semantic:final.semantic_mission,
       vision:final.onboard,diagnostics:final.diagnostics,tracking_samples:[...tracked.values()]},null,2));
     console.log(JSON.stringify(oracle));
     assert.equal(errors.length,0);assert.ok(oracle.correct_target && oracle.completed && oracle.returned && oracle.safe_success,'Independent visual task oracle failed');

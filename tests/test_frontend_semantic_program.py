@@ -55,7 +55,7 @@ const taskForm = new Element(), taskInstruction = new Element(), submitTaskBtn =
 const recommendedTasks = new Element(), flightDiagnostics = new Element();
 let commandPending = false, commandError = '', renderedMissionMode = null, recommendationKey = '', semanticStepsKey = '';
 let semanticStepStatuses = [];
-let state = {scenario_id:'semantic_campus', deepseek_key_configured:true, flight:{running:true},
+let state = {scenario_id:'semantic_campus', agent_configured:true, deepseek_key_configured:false, flight:{running:true},
   scenario:{mission_mode:'semantic', points_of_interest:[{id:'lab',label:'实验楼'}, {id:'library',label:'图书馆'}]},
   semantic_mission:{mission_id:'m', vehicle_id:'uav-1', status:'running', revision:1, instruction:'初始任务'}};
 taskInstruction.value = '温度超过 40 度就复查';
@@ -84,7 +84,7 @@ assert.equal(await submitSemanticTask(), false);
 commandPending = false;
 taskInstruction.value = '  '; renderSemanticMission(); assert.equal(submitTaskBtn.disabled,true);
 assert.equal(await submitSemanticTask(), false);
-taskInstruction.value = '返航'; state.deepseek_key_configured = false;
+taskInstruction.value = '返航'; state.agent_configured = false; state.deepseek_key_configured = true;
 renderSemanticMission(); assert.equal(submitTaskBtn.disabled,true);
 assert.equal(await submitSemanticTask(),false); assert.equal(opened,1);
 assert.equal(posts.length,4);

@@ -1,0 +1,131 @@
+{
+  "standard": {
+    "id": "native_visual_green_bin_v1",
+    "family": "image_target_grounding",
+    "scenario": "visual_garden",
+    "instruction": "到花园寻找绿色垃圾桶，接近到18米内，从机载图像确认并定位后返航降落。",
+    "intent": [
+      {
+        "id": "I1",
+        "text": "在花园从实际机载图像识别绿色垃圾桶"
+      },
+      {
+        "id": "I2",
+        "text": "在18米三维距离以内通过新鲜观测确认和定位同一目标"
+      },
+      {
+        "id": "I3",
+        "text": "确认完成后返航并安全降落"
+      }
+    ],
+    "oracle": {
+      "type": "all",
+      "items": [
+        {
+          "type": "evidence",
+          "action": "return_home",
+          "target": "home",
+          "count": 1
+        },
+        {
+          "type": "goal",
+          "target": "home",
+          "state": "landed"
+        }
+      ]
+    },
+    "evaluation_kind": "visual_rgbd",
+    "annotation_source": "agent_assisted",
+    "human_reviewed": false,
+    "split": "pilot",
+    "visual_limits": {
+      "max_surface_error_m": 0.3,
+      "max_frame_age_seconds": 45,
+      "max_distance_m": 18
+    }
+  },
+  "demonstration": {
+    "requirements": {
+      "status": "ready",
+      "summary": "保留图像目标、距离和返航义务。",
+      "steps": [
+        {
+          "id": "find",
+          "action": "visual",
+          "target_id": "garden",
+          "visual": {
+            "description": "绿色垃圾桶",
+            "max_distance_m": 18
+          }
+        },
+        {
+          "id": "finish",
+          "action": "return_home",
+          "target_id": "home"
+        }
+      ],
+      "constraints": {},
+      "coverage": [
+        {
+          "quote": "到花园寻找绿色垃圾桶，接近到18米内，从机载图像确认并定位后返航降落。",
+          "requirement_ids": [
+            "find",
+            "finish"
+          ],
+          "constraint_keys": []
+        }
+      ]
+    },
+    "audit": {
+      "status": "approved",
+      "summary": "目标外观、花园范围、18米距离和返航降落均保留。",
+      "issues": [],
+      "assertions": [
+        {
+          "quote": "到花园寻找绿色垃圾桶，接近到18米内，从机载图像确认并定位后返航降落。",
+          "requirement_id": "$",
+          "expected_json": "{\"steps\": [\"find\", \"finish\"], \"constraints\": {}}"
+        },
+        {
+          "quote": "到花园寻找绿色垃圾桶，接近到18米内，从机载图像确认并定位后返航降落。",
+          "requirement_id": "find",
+          "expected_json": "{\"action\": \"visual\", \"target_id\": \"garden\", \"visual\": {\"description\": \"绿色垃圾桶\", \"max_distance_m\": 18}}"
+        },
+        {
+          "quote": "到花园寻找绿色垃圾桶，接近到18米内，从机载图像确认并定位后返航降落。",
+          "requirement_id": "finish",
+          "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+        }
+      ]
+    },
+    "plan": {
+      "status": "ready",
+      "summary": "在花园通过机载视觉确认目标后返航。",
+      "steps": [
+        {
+          "id": "observe",
+          "action": "visual",
+          "target_id": "garden",
+          "visual": {
+            "description": "绿色垃圾桶",
+            "max_distance_m": 18
+          },
+          "when": null
+        },
+        {
+          "id": "return_base",
+          "action": "return_home",
+          "target_id": "home",
+          "duration_seconds": 0,
+          "when": null
+        }
+      ],
+      "constraints": {
+        "max_altitude_m": null,
+        "avoid_regions": []
+      }
+    },
+    "query_target": "garden",
+    "repair": null
+  }
+}

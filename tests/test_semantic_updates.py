@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tests.scenario_fixtures import empty_airspace
-from tests.semantic_fixtures import fixture_requirements
+from tests.semantic_fixtures import fixture_requirements, fixture_audit
 from uav_llm_demo.agents import DeepSeekAgent, PlannerProviderError, SemanticPlanError
 from uav_llm_demo.mission_service import MissionService
 from uav_llm_demo.motion import VehicleState, distance, norm
@@ -70,8 +70,7 @@ class OfflineSemanticAgent(DeepSeekAgent):
 
     def audit_task_requirements(self, catalog, instruction, requirements, feedback="", *, repair=None):
         self.stage_inputs.append(("audit", deepcopy(catalog), instruction, feedback))
-        return audit_requirements_from_json_text(json.dumps(dict(
-            status="approved", summary="执行器测试的要求由测试作者预置。", issues=[])), requirements, instruction)
+        return audit_requirements_from_json_text(json.dumps(fixture_audit(requirements, instruction)), requirements, instruction)
 
     def interpret_task(self, catalog, instruction, feedback="", *, repair=None, planning=None):
         self.stage_inputs.append(("plan", deepcopy(catalog), instruction, feedback))
@@ -109,6 +108,33 @@ class SemanticUpdateTests(unittest.TestCase):
                                  task_world=TaskObservationWorld.demonstration(compact_campus()))
         self.addCleanup(service.close)
         return service
+
+    def test_audit_repair_preserves_confirmed_work_and_user_update_resets_it(self):
+        instruction = "Inspect the library for 4 seconds, then return home."
+        good_plan = program([skill("inspect", "inspect", "library", 4), home()])
+        catalog = task_catalog(compact_campus())
+        good = fixture_requirements(good_plan, catalog, instruction).to_dict()
+        bad = deepcopy(good)
+        bad["steps"][0]["duration_seconds"] = 6
+        dropped = deepcopy(good)
+        dropped["steps"].pop()
+        dropped["coverage"][0]["requirement_ids"] = ["inspect"]
+        audit = fixture_audit(good, instruction)
+        agent = DeepSeekAgent(api_key="offline-audit-test")
+        replies = [bad, audit, dropped, good, audit, good_plan]
+        with patch.object(agent, "_request_json_content", side_effect=[json.dumps(value) for value in replies]) as request:
+            service = MissionService(scenario=compact_campus(), agent=agent, planner_latency_seconds=.01)
+            self.addCleanup(service.close)
+            service.submit_task(instruction, background=False)
+            final = pump(service, lambda state: state["status"] == "completed")
+            self.assertEqual([item["action"] for item in final["semantic_mission"]["evidence"]], ["inspect", "return_home"])
+            self.assertEqual(request.call_count, 6)
+            self.assertTrue(service._confirmed_source_assertions)
+            self.assertIn("confirmed_requirement_changed", request.call_args_list[3].args[0][-1]["content"])
+            # A user change starts a fresh source interpretation; earlier locked
+            # node IDs and quantities cannot prevent that explicit update.
+            service.submit_task("Return home now.", background=False)
+            self.assertEqual(service._confirmed_source_assertions, ())
 
     def test_numeric_threshold_and_counted_loop_execute_then_really_land(self):
         condition = dict(step_id="scan", field="temperature_c", op=">", value=25)

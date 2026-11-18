@@ -3,8 +3,10 @@ try {
     [Console]::InputEncoding = [System.Text.Encoding]::UTF8
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+    $headers = @{}
+    if ($request.api_key) { $headers.Authorization = "Bearer $($request.api_key)" }
     $response = Invoke-WebRequest -Uri ([string]$request.url) -Method Post `
-        -Headers @{ Authorization = "Bearer $($request.api_key)" } `
+        -Headers $headers -MaximumRedirection 0 `
         -Body ([string]$request.body) -ContentType "application/json; charset=utf-8" `
         -TimeoutSec ([int]$request.timeout) -UseBasicParsing
     @{ status = [int]$response.StatusCode; body = [string]$response.Content } |

@@ -4,6 +4,7 @@ All provider traffic in this module is mocked. These tests never contact the
 running Flask server or load a real key from the environment.
 """
 from copy import deepcopy
+import os
 from threading import Event, Thread
 import unittest
 from unittest.mock import Mock, patch
@@ -13,6 +14,7 @@ import requests
 from uav_llm_demo import create_app
 from uav_llm_demo.agents import DeepSeekAgent, MockLLMAgent
 from uav_llm_demo.mission_service import MissionService
+from uav_llm_demo.provider_config import is_provider_configured, load_planner_config
 from uav_llm_demo.scenarios import load_scenario
 
 
@@ -48,10 +50,12 @@ class ProviderConfigTests(unittest.TestCase):
     def setUp(self):
         env = patch.dict("os.environ", {
             "DEEPSEEK_API_KEY": "", "DEEPSEEK_BASE_URL": OFFICIAL,
-            "DEEPSEEK_MODEL": MODEL,
+            "DEEPSEEK_MODEL": MODEL, "DEEPSEEK_TASK_RESPONSE_FORMAT": "json_object",
         })
         env.start()
         self.addCleanup(env.stop)
+        for name in ("LLM_API_KEY", "LLM_MODEL", "LLM_BASE_URL", "LLM_TASK_RESPONSE_FORMAT"):
+            os.environ.pop(name, None)
         network = patch("uav_llm_demo.provider_config.requests.get")
         self.get = network.start()
         self.get.return_value = official_models()
@@ -67,18 +71,28 @@ class ProviderConfigTests(unittest.TestCase):
         self.client = self.app.test_client()
 
     def save(self, *, provider="deepseek", api_key="official-test-secret", model=MODEL,
-             base_url=None, verify=True):
+             base_url=None, verify=True, task_response_format=None):
         payload = dict(backend="deepseek", provider=provider, model=model, verify=verify)
         if api_key is not None:
             payload["api_key"] = api_key
         if base_url is not None:
             payload["base_url"] = base_url
+        if task_response_format is not None:
+            payload["task_response_format"] = task_response_format
         return self.client.post("/api/config", json=payload)
 
     def config(self):
         response = self.client.get("/api/config")
         self.assertEqual(response.status_code, 200)
         return response.get_json()
+
+    def test_web_provider_switch_keeps_configured_request_timeout(self):
+        with patch.dict(os.environ, {"LLM_REQUEST_TIMEOUT_SECONDS": "90"}):
+            self.assertEqual(self.save().status_code, 200)
+            self.assertEqual(self.service.agent.timeout_seconds, 90)
+            self.assertEqual(self.save(provider="custom", api_key="",
+                base_url="http://127.0.0.1:8004/v1").status_code, 200)
+            self.assertEqual(self.service.agent.timeout_seconds, 90)
 
     def test_successful_configuration_can_be_replaced_without_restart(self):
         first = self.save()
@@ -124,6 +138,82 @@ class ProviderConfigTests(unittest.TestCase):
         self.assertEqual(changed_endpoint.status_code, 400)
         self.get.assert_not_called()
         self.assertEqual(self.service.agent.api_key, "official-test-secret")
+
+    def test_local_model_without_key_is_configured_and_cannot_inherit_cloud_credentials(self):
+        self.assertEqual(self.save().status_code, 200)
+        self.get.return_value = official_models("Qwen/Qwen3-VL-4B-Instruct")
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "environment-cloud-test-secret"}):
+            result = self.save(provider="custom", api_key=None, model="Qwen/Qwen3-VL-4B-Instruct",
+                               base_url="http://127.0.0.1:8001/v1")
+        self.assertEqual(result.status_code, 200)
+        self.assertTrue(self.service.agent.configured)
+        self.assertIsNone(self.service.agent.api_key)
+        self.assertTrue(result.get_json()["agent_configured"])
+        self.assertFalse(result.get_json()["deepseek_key_configured"])
+        self.assertNotIn("Authorization", self.get.call_args.kwargs["headers"])
+        self.assertEqual(self.get.call_args.args[0], "http://127.0.0.1:8001/v1/models")
+        for secret in ("official-test-secret", "environment-cloud-test-secret"):
+            self.assertNotIn(secret, str(result.get_json()) + str(self.config()))
+        self.get.reset_mock()
+        denied = self.save(provider="custom", api_key=None, model="Qwen/Qwen3-VL-4B-Instruct",
+                           base_url="https://remote.example/v1")
+        self.assertEqual(denied.status_code, 400)
+        self.get.assert_not_called()
+        self.assertEqual(self.service.agent.base_url, "http://127.0.0.1:8001/v1")
+
+    def test_generic_environment_profile_is_isolated_from_legacy_provider_values(self):
+        legacy = dict(DEEPSEEK_API_KEY="legacy-test-secret", DEEPSEEK_MODEL="legacy-model",
+                      DEEPSEEK_BASE_URL="https://legacy.example/v1", DEEPSEEK_TASK_RESPONSE_FORMAT="json_schema")
+        profiles = [
+            ({}, dict(api_key="legacy-test-secret", model="legacy-model", base_url="https://legacy.example/v1", task_response_format="json_schema")),
+            (dict(LLM_MODEL="Qwen/Qwen3-VL-4B-Instruct", LLM_BASE_URL="http://127.0.0.1:8001/v1"),
+             dict(api_key=None, model="Qwen/Qwen3-VL-4B-Instruct", base_url="http://127.0.0.1:8001/v1", task_response_format="json_object")),
+            (dict(LLM_API_KEY="", LLM_MODEL="Qwen/Qwen3-VL-4B-Instruct", LLM_BASE_URL="https://remote.example/v1"),
+             dict(api_key=None, model="Qwen/Qwen3-VL-4B-Instruct", base_url="https://remote.example/v1", task_response_format="json_object")),
+            (dict(LLM_MODEL="local-fixture", LLM_BASE_URL="http://127.0.0.1:8001/v1", LLM_TASK_RESPONSE_FORMAT="json_schema"),
+             dict(api_key=None, model="local-fixture", base_url="http://127.0.0.1:8001/v1", task_response_format="json_schema")),
+        ]
+        for overrides, expected in profiles:
+            with self.subTest(overrides=overrides), patch.dict(os.environ, {**legacy, **overrides}, clear=True):
+                config = load_planner_config()
+                self.assertEqual(config, expected)
+                self.assertEqual(is_provider_configured(config), config["api_key"] is not None or "127.0.0.1" in config["base_url"])
+                agent = DeepSeekAgent()
+                self.assertEqual((agent.api_key, agent.model, agent.base_url),
+                                 (expected["api_key"], expected["model"], expected["base_url"]))
+                self.assertEqual(agent.task_response_format, expected["task_response_format"])
+                other = DeepSeekAgent(base_url="http://127.0.0.1:8002/v1", model="other-fixture")
+                self.assertEqual(other.task_response_format, "json_object")
+
+    def test_task_response_format_is_explicit_and_scoped_to_the_endpoint(self):
+        endpoint = "http://127.0.0.1:8001/v1"
+        self.assertEqual(self.save(provider="custom", api_key=None, base_url=endpoint,
+                                   task_response_format="json_schema").status_code, 200)
+        self.assertEqual(self.service.agent.task_response_format, "json_schema")
+        self.assertEqual(self.service._deepseek_config["task_response_format"], "json_schema")
+        self.assertEqual(self.save(provider="custom", api_key=None).status_code, 200)
+        self.assertEqual(self.service.agent.task_response_format, "json_schema")
+        self.assertEqual(self.save().status_code, 200)
+        self.assertEqual(self.service.agent.task_response_format, "json_object")
+        self.assertEqual(self.save(provider="custom", api_key=None).status_code, 200)
+        self.assertEqual(self.service.agent.task_response_format, "json_schema")
+        profiles = {profile["id"]: profile for profile in self.config()["profiles"]}
+        self.assertEqual(profiles["custom"]["task_response_format"], "json_schema")
+        self.assertEqual(profiles["deepseek"]["task_response_format"], "json_object")
+        self.assertEqual(self.save(provider="custom", api_key=None,
+                                   base_url="http://127.0.0.1:8002/v1").status_code, 200)
+        self.assertEqual(self.service.agent.task_response_format, "json_object")
+        before = self.config()
+        self.get.reset_mock()
+        for invalid in ("json_lines", False, 0, [], {}, True, 1):
+            with self.subTest(task_response_format=invalid):
+                rejected = self.save(provider="custom", api_key=None, task_response_format=invalid)
+                self.assertEqual(rejected.status_code, 400)
+                self.assertEqual(rejected.get_json()["error_code"], "configuration_invalid")
+                self.assertEqual(self.config(), before)
+                with self.assertRaises(ValueError):
+                    DeepSeekAgent(base_url=endpoint, model="fixture", task_response_format=invalid)
+        self.get.assert_not_called()
 
     def test_official_and_bailian_saved_profiles_keep_independent_keys_and_models(self):
         self.assertEqual(self.save().status_code, 200)

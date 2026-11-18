@@ -1,0 +1,83 @@
+{
+  "id": "visual_curriculum_v2_1",
+  "name": "视觉任务数据布局 1",
+  "grid_size": 16,
+  "base": [
+    2,
+    13,
+    0
+  ],
+  "search_position": [
+    7,
+    8,
+    2
+  ],
+  "objects": [
+    {
+      "id": "wall",
+      "kind": "box",
+      "position_m": [
+        25,
+        28,
+        3
+      ],
+      "size_m": [
+        4,
+        2,
+        6
+      ],
+      "color": [
+        0.65,
+        0.6,
+        0.5,
+        1
+      ]
+    },
+    {
+      "id": "tree_a",
+      "kind": "tree",
+      "position_m": [
+        15,
+        15,
+        0
+      ],
+      "height_m": 5,
+      "radius_m": 1.6
+    },
+    {
+      "id": "bin",
+      "kind": "bin",
+      "position_m": [
+        32,
+        20,
+        0
+      ],
+      "size_m": [
+        0.85,
+        0.7,
+        1.25
+      ],
+      "color": [
+        0.03,
+        0.35,
+        0.12,
+        1
+      ]
+    },
+    {
+      "id": "bench",
+      "kind": "bench",
+      "position_m": [
+        13,
+        29,
+        0
+      ],
+      "color": [
+        0.5,
+        0.25,
+        0.08,
+        1
+      ]
+    }
+  ]
+}

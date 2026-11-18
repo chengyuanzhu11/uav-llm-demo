@@ -69,13 +69,15 @@ class SemanticRepairTests(unittest.TestCase):
 
     def test_provider_repair_contains_rejected_program_and_precise_diagnostic(self):
         scene = load_scenario("semantic_campus")
-        agent = DeepSeekAgent(api_key="offline-repair-test-key")
+        agent = DeepSeekAgent(api_key="offline-repair-test-key", task_response_format="json_schema")
         bad = rejected_program()
         with patch("uav_llm_demo.agents._post_deepseek", side_effect=[response(bad), response(boundary_program())]) as post:
             with self.assertRaises(SemanticPlanError) as caught:
                 agent.interpret_task(task_catalog(scene), INSTRUCTION)
             error = caught.exception
             self.assertEqual(json.loads(error.candidate)["steps"], bad["steps"])
+            expected_replay = json.dumps(bad, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            self.assertEqual(error.candidate, expected_replay)
             self.assertIn("steps[0].motion.path", error.diagnostic["path"])
             self.assertIn("radius_m", json.dumps(error.diagnostic))
             result = agent.interpret_task(task_catalog(scene), INSTRUCTION, error.detail,
@@ -87,6 +89,9 @@ class SemanticRepairTests(unittest.TestCase):
         self.assertIn(PRIVATE_CANDIDATE, second)
         self.assertIn(error.diagnostic["path"], second)
         self.assertIn(INSTRUCTION, second)
+        assistant_replay = next(message["content"] for message in post.call_args_list[1].kwargs["json"]["messages"]
+                                if message["role"] == "assistant")
+        self.assertEqual(assistant_replay, expected_replay)
         self.assertIsNone(agent._previous_messages)
 
     def test_malformed_json_uses_bounded_correction_and_clears_prompt_history(self):

@@ -23,7 +23,8 @@ def capture(output):
     with patch.dict(os.environ), patch.object(
         DeepSeekAgent, "_request_json_content", side_effect=AssertionError("Provider calls are forbidden")
     ):
-        os.environ.pop("DEEPSEEK_API_KEY", None)
+        for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"):
+            os.environ.pop(name, None)
         service = MissionService(agent=MockLLMAgent(), target_seed=9, traffic_seed=17)
         try:
             initial = service.state()

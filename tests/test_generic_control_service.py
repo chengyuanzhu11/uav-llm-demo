@@ -175,11 +175,55 @@ class GenericControlServiceTests(TestCase):
         failed.submit_task("测试不合法程序", background=False)
         pump(failed, lambda s:s["semantic_mission"]["status"]=="generation_failed")
         self.assertEqual(len(failed.agent.inputs), 3)
-        temporary = self.service(*[PlannerProviderError("HTTP 503", retryable=True) for _ in range(4)],
+        # A received but invalid candidate breaks the consecutive transport
+        # failure streak without consuming an additional transport retry.
+        temporary = self.service(*[PlannerProviderError("HTTP 503", retryable=True) for _ in range(2)],
+                                 SemanticPlanError("Unexpected task fields."),
+                                 *[PlannerProviderError("HTTP 503", retryable=True) for _ in range(2)],
                                  program([home()]), requirements=lambda _: program([home()]))
         temporary.submit_task("回基地", background=False)
         self.complete(temporary)
-        self.assertEqual(len(temporary.agent.inputs), 5)
+        self.assertEqual(len(temporary.agent.inputs), 6)
+
+    def test_persistent_provider_errors_stop_and_resubmission_restarts(self):
+        for method in ("extract_task_requirements", "interpret_task"):
+            with self.subTest(stage=method):
+                service = self.service(program([home()]), requirements=lambda _: program([home()]))
+                original = getattr(service.agent, method)
+                calls = []
+                def failing(*args, **kwargs):
+                    calls.append(True)
+                    if len(calls) <= 3:
+                        raise PlannerProviderError("Model response timed out.", retryable=True)
+                    return original(*args, **kwargs)
+                with patch.object(service.agent, method, side_effect=failing):
+                    service.submit_task("回基地", background=False)
+                    state = pump(service, lambda s: s["semantic_mission"]["status"] == "generation_failed")
+                    self.assertEqual(len(calls), 3)
+                    self.assertIn("停止自动重试", state["semantic_mission"]["message"])
+                    self.assertFalse(state["flight"]["planning"])
+                    for _ in range(400):
+                        service.advance(.1)
+                    self.assertEqual(len(calls), 3)
+                    service.submit_task("回基地", background=False)
+                    self.complete(service)
+                    self.assertEqual(len(calls), 4)
+                    self.assertEqual(service.recovery.provider_streak, 0)
+
+    def test_review_provider_failure_limit_preserves_completed_evidence(self):
+        initial = program([skill("checked", "inspect", "library"), review(), home()])
+        service = self.service(initial,
+            *[PlannerProviderError("Model response timed out.", retryable=True) for _ in range(3)],
+            requirements=lambda _: initial)
+        service.submit_task("巡检图书馆，复核后返航", background=False)
+        state = pump(service, lambda s: s["semantic_mission"]["status"] == "safety_wait")
+        self.assertEqual(len(service.agent.inputs), 4)
+        self.assertTrue(any(e["action"] == "inspect" and e["target_id"] == "library"
+                            for e in service.semantic.evidence))
+        self.assertFalse(any(e["action"] == "return_home" for e in service.semantic.evidence))
+        self.assertTrue(service._safety_armed)
+        self.assertFalse(state["flight"]["planning"])
+        self.assertFalse(state["milestones"]["task_completed"])
 
     def test_unsafe_landing_rejected_before_takeoff(self):
         for target in ("library", "central_garden", "south_court"):

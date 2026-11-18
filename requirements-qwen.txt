@@ -1,0 +1,4 @@
+# Python 3.11 serving environment; keep separate from the flight application.
+vllm==0.11.0
+transformers==4.57.1
+qwen-vl-utils==0.0.14

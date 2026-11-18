@@ -52,6 +52,15 @@ def local_provider(status, body=b"", *, hold_body=False):
 
 
 class ProviderTransportTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, {"DEEPSEEK_API_KEY": "", "DEEPSEEK_MODEL": "fixture-model",
+                                     "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+                                     "DEEPSEEK_TASK_RESPONSE_FORMAT": "json_object"})
+        env.start()
+        self.addCleanup(env.stop)
+        for name in ("LLM_API_KEY", "LLM_MODEL", "LLM_BASE_URL", "LLM_TASK_RESPONSE_FORMAT"):
+            os.environ.pop(name, None)
+
     def capture_response(self):
         original_post = requests.post
         responses = []
@@ -63,6 +72,23 @@ class ProviderTransportTests(unittest.TestCase):
             return response
 
         return patch.object(agents.requests, "post", side_effect=send), responses
+
+    def test_timeout_configuration_preserves_explicit_caller_budgets(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(agents.DeepSeekAgent().timeout_seconds, 25)
+            os.environ["LLM_REQUEST_TIMEOUT_SECONDS"] = "90"
+            configured = agents.DeepSeekAgent()
+            self.assertEqual(configured.timeout_seconds, 90)
+            config = agents.load_planner_config()
+            self.assertEqual(agents.DeepSeekAgent(**config, timeout_seconds=.1).timeout_seconds, .1)
+            for invalid in ("", "0", "-1", "nan", "inf", "not-a-number"):
+                with self.subTest(value=invalid):
+                    os.environ["LLM_REQUEST_TIMEOUT_SECONDS"] = invalid
+                    with self.assertRaisesRegex(ValueError, "finite positive"):
+                        agents.DeepSeekAgent()
+                    self.assertEqual(agents.DeepSeekAgent(timeout_seconds=2).timeout_seconds, 2)
+            with self.assertRaisesRegex(ValueError, "finite positive"):
+                agents.DeepSeekAgent(timeout_seconds=True)
 
     def test_real_503_does_not_wait_for_body_and_closes_response(self):
         with local_provider(503, hold_body=True) as (url, calls, release), \
@@ -88,7 +114,7 @@ class ProviderTransportTests(unittest.TestCase):
             transport, responses = self.capture_response()
             with transport:
                 agent = agents.DeepSeekAgent(api_key="offline-test-key", base_url=url, timeout_seconds=.1)
-                with self.assertRaisesRegex(agents.PlannerProviderError, r"network request failed \(timeout\)") as caught:
+                with self.assertRaisesRegex(agents.PlannerProviderError, r"等待超过 0.1 秒.*timeout") as caught:
                     agent._request_json_content([], "semantic task plan")
             self.assertTrue(caught.exception.retryable)
             self.assertTrue(caught.exception.__suppress_context__)
@@ -99,15 +125,24 @@ class ProviderTransportTests(unittest.TestCase):
             self.assertEqual(usage.call_args.kwargs["http_status"], 200)
             self.assertNotIn(url, str(caught.exception))
 
-    def test_real_success_json_is_read_once_and_connection_is_closed(self):
+    def test_real_keyless_local_success_is_isolated_and_connection_is_closed(self):
         body = json.dumps({"choices": [{"message": {"content": "{}"}}]}).encode()
         with local_provider(200, body) as (url, calls, _), \
                 patch.object(agents, "record_request") as usage:
             transport, responses = self.capture_response()
-            with transport:
-                content = agents.DeepSeekAgent(api_key="offline-test-key", base_url=url)._request_json_content(
-                    [], "route plan")
+            with transport as post, patch.dict(os.environ, {"DEEPSEEK_API_KEY": "cloud-test-key"}):
+                agent = agents.DeepSeekAgent(base_url=url, model="Qwen/Qwen3-VL-4B-Instruct",
+                                             task_response_format="json_schema")
+                self.assertIsNone(agent.api_key)
+                self.assertTrue(agent.configured)
+                content = agent._request_json_content([], "route plan")
             self.assertEqual(content, "{}")
+            self.assertNotIn("Authorization", post.call_args.kwargs["headers"])
+            self.assertFalse(post.call_args.kwargs["allow_redirects"])
+            self.assertNotIn("thinking", post.call_args.kwargs["json"])
+            self.assertNotIn("enable_thinking", post.call_args.kwargs["json"])
+            # Enabling task schemas does not invent a schema for route-only requests.
+            self.assertEqual(post.call_args.kwargs["json"]["response_format"], {"type": "json_object"})
             self.assertEqual(calls, ["/chat/completions"])
             responses[0].close.assert_called_once_with()
             self.assertTrue(responses[0].raw.closed)
@@ -173,13 +208,15 @@ class ProviderTransportTests(unittest.TestCase):
         self.assertNotIn("private malformed response", str(caught.exception))
 
     def test_windows_buffered_bridge_stays_closeable_on_success_and_error(self):
-        for status in (200, 503):
-            with self.subTest(status=status):
-                agent = agents.DeepSeekAgent(api_key="offline-test-key")
+        for status, key, endpoint in ((200, "offline-test-key", "https://api.deepseek.com"),
+                                      (503, "offline-test-key", "https://api.deepseek.com"),
+                                      (200, None, "http://127.0.0.1:8001/v1")):
+            with self.subTest(status=status, local=key is None):
+                agent = agents.DeepSeekAgent(api_key=key, base_url=endpoint, model="fixture-model")
                 payload = {"status": status, "body": json.dumps({
                     "choices": [{"message": {"content": "{}"}}]})}
                 result = Mock(returncode=0, stdout=json.dumps(payload), stderr="private diagnostic")
-                with patch.object(agents, "os", SimpleNamespace(name="nt")), \
+                with patch.object(agents, "os", SimpleNamespace(name="nt", getenv=os.getenv)), \
                         patch.object(agents.subprocess, "CREATE_NO_WINDOW", 0, create=True), \
                         patch.object(agents.subprocess, "run", return_value=result) as run, \
                         patch.object(agents, "record_request") as usage:
@@ -190,7 +227,9 @@ class ProviderTransportTests(unittest.TestCase):
                             agent._request_json_content([], "route plan")
                 self.assertEqual(run.call_count, 1)
                 self.assertNotIn("offline-test-key", " ".join(run.call_args.args[0]))
-                self.assertEqual(json.loads(run.call_args.kwargs["input"])["timeout"], 25)
+                transport_payload = json.loads(run.call_args.kwargs["input"])
+                self.assertEqual(transport_payload["timeout"], 25)
+                self.assertEqual(transport_payload["api_key"] or None, key)
                 self.assertEqual(usage.call_count, 1)
                 self.assertEqual(usage.call_args.kwargs["http_status"], status)
 

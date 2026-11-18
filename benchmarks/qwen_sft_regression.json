@@ -1,0 +1,631 @@
+{
+  "version": "qwen-sft-regression-v1",
+  "annotation_source": "Agent-assisted engineering task standards; not human reviewed. Independent telemetry/evidence scoring authored before paired model runs.",
+  "purpose": "Paired post-SFT regression check of known failures, recommended tasks and one previously working control. This is not a hidden generalization benchmark.",
+  "split_policy": "All cases are evaluation-only in this run; no exact instruction repeats the SFT pilot. Families, map and several semantic components are shared. See each sft_relation; do not present all cases as independent held-out generalization.",
+  "execution_policy": "Real model only. No expert requirements, audits, candidate plans or offline model replies are included. Same prompt, geometry tools, safety policy, budgets and environment seed for both arms.",
+  "task_world": {
+    "conference": {
+      "temperature_c": 27.0
+    },
+    "library": {
+      "temperature_c": 29.0
+    },
+    "teaching": {
+      "temperature_c": 27.0
+    },
+    "c4": {
+      "temperature_c": 27.0
+    },
+    "exhibition": {
+      "temperature_c": 27.0
+    },
+    "c6": {
+      "temperature_c": 27.0
+    },
+    "c7": {
+      "temperature_c": 27.0
+    },
+    "c8": {
+      "temperature_c": 27.0
+    },
+    "north_teaching": {
+      "temperature_c": 27.0
+    },
+    "research_one": {
+      "temperature_c": 27.0
+    },
+    "research_two": {
+      "temperature_c": 27.0
+    },
+    "r3": {
+      "temperature_c": 27.0
+    },
+    "laboratory": {
+      "temperature_c": 68.0
+    },
+    "l2": {
+      "temperature_c": 27.0
+    },
+    "l3": {
+      "temperature_c": 27.0
+    },
+    "l4": {
+      "temperature_c": 27.0
+    },
+    "l5": {
+      "temperature_c": 27.0
+    },
+    "l6": {
+      "temperature_c": 27.0
+    },
+    "north_lab_wing": {
+      "temperature_c": 27.0
+    },
+    "s2_s4": {
+      "temperature_c": 27.0
+    },
+    "south_canteen": {
+      "temperature_c": 27.0
+    },
+    "north_canteen": {
+      "temperature_c": 27.0
+    },
+    "d1": {
+      "temperature_c": 27.0
+    },
+    "d2": {
+      "temperature_c": 27.0
+    },
+    "d3": {
+      "temperature_c": 27.0
+    },
+    "d4": {
+      "temperature_c": 27.0
+    },
+    "d5": {
+      "temperature_c": 27.0
+    },
+    "d6": {
+      "temperature_c": 27.0
+    },
+    "d7": {
+      "temperature_c": 27.0
+    },
+    "d8": {
+      "temperature_c": 27.0
+    },
+    "d9": {
+      "temperature_c": 27.0
+    },
+    "d10": {
+      "temperature_c": 27.0
+    },
+    "d11": {
+      "temperature_c": 27.0
+    },
+    "d12": {
+      "temperature_c": 27.0
+    },
+    "d13": {
+      "temperature_c": 27.0
+    },
+    "d14": {
+      "temperature_c": 27.0
+    },
+    "a1": {
+      "temperature_c": 27.0
+    },
+    "a2": {
+      "temperature_c": 27.0
+    },
+    "a3": {
+      "temperature_c": 27.0
+    },
+    "a4": {
+      "temperature_c": 27.0
+    },
+    "a5": {
+      "temperature_c": 27.0
+    },
+    "south_plaza": {
+      "temperature_c": 27.0
+    },
+    "central_garden": {
+      "temperature_c": 27.0
+    },
+    "west_garden": {
+      "temperature_c": 27.0
+    },
+    "east_garden": {
+      "temperature_c": 27.0
+    },
+    "south_court": {
+      "temperature_c": 27.0
+    },
+    "north_court": {
+      "temperature_c": 27.0
+    },
+    "stadium": {
+      "temperature_c": 27.0
+    },
+    "north_football": {
+      "temperature_c": 27.0
+    },
+    "north_volleyball": {
+      "temperature_c": 27.0
+    },
+    "north_tennis": {
+      "temperature_c": 27.0
+    },
+    "north_basketball": {
+      "temperature_c": 27.0
+    },
+    "laboratory_court": {
+      "temperature_c": 27.0
+    },
+    "home": {
+      "temperature_c": 27.0
+    },
+    "east_gate": {
+      "temperature_c": 27.0
+    },
+    "north_gate": {
+      "temperature_c": 27.0
+    }
+  },
+  "cases": [
+    {
+      "id": "half_boundary",
+      "scenario": "semantic_campus",
+      "family": "stadium_half_boundary_heading_return",
+      "combination": "stadium_half_boundary_heading_return",
+      "split": "holdout",
+      "instruction": "去田径场顺时针飞半圈，始终面向场地中心，随后返航。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "circuit",
+                "target": "stadium",
+                "direction": "clockwise",
+                "laps": 0.5,
+                "heading": "face_center"
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "seen_family_new_target",
+        "details": "Four training boundary tasks cover half/full loops on gardens/plaza, not stadium; this is not a new map."
+      },
+      "historical_evidence": {
+        "artifact": "artifacts/qwen-protocol-repair-20261110/final-acceptance-motion.json",
+        "case": "half_boundary",
+        "result": "failed_before_flight_invalid_target_reference"
+      }
+    },
+    {
+      "id": "crossing_curve",
+      "scenario": "semantic_campus",
+      "family": "stadium_crossing_curve_rise_return",
+      "combination": "stadium_crossing_curve_rise_return",
+      "split": "holdout",
+      "instruction": "在田径场上空飞一个八字，飞行过程中逐渐升高4米，最后返航。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "motion",
+                "target": "stadium",
+                "min_count": 1
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "unseen_motion_combination",
+        "details": "No figure-eight topology or continuously rising spatial curve in the 124 SFT decisions; environment and tool interface are shared."
+      },
+      "historical_evidence": {
+        "artifact": "artifacts/qwen-protocol-repair-20261110/final-acceptance-motion.json",
+        "case": "crossing_curve",
+        "result": "failed_before_flight_invalid_target_reference"
+      },
+      "measured_motion_case": "crossing_curve",
+      "measurement_target": "stadium",
+      "oracle_scope": "The generic oracle alone is insufficient. Overall pass MUST additionally require scripts.verify_tool_planning.measure on bound tracking telemetry: opposite closed lobes, XY closure, +4m gradual rise and all samples inside stadium."
+    },
+    {
+      "id": "stadium_two_laps",
+      "scenario": "semantic_campus",
+      "family": "stadium_two_boundary_heading_return",
+      "combination": "stadium_two_boundary_heading_return",
+      "split": "holdout",
+      "instruction": "沿田径场顺时针飞行两圈，机头始终朝向场地中心，最后返航。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "circuit",
+                "target": "stadium",
+                "direction": "clockwise",
+                "laps": 2,
+                "heading": "face_center"
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "seen_family_new_target_and_count",
+        "details": "Boundary and heading are trained; training loop counts are 0.5 or 1 and targets are gardens/plaza. Two stadium loops are a new combination."
+      },
+      "historical_evidence": {
+        "source": "web_recommended_task_1",
+        "result": "user_reported_task_generation_failure_no_matched_per_case_archive"
+      }
+    },
+    {
+      "id": "east_boundary",
+      "scenario": "semantic_campus",
+      "family": "boundary_clockwise_return",
+      "combination": "boundary_clockwise_return",
+      "split": "holdout",
+      "instruction": "沿着东侧花园顺时针转一圈然后返航。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "circuit",
+                "target": "east_garden",
+                "direction": "clockwise",
+                "laps": 1
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "seen_family_recombined_parameters",
+        "details": "Training includes east-garden clockwise half-circle and counterclockwise full-circle; this clockwise full-circle is a recombination."
+      },
+      "historical_evidence": {
+        "artifact": "artifacts/qwen-full-planner-20261110/semantic-64k-rescored.json",
+        "case": "dev_east_boundary",
+        "result": "generation_failed"
+      }
+    },
+    {
+      "id": "review_inspection",
+      "scenario": "semantic_campus",
+      "family": "review_drops_required_action_repair",
+      "combination": "review_drops_required_action_repair",
+      "split": "holdout",
+      "instruction": "先根据当前观测复核安排，然后巡检图书馆并返航。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "review",
+                "target": null,
+                "count": 1,
+                "result": {
+                  "reviewed": true
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "library",
+                "count": 1
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "seen_action_new_review_context",
+        "details": "Inspecting library then returning is represented in training, while this explicit review-before-inspection instruction is not."
+      },
+      "historical_evidence": {
+        "artifact": "artifacts/qwen-full-planner-20261110/semantic-64k-rescored.json",
+        "case": "holdout_review_omission",
+        "result": "generation_failed"
+      }
+    },
+    {
+      "id": "home_pose",
+      "scenario": "semantic_campus",
+      "family": "vertical_yaw_hold_land",
+      "combination": "vertical_yaw_hold_land",
+      "split": "holdout",
+      "instruction": "在基地垂直起飞至11米，朝东停留1秒，再降落停留1秒。",
+      "oracle": {
+        "type": "sequence",
+        "items": [
+          {
+            "type": "pose",
+            "target": "home",
+            "state": "airborne",
+            "altitude_m": 11,
+            "yaw_deg": 90,
+            "dwell_seconds": 1
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed",
+            "dwell_seconds": 1
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "seen_family_new_pose_parameters",
+        "details": "Training has 8/12/14/16m and different headings; this 11m east-facing instruction is a retention check, not a historical new success."
+      },
+      "historical_evidence": {
+        "artifact": "artifacts/qwen-protocol-repair-20261110/final-semantic.json",
+        "case": "dev_home_pose",
+        "result": "already_passed_before_sft"
+      }
+    },
+    {
+      "id": "conditional_library25",
+      "scenario": "semantic_campus",
+      "family": "library_threshold25_capture_else_inspect_return",
+      "combination": "library_threshold25_capture_else_inspect_return",
+      "split": "holdout",
+      "instruction": "检查图书馆温度，超过25摄氏度就模拟采样，否则巡检会议中心，最后返航。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "if",
+                "observation": {
+                  "type": "evidence",
+                  "action": "thermal_scan",
+                  "target": "library",
+                  "count": 1
+                },
+                "field": "temperature_c",
+                "op": ">",
+                "value": 25,
+                "then": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "conference",
+                      "count": 0
+                    }
+                  ]
+                },
+                "else": {
+                  "type": "all",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "inspect",
+                      "target": "conference",
+                      "count": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 0
+                    }
+                  ]
+                }
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "seen_family_new_branch_parameters",
+        "details": "Conditional sensing is trained; library training thresholds 30/35 select false at 29C. This threshold25 selects true; conference differs from the training else target exhibition."
+      },
+      "historical_evidence": {
+        "source": "web_recommended_task_3",
+        "result": "user_reported_general_failure_not_individually_verified"
+      }
+    },
+    {
+      "id": "repeat_two_sites",
+      "scenario": "semantic_campus",
+      "family": "three_ordered_two_site_inspection_rounds_return",
+      "combination": "three_ordered_two_site_inspection_rounds_return",
+      "split": "holdout",
+      "instruction": "重复巡检图书馆和教学一号楼3次，最后返航。",
+      "oracle": {
+        "type": "all",
+        "items": [
+          {
+            "type": "evidence",
+            "action": "inspect",
+            "target": "library",
+            "count": 3
+          },
+          {
+            "type": "evidence",
+            "action": "inspect",
+            "target": "teaching",
+            "count": 3
+          },
+          {
+            "type": "sequence",
+            "items": [
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "library",
+                "count": 1,
+                "occurrence": 1
+              },
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "teaching",
+                "count": 1,
+                "occurrence": 1
+              },
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "library",
+                "count": 1,
+                "occurrence": 2
+              },
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "teaching",
+                "count": 1,
+                "occurrence": 2
+              },
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "library",
+                "count": 1,
+                "occurrence": 3
+              },
+              {
+                "type": "evidence",
+                "action": "inspect",
+                "target": "teaching",
+                "count": 1,
+                "occurrence": 3
+              },
+              {
+                "type": "evidence",
+                "action": "return_home",
+                "target": "home",
+                "count": 1
+              }
+            ]
+          },
+          {
+            "type": "goal",
+            "target": "home",
+            "state": "landed"
+          }
+        ]
+      },
+      "sft_relation": {
+        "exact_instruction_in_training": false,
+        "category": "new_composition_of_seen_actions",
+        "details": "Training has ordered library/teaching inspections and counted thermal/capture loops, but no repeated two-site inspection loop."
+      },
+      "historical_evidence": {
+        "source": "web_recommended_task_4",
+        "result": "user_reported_general_failure_not_individually_verified"
+      },
+      "interpretation": "Three rounds, each visiting library then teaching; the original recommended wording is retained."
+    }
+  ]
+}

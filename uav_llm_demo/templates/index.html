@@ -42,7 +42,7 @@
           </button>
           <button type="button" class="agent-option" data-agent="deepseek" role="radio" aria-checked="false">
             <i data-lucide="sparkles" aria-hidden="true"></i>
-            <span>DeepSeek API</span>
+            <span id="agentModelLabel">LLM API</span>
           </button>
         </div>
         <button id="agentKeyBtn" type="button" class="command-button toolbar-config-button api-settings-button" aria-label="API 设置" title="API 设置">
@@ -299,16 +299,17 @@
         </label>
         <label class="control-dialog-field">
           <span>API Key</span>
-          <input id="deepseekApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="输入此服务的 API Key" disabled>
+          <input id="deepseekApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="API Key（本地接口可留空）" disabled>
         </label>
         <p id="agentKeyStatus" class="control-dialog-note">Key 仅保存在当前服务进程内。</p>
         <div class="control-dialog-field">
-          <label for="deepseekModel">模型</label>
+          <label for="deepseekModel">任务规划模型</label>
           <div class="api-model-picker">
             <select id="deepseekModel" disabled><option value="">请先读取可用模型</option></select>
             <button id="loadModelsBtn" type="button" class="command-button secondary" disabled>读取模型</button>
           </div>
         </div>
+        <p id="agentVisionStatus" class="control-dialog-note">视觉模型：—</p>
         <details id="agentAdvanced" class="api-advanced">
           <summary>高级设置</summary>
           <label class="control-dialog-field">

@@ -10,7 +10,9 @@ export PATH="$root/.venv/bin:$PATH"
 # building assets too, without disturbing an interactive or benchmark session.
 exec 9>"$root/.sim/px4-sitl.lock"
 flock -n 9 || { echo 'A project Gazebo/PX4 session is already running.' >&2; exit 1; }
-world=$(python scripts/build_gazebo_scene.py --scene "$scene")
+build_args=(--scene "$scene")
+[[ -z ${UAV_GZ_SCENE_FILE:-} ]] || build_args+=(--scene-file "$UAV_GZ_SCENE_FILE")
+world=$(python scripts/build_gazebo_scene.py "${build_args[@]}")
 export GZ_SIM_RESOURCE_PATH="$root/.sim/worlds/models:$px4/Tools/simulation/gz/models:$px4/Tools/simulation/gz/worlds"
 export PX4_GZ_MODELS="$root/.sim/worlds/models"
 export PX4_GZ_WORLDS="$root/.sim/worlds"
@@ -26,7 +28,7 @@ export PX4_GZ_WORLD="$scene" PX4_GZ_STANDALONE=1 PX4_SYS_AUTOSTART=4001 PX4_SIM_
 # loses height on the first lateral acceleration of this instrumented model.
 export PX4_PARAM_MPC_THR_HOVER=0.73
 export PX4_GZ_MODEL_POSE
-PX4_GZ_MODEL_POSE=$(python -c 'from uav_llm_demo.scenarios import load_scenario; import sys; x,y,z=load_scenario(sys.argv[1]).base; print(f"{x*3},{-y*3},{z*5},0,0,0")' "$scene")
+PX4_GZ_MODEL_POSE=$(python -c 'from uav_llm_demo.scenarios import load_scenario, load_asset_scenario; import sys; scenario=load_asset_scenario(sys.argv[2]) if sys.argv[2] else load_scenario(sys.argv[1]); x,y,z=scenario.base; print(f"{x*3},{-y*3},{z*5},0,0,0")' "$scene" "${UAV_GZ_SCENE_FILE:-}")
 log_dir=${UAV_GZ_LOG_DIR:-"$root/logs"}
 mkdir -p "$log_dir"
 gz_args=(-r "$world")

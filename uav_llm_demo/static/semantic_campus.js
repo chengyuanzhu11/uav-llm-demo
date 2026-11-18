@@ -104,12 +104,13 @@ export function buildSemanticCampus(THREE, group, scenario) {
     group.add(mesh);
     return mesh;
   }
-  function instance(name, geometry, mat, x, y, z, width, height, depth, angle = 0) {
+  function instance(name, geometry, mat, x, y, z, width, height, depth, angle = 0, objectId = null) {
     const key = `${name}:${mat.uuid}`;
-    if (!batches.has(key)) batches.set(key, {name, geometry, mat, transforms: []});
+    if (!batches.has(key)) batches.set(key, {name, geometry, mat, transforms: [], objectIds: []});
     quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), angle);
     matrix.compose(v.set(x, y, z), quaternion, scale.set(width, height, depth));
     batches.get(key).transforms.push(matrix.clone());
+    batches.get(key).objectIds.push(objectId);
   }
   function detail(x, y, z, width, height, depth, mat = trim, angle = 0) {
     instance("campus_architectural_details", unitBox, mat, x, y, z, width, height, depth, angle);
@@ -604,6 +605,7 @@ export function buildSemanticCampus(THREE, group, scenario) {
     const mesh = new THREE.InstancedMesh(batch.geometry, batch.mat, batch.transforms.length);
     batch.transforms.forEach((transform, index) => mesh.setMatrixAt(index, transform));
     mesh.name = batch.name; mesh.instanceMatrix.needsUpdate = true;
+    if (batch.objectIds.some(Boolean)) mesh.userData.objectIds = batch.objectIds;
     mesh.castShadow = !batch.name.startsWith("campus_water") && !batch.name.startsWith("campus_road");
     mesh.receiveShadow = true; mesh.computeBoundingSphere(); group.add(mesh);
   }

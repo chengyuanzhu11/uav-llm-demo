@@ -1,0 +1,4152 @@
+{
+  "version": "demonstration-pilot-v1",
+  "annotation_source": "Agent-assisted source task standards and scripted expert candidates; not human reviewed; no model inference.",
+  "purpose": "Execute production parser, contract, planner, controller and independent evidence oracle. Not a model capability benchmark.",
+  "split_policy": "All examples remain pilot pending an explicit training/evaluation split. Never present the same campus/task families as unseen generalization.",
+  "cases": [
+    {
+      "standard": {
+        "id": "pilot_01_inspection_dwell",
+        "family": "inspection_dwell",
+        "scenario": "semantic_campus",
+        "instruction": "前往图书馆巡检3秒，随后返航并降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在图书馆巡检至少3秒"
+          },
+          {
+            "id": "I2",
+            "text": "巡检完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "library",
+                  "count": 1,
+                  "min_duration": 3
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "required_inspect",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": 3
+            },
+            {
+              "id": "required_return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "前往图书馆巡检3秒，随后返航并降落。",
+              "requirement_ids": [
+                "required_inspect",
+                "required_return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "前往图书馆巡检3秒，随后返航并降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"required_inspect\", \"required_return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "前往图书馆巡检3秒，随后返航并降落。",
+              "requirement_id": "required_inspect",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\", \"duration_seconds\": 3}"
+            },
+            {
+              "quote": "前往图书馆巡检3秒，随后返航并降落。",
+              "requirement_id": "required_return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "inspect_site",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": 3,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "library",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_02_inspection_dwell",
+        "family": "inspection_dwell",
+        "scenario": "semantic_campus",
+        "instruction": "前往会议中心巡检4秒，随后返航并降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在会议中心巡检至少4秒"
+          },
+          {
+            "id": "I2",
+            "text": "巡检完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "conference",
+                  "count": 1,
+                  "min_duration": 4
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "required_inspect",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": 4
+            },
+            {
+              "id": "required_return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "前往会议中心巡检4秒，随后返航并降落。",
+              "requirement_ids": [
+                "required_inspect",
+                "required_return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "前往会议中心巡检4秒，随后返航并降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"required_inspect\", \"required_return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "前往会议中心巡检4秒，随后返航并降落。",
+              "requirement_id": "required_inspect",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\", \"duration_seconds\": 4}"
+            },
+            {
+              "quote": "前往会议中心巡检4秒，随后返航并降落。",
+              "requirement_id": "required_return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "inspect_site",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": 4,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "conference",
+        "repair": "missing_obligation"
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_03_inspection_dwell",
+        "family": "inspection_dwell",
+        "scenario": "semantic_campus",
+        "instruction": "前往教学一号楼巡检3秒，随后返航并降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在教学一号楼巡检至少3秒"
+          },
+          {
+            "id": "I2",
+            "text": "巡检完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "teaching",
+                  "count": 1,
+                  "min_duration": 3
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "required_inspect",
+              "action": "inspect",
+              "target_id": "teaching",
+              "duration_seconds": 3
+            },
+            {
+              "id": "required_return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "前往教学一号楼巡检3秒，随后返航并降落。",
+              "requirement_ids": [
+                "required_inspect",
+                "required_return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "前往教学一号楼巡检3秒，随后返航并降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"required_inspect\", \"required_return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "前往教学一号楼巡检3秒，随后返航并降落。",
+              "requirement_id": "required_inspect",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"teaching\", \"duration_seconds\": 3}"
+            },
+            {
+              "quote": "前往教学一号楼巡检3秒，随后返航并降落。",
+              "requirement_id": "required_return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "inspect_site",
+              "action": "inspect",
+              "target_id": "teaching",
+              "duration_seconds": 3,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "teaching",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_04_inspection_dwell",
+        "family": "inspection_dwell",
+        "scenario": "semantic_campus",
+        "instruction": "前往展览中心巡检5秒，随后返航并降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在展览中心巡检至少5秒"
+          },
+          {
+            "id": "I2",
+            "text": "巡检完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "exhibition",
+                  "count": 1,
+                  "min_duration": 5
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "required_inspect",
+              "action": "inspect",
+              "target_id": "exhibition",
+              "duration_seconds": 5
+            },
+            {
+              "id": "required_return",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "前往展览中心巡检5秒，随后返航并降落。",
+              "requirement_ids": [
+                "required_inspect",
+                "required_return"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "前往展览中心巡检5秒，随后返航并降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"required_inspect\", \"required_return\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "前往展览中心巡检5秒，随后返航并降落。",
+              "requirement_id": "required_inspect",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"exhibition\", \"duration_seconds\": 5}"
+            },
+            {
+              "quote": "前往展览中心巡检5秒，随后返航并降落。",
+              "requirement_id": "required_return",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "inspect_site",
+              "action": "inspect",
+              "target_id": "exhibition",
+              "duration_seconds": 5,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "exhibition",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_05_ordered_inspection",
+        "family": "ordered_inspection",
+        "scenario": "semantic_campus",
+        "instruction": "按顺序巡检会议中心和图书馆，每处2秒，全部完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "先巡检会议中心2秒"
+          },
+          {
+            "id": "I2",
+            "text": "再巡检图书馆2秒"
+          },
+          {
+            "id": "I3",
+            "text": "最后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "conference",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "library",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "first",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": 2
+            },
+            {
+              "id": "second",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": 2
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "按顺序巡检会议中心和图书馆，每处2秒，全部完成后返航降落。",
+              "requirement_ids": [
+                "first",
+                "second",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "按顺序巡检会议中心和图书馆，每处2秒，全部完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"first\", \"second\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "按顺序巡检会议中心和图书馆，每处2秒，全部完成后返航降落。",
+              "requirement_id": "first",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检会议中心和图书馆，每处2秒，全部完成后返航降落。",
+              "requirement_id": "second",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检会议中心和图书馆，每处2秒，全部完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "site_a",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "site_b",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "conference",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_06_ordered_inspection",
+        "family": "ordered_inspection",
+        "scenario": "semantic_campus",
+        "instruction": "按顺序巡检图书馆和教学一号楼，每处2秒，全部完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "先巡检图书馆2秒"
+          },
+          {
+            "id": "I2",
+            "text": "再巡检教学一号楼2秒"
+          },
+          {
+            "id": "I3",
+            "text": "最后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "library",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "teaching",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "first",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": 2
+            },
+            {
+              "id": "second",
+              "action": "inspect",
+              "target_id": "teaching",
+              "duration_seconds": 2
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "按顺序巡检图书馆和教学一号楼，每处2秒，全部完成后返航降落。",
+              "requirement_ids": [
+                "first",
+                "second",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "按顺序巡检图书馆和教学一号楼，每处2秒，全部完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"first\", \"second\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "按顺序巡检图书馆和教学一号楼，每处2秒，全部完成后返航降落。",
+              "requirement_id": "first",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"library\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检图书馆和教学一号楼，每处2秒，全部完成后返航降落。",
+              "requirement_id": "second",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"teaching\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检图书馆和教学一号楼，每处2秒，全部完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "site_a",
+              "action": "inspect",
+              "target_id": "library",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "site_b",
+              "action": "inspect",
+              "target_id": "teaching",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "library",
+        "repair": "invalid_field"
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_07_ordered_inspection",
+        "family": "ordered_inspection",
+        "scenario": "semantic_campus",
+        "instruction": "按顺序巡检教学一号楼和展览中心，每处2秒，全部完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "先巡检教学一号楼2秒"
+          },
+          {
+            "id": "I2",
+            "text": "再巡检展览中心2秒"
+          },
+          {
+            "id": "I3",
+            "text": "最后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "teaching",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "exhibition",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "first",
+              "action": "inspect",
+              "target_id": "teaching",
+              "duration_seconds": 2
+            },
+            {
+              "id": "second",
+              "action": "inspect",
+              "target_id": "exhibition",
+              "duration_seconds": 2
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "按顺序巡检教学一号楼和展览中心，每处2秒，全部完成后返航降落。",
+              "requirement_ids": [
+                "first",
+                "second",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "按顺序巡检教学一号楼和展览中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"first\", \"second\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "按顺序巡检教学一号楼和展览中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "first",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"teaching\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检教学一号楼和展览中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "second",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"exhibition\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检教学一号楼和展览中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "site_a",
+              "action": "inspect",
+              "target_id": "teaching",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "site_b",
+              "action": "inspect",
+              "target_id": "exhibition",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "teaching",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_08_ordered_inspection",
+        "family": "ordered_inspection",
+        "scenario": "semantic_campus",
+        "instruction": "按顺序巡检展览中心和会议中心，每处2秒，全部完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "先巡检展览中心2秒"
+          },
+          {
+            "id": "I2",
+            "text": "再巡检会议中心2秒"
+          },
+          {
+            "id": "I3",
+            "text": "最后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "exhibition",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "inspect",
+                  "target": "conference",
+                  "count": 1,
+                  "min_duration": 2
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "first",
+              "action": "inspect",
+              "target_id": "exhibition",
+              "duration_seconds": 2
+            },
+            {
+              "id": "second",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": 2
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "按顺序巡检展览中心和会议中心，每处2秒，全部完成后返航降落。",
+              "requirement_ids": [
+                "first",
+                "second",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "按顺序巡检展览中心和会议中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"first\", \"second\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "按顺序巡检展览中心和会议中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "first",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"exhibition\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检展览中心和会议中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "second",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"conference\", \"duration_seconds\": 2}"
+            },
+            {
+              "quote": "按顺序巡检展览中心和会议中心，每处2秒，全部完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "site_a",
+              "action": "inspect",
+              "target_id": "exhibition",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "site_b",
+              "action": "inspect",
+              "target_id": "conference",
+              "duration_seconds": 2,
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "exhibition",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_09_vertical_pose",
+        "family": "vertical_pose",
+        "scenario": "semantic_campus",
+        "instruction": "在基地垂直起飞至8米，航向0度悬停1秒，然后原地降落并停留1秒。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "基地上方8米航向0度稳定停留1秒"
+          },
+          {
+            "id": "I2",
+            "text": "原地落地并停留1秒"
+          }
+        ],
+        "oracle": {
+          "type": "sequence",
+          "items": [
+            {
+              "type": "pose",
+              "target": "home",
+              "state": "airborne",
+              "altitude_m": 8,
+              "yaw_deg": 0,
+              "dwell_seconds": 1
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed",
+              "dwell_seconds": 1
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark.",
+        "trajectory_checks": [
+          {
+            "kind": "horizontal_radius",
+            "target": "home",
+            "max_distance_m": 0.5
+          }
+        ]
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "pose",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 8,
+                "yaw_deg": 0,
+                "duration_seconds": 1
+              }
+            },
+            {
+              "id": "finish",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              }
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在基地垂直起飞至8米，航向0度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_ids": [
+                "pose",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在基地垂直起飞至8米，航向0度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"pose\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在基地垂直起飞至8米，航向0度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_id": "pose",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"airborne\", \"altitude_m\": 8, \"yaw_deg\": 0, \"duration_seconds\": 1}}"
+            },
+            {
+              "quote": "在基地垂直起飞至8米，航向0度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"landed\", \"duration_seconds\": 1}}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "takeoff_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 8,
+                "yaw_deg": 0,
+                "duration_seconds": 1
+              },
+              "when": null
+            },
+            {
+              "id": "land_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              },
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "home",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_10_vertical_pose",
+        "family": "vertical_pose",
+        "scenario": "semantic_campus",
+        "instruction": "在基地垂直起飞至12米，航向180度悬停2秒，然后原地降落并停留1秒。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "基地上方12米航向180度稳定停留2秒"
+          },
+          {
+            "id": "I2",
+            "text": "原地落地并停留1秒"
+          }
+        ],
+        "oracle": {
+          "type": "sequence",
+          "items": [
+            {
+              "type": "pose",
+              "target": "home",
+              "state": "airborne",
+              "altitude_m": 12,
+              "yaw_deg": 180,
+              "dwell_seconds": 2
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed",
+              "dwell_seconds": 1
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark.",
+        "trajectory_checks": [
+          {
+            "kind": "horizontal_radius",
+            "target": "home",
+            "max_distance_m": 0.5
+          }
+        ]
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "pose",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 12,
+                "yaw_deg": 180,
+                "duration_seconds": 2
+              }
+            },
+            {
+              "id": "finish",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              }
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在基地垂直起飞至12米，航向180度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_ids": [
+                "pose",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在基地垂直起飞至12米，航向180度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"pose\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在基地垂直起飞至12米，航向180度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_id": "pose",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"airborne\", \"altitude_m\": 12, \"yaw_deg\": 180, \"duration_seconds\": 2}}"
+            },
+            {
+              "quote": "在基地垂直起飞至12米，航向180度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"landed\", \"duration_seconds\": 1}}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "takeoff_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 12,
+                "yaw_deg": 180,
+                "duration_seconds": 2
+              },
+              "when": null
+            },
+            {
+              "id": "land_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              },
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "home",
+        "repair": "invalid_field"
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_11_vertical_pose",
+        "family": "vertical_pose",
+        "scenario": "semantic_campus",
+        "instruction": "在基地垂直起飞至14米，航向270度悬停1秒，然后原地降落并停留1秒。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "基地上方14米航向270度稳定停留1秒"
+          },
+          {
+            "id": "I2",
+            "text": "原地落地并停留1秒"
+          }
+        ],
+        "oracle": {
+          "type": "sequence",
+          "items": [
+            {
+              "type": "pose",
+              "target": "home",
+              "state": "airborne",
+              "altitude_m": 14,
+              "yaw_deg": 270,
+              "dwell_seconds": 1
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed",
+              "dwell_seconds": 1
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark.",
+        "trajectory_checks": [
+          {
+            "kind": "horizontal_radius",
+            "target": "home",
+            "max_distance_m": 0.5
+          }
+        ]
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "pose",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 14,
+                "yaw_deg": 270,
+                "duration_seconds": 1
+              }
+            },
+            {
+              "id": "finish",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              }
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在基地垂直起飞至14米，航向270度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_ids": [
+                "pose",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在基地垂直起飞至14米，航向270度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"pose\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在基地垂直起飞至14米，航向270度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_id": "pose",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"airborne\", \"altitude_m\": 14, \"yaw_deg\": 270, \"duration_seconds\": 1}}"
+            },
+            {
+              "quote": "在基地垂直起飞至14米，航向270度悬停1秒，然后原地降落并停留1秒。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"landed\", \"duration_seconds\": 1}}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "takeoff_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 14,
+                "yaw_deg": 270,
+                "duration_seconds": 1
+              },
+              "when": null
+            },
+            {
+              "id": "land_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              },
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "home",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_12_vertical_pose",
+        "family": "vertical_pose",
+        "scenario": "semantic_campus",
+        "instruction": "在基地垂直起飞至16米，航向45度悬停2秒，然后原地降落并停留1秒。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "基地上方16米航向45度稳定停留2秒"
+          },
+          {
+            "id": "I2",
+            "text": "原地落地并停留1秒"
+          }
+        ],
+        "oracle": {
+          "type": "sequence",
+          "items": [
+            {
+              "type": "pose",
+              "target": "home",
+              "state": "airborne",
+              "altitude_m": 16,
+              "yaw_deg": 45,
+              "dwell_seconds": 2
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed",
+              "dwell_seconds": 1
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark.",
+        "trajectory_checks": [
+          {
+            "kind": "horizontal_radius",
+            "target": "home",
+            "max_distance_m": 0.5
+          }
+        ]
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "pose",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 16,
+                "yaw_deg": 45,
+                "duration_seconds": 2
+              }
+            },
+            {
+              "id": "finish",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              }
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在基地垂直起飞至16米，航向45度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_ids": [
+                "pose",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在基地垂直起飞至16米，航向45度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"pose\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在基地垂直起飞至16米，航向45度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_id": "pose",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"airborne\", \"altitude_m\": 16, \"yaw_deg\": 45, \"duration_seconds\": 2}}"
+            },
+            {
+              "quote": "在基地垂直起飞至16米，航向45度悬停2秒，然后原地降落并停留1秒。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"control\", \"target_id\": \"home\", \"control\": {\"state\": \"landed\", \"duration_seconds\": 1}}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "takeoff_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "airborne",
+                "altitude_m": 16,
+                "yaw_deg": 45,
+                "duration_seconds": 2
+              },
+              "when": null
+            },
+            {
+              "id": "land_hold",
+              "action": "control",
+              "target_id": "home",
+              "control": {
+                "state": "landed",
+                "duration_seconds": 1
+              },
+              "when": null
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "home",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_13_counted_sensor_loop",
+        "family": "counted_sensor_loop",
+        "scenario": "semantic_campus",
+        "instruction": "在图书馆执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在图书馆恰好执行2轮"
+          },
+          {
+            "id": "I2",
+            "text": "每轮测温3秒之后模拟采样1秒"
+          },
+          {
+            "id": "I3",
+            "text": "全部完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "evidence",
+              "action": "thermal_scan",
+              "target": "library",
+              "count": 2,
+              "min_duration": 3
+            },
+            {
+              "type": "evidence",
+              "action": "capture",
+              "target": "library",
+              "count": 2,
+              "min_duration": 1
+            },
+            {
+              "type": "all",
+              "items": [
+                {
+                  "type": "sequence",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "return_home",
+                      "target": "home",
+                      "count": 1
+                    }
+                  ]
+                },
+                {
+                  "type": "goal",
+                  "target": "home",
+                  "state": "landed"
+                }
+              ]
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "iterations",
+              "action": "repeat",
+              "count": 2,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure_required",
+                  "action": "thermal_scan",
+                  "target_id": "library",
+                  "duration_seconds": 3
+                },
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": 1
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在图书馆执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_ids": [
+                "iterations",
+                "measure_required",
+                "sample_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在图书馆执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"iterations\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在图书馆执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"library\", \"duration_seconds\": 3}"
+            },
+            {
+              "quote": "在图书馆执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\", \"duration_seconds\": 1}"
+            },
+            {
+              "quote": "在图书馆执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "iterations",
+              "expected_json": "{\"action\": \"repeat\", \"count\": 2, \"until\": null, \"steps\": [\"measure_required\", \"sample_required\"]}"
+            },
+            {
+              "quote": "在图书馆执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "repeat_pair",
+              "action": "repeat",
+              "count": 2,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure",
+                  "action": "thermal_scan",
+                  "target_id": "library",
+                  "duration_seconds": 3,
+                  "when": null
+                },
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": 1,
+                  "when": null
+                }
+              ],
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "library",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_14_counted_sensor_loop",
+        "family": "counted_sensor_loop",
+        "scenario": "semantic_campus",
+        "instruction": "在实验一号楼执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在实验一号楼恰好执行3轮"
+          },
+          {
+            "id": "I2",
+            "text": "每轮测温3秒之后模拟采样1秒"
+          },
+          {
+            "id": "I3",
+            "text": "全部完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "evidence",
+              "action": "thermal_scan",
+              "target": "laboratory",
+              "count": 3,
+              "min_duration": 3
+            },
+            {
+              "type": "evidence",
+              "action": "capture",
+              "target": "laboratory",
+              "count": 3,
+              "min_duration": 1
+            },
+            {
+              "type": "all",
+              "items": [
+                {
+                  "type": "sequence",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 3,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 3,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "return_home",
+                      "target": "home",
+                      "count": 1
+                    }
+                  ]
+                },
+                {
+                  "type": "goal",
+                  "target": "home",
+                  "state": "landed"
+                }
+              ]
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "iterations",
+              "action": "repeat",
+              "count": 3,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure_required",
+                  "action": "thermal_scan",
+                  "target_id": "laboratory",
+                  "duration_seconds": 3
+                },
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "laboratory",
+                  "duration_seconds": 1
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在实验一号楼执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_ids": [
+                "iterations",
+                "measure_required",
+                "sample_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在实验一号楼执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"iterations\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在实验一号楼执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\", \"duration_seconds\": 3}"
+            },
+            {
+              "quote": "在实验一号楼执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"laboratory\", \"duration_seconds\": 1}"
+            },
+            {
+              "quote": "在实验一号楼执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "iterations",
+              "expected_json": "{\"action\": \"repeat\", \"count\": 3, \"until\": null, \"steps\": [\"measure_required\", \"sample_required\"]}"
+            },
+            {
+              "quote": "在实验一号楼执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "repeat_pair",
+              "action": "repeat",
+              "count": 3,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure",
+                  "action": "thermal_scan",
+                  "target_id": "laboratory",
+                  "duration_seconds": 3,
+                  "when": null
+                },
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "laboratory",
+                  "duration_seconds": 1,
+                  "when": null
+                }
+              ],
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "laboratory",
+        "repair": "missing_obligation"
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_15_counted_sensor_loop",
+        "family": "counted_sensor_loop",
+        "scenario": "semantic_campus",
+        "instruction": "在图书馆执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在图书馆恰好执行3轮"
+          },
+          {
+            "id": "I2",
+            "text": "每轮测温3秒之后模拟采样1秒"
+          },
+          {
+            "id": "I3",
+            "text": "全部完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "evidence",
+              "action": "thermal_scan",
+              "target": "library",
+              "count": 3,
+              "min_duration": 3
+            },
+            {
+              "type": "evidence",
+              "action": "capture",
+              "target": "library",
+              "count": 3,
+              "min_duration": 1
+            },
+            {
+              "type": "all",
+              "items": [
+                {
+                  "type": "sequence",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 3,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "library",
+                      "count": 1,
+                      "occurrence": 3,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "return_home",
+                      "target": "home",
+                      "count": 1
+                    }
+                  ]
+                },
+                {
+                  "type": "goal",
+                  "target": "home",
+                  "state": "landed"
+                }
+              ]
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "iterations",
+              "action": "repeat",
+              "count": 3,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure_required",
+                  "action": "thermal_scan",
+                  "target_id": "library",
+                  "duration_seconds": 3
+                },
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": 1
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在图书馆执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_ids": [
+                "iterations",
+                "measure_required",
+                "sample_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在图书馆执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"iterations\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在图书馆执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"library\", \"duration_seconds\": 3}"
+            },
+            {
+              "quote": "在图书馆执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\", \"duration_seconds\": 1}"
+            },
+            {
+              "quote": "在图书馆执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "iterations",
+              "expected_json": "{\"action\": \"repeat\", \"count\": 3, \"until\": null, \"steps\": [\"measure_required\", \"sample_required\"]}"
+            },
+            {
+              "quote": "在图书馆执行3轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "repeat_pair",
+              "action": "repeat",
+              "count": 3,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure",
+                  "action": "thermal_scan",
+                  "target_id": "library",
+                  "duration_seconds": 3,
+                  "when": null
+                },
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "duration_seconds": 1,
+                  "when": null
+                }
+              ],
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "library",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_16_counted_sensor_loop",
+        "family": "counted_sensor_loop",
+        "scenario": "semantic_campus",
+        "instruction": "在实验一号楼执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "在实验一号楼恰好执行2轮"
+          },
+          {
+            "id": "I2",
+            "text": "每轮测温3秒之后模拟采样1秒"
+          },
+          {
+            "id": "I3",
+            "text": "全部完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "evidence",
+              "action": "thermal_scan",
+              "target": "laboratory",
+              "count": 2,
+              "min_duration": 3
+            },
+            {
+              "type": "evidence",
+              "action": "capture",
+              "target": "laboratory",
+              "count": 2,
+              "min_duration": 1
+            },
+            {
+              "type": "all",
+              "items": [
+                {
+                  "type": "sequence",
+                  "items": [
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 1,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "thermal_scan",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 3
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "capture",
+                      "target": "laboratory",
+                      "count": 1,
+                      "occurrence": 2,
+                      "min_duration": 1
+                    },
+                    {
+                      "type": "evidence",
+                      "action": "return_home",
+                      "target": "home",
+                      "count": 1
+                    }
+                  ]
+                },
+                {
+                  "type": "goal",
+                  "target": "home",
+                  "state": "landed"
+                }
+              ]
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "iterations",
+              "action": "repeat",
+              "count": 2,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure_required",
+                  "action": "thermal_scan",
+                  "target_id": "laboratory",
+                  "duration_seconds": 3
+                },
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "laboratory",
+                  "duration_seconds": 1
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "在实验一号楼执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_ids": [
+                "iterations",
+                "measure_required",
+                "sample_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "在实验一号楼执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"iterations\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "在实验一号楼执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\", \"duration_seconds\": 3}"
+            },
+            {
+              "quote": "在实验一号楼执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"laboratory\", \"duration_seconds\": 1}"
+            },
+            {
+              "quote": "在实验一号楼执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "iterations",
+              "expected_json": "{\"action\": \"repeat\", \"count\": 2, \"until\": null, \"steps\": [\"measure_required\", \"sample_required\"]}"
+            },
+            {
+              "quote": "在实验一号楼执行2轮任务，每轮先测温3秒，再模拟采样1秒；完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "repeat_pair",
+              "action": "repeat",
+              "count": 2,
+              "until": null,
+              "steps": [
+                {
+                  "id": "measure",
+                  "action": "thermal_scan",
+                  "target_id": "laboratory",
+                  "duration_seconds": 3,
+                  "when": null
+                },
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "laboratory",
+                  "duration_seconds": 1,
+                  "when": null
+                }
+              ],
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "laboratory",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_17_sensor_conditional",
+        "family": "sensor_conditional",
+        "scenario": "semantic_campus",
+        "instruction": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "测量实验一号楼温度"
+          },
+          {
+            "id": "I2",
+            "text": "读数>45时模拟采样，否则巡检展览中心"
+          },
+          {
+            "id": "I3",
+            "text": "只要求实际触发分支完成，然后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "if",
+                  "observation": {
+                    "type": "evidence",
+                    "action": "thermal_scan",
+                    "target": "laboratory",
+                    "count": 1
+                  },
+                  "field": "temperature_c",
+                  "op": ">",
+                  "value": 45,
+                  "then": {
+                    "type": "evidence",
+                    "action": "capture",
+                    "target": "laboratory",
+                    "count": 1
+                  },
+                  "else": {
+                    "type": "evidence",
+                    "action": "inspect",
+                    "target": "exhibition",
+                    "count": 1
+                  }
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "measure_required",
+              "action": "thermal_scan",
+              "target_id": "laboratory"
+            },
+            {
+              "id": "choose_required",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure_required",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 45
+              },
+              "then": [
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "laboratory"
+                }
+              ],
+              "else": [
+                {
+                  "id": "else_required",
+                  "action": "inspect",
+                  "target_id": "exhibition"
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_ids": [
+                "measure_required",
+                "choose_required",
+                "sample_required",
+                "else_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"measure_required\", \"choose_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "else_required",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"exhibition\"}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "choose_required",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"measure_required\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 45}, \"then\": [\"sample_required\"], \"else\": [\"else_required\"]}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于45摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "measure",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "when": null,
+              "duration_seconds": null
+            },
+            {
+              "id": "choose",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 45
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "laboratory",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "else",
+                  "action": "inspect",
+                  "target_id": "exhibition",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ]
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "laboratory",
+        "repair": null
+      },
+      "task_world": {
+        "laboratory": {
+          "temperature_c": 60
+        }
+      }
+    },
+    {
+      "standard": {
+        "id": "pilot_18_sensor_conditional",
+        "family": "sensor_conditional",
+        "scenario": "semantic_campus",
+        "instruction": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "测量图书馆温度"
+          },
+          {
+            "id": "I2",
+            "text": "读数>30时模拟采样，否则巡检展览中心"
+          },
+          {
+            "id": "I3",
+            "text": "只要求实际触发分支完成，然后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "if",
+                  "observation": {
+                    "type": "evidence",
+                    "action": "thermal_scan",
+                    "target": "library",
+                    "count": 1
+                  },
+                  "field": "temperature_c",
+                  "op": ">",
+                  "value": 30,
+                  "then": {
+                    "type": "evidence",
+                    "action": "capture",
+                    "target": "library",
+                    "count": 1
+                  },
+                  "else": {
+                    "type": "evidence",
+                    "action": "inspect",
+                    "target": "exhibition",
+                    "count": 1
+                  }
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "measure_required",
+              "action": "thermal_scan",
+              "target_id": "library"
+            },
+            {
+              "id": "choose_required",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure_required",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 30
+              },
+              "then": [
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "library"
+                }
+              ],
+              "else": [
+                {
+                  "id": "else_required",
+                  "action": "inspect",
+                  "target_id": "exhibition"
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_ids": [
+                "measure_required",
+                "choose_required",
+                "sample_required",
+                "else_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"measure_required\", \"choose_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "else_required",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"exhibition\"}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "choose_required",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"measure_required\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 30}, \"then\": [\"sample_required\"], \"else\": [\"else_required\"]}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于30摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "measure",
+              "action": "thermal_scan",
+              "target_id": "library",
+              "when": null,
+              "duration_seconds": null
+            },
+            {
+              "id": "choose",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 30
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "else",
+                  "action": "inspect",
+                  "target_id": "exhibition",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ]
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "library",
+        "repair": "invalid_field"
+      },
+      "task_world": {
+        "library": {
+          "temperature_c": 22
+        }
+      }
+    },
+    {
+      "standard": {
+        "id": "pilot_19_sensor_conditional",
+        "family": "sensor_conditional",
+        "scenario": "semantic_campus",
+        "instruction": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "测量实验一号楼温度"
+          },
+          {
+            "id": "I2",
+            "text": "读数>20时模拟采样，否则巡检展览中心"
+          },
+          {
+            "id": "I3",
+            "text": "只要求实际触发分支完成，然后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "if",
+                  "observation": {
+                    "type": "evidence",
+                    "action": "thermal_scan",
+                    "target": "laboratory",
+                    "count": 1
+                  },
+                  "field": "temperature_c",
+                  "op": ">",
+                  "value": 20,
+                  "then": {
+                    "type": "evidence",
+                    "action": "capture",
+                    "target": "laboratory",
+                    "count": 1
+                  },
+                  "else": {
+                    "type": "evidence",
+                    "action": "inspect",
+                    "target": "exhibition",
+                    "count": 1
+                  }
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "measure_required",
+              "action": "thermal_scan",
+              "target_id": "laboratory"
+            },
+            {
+              "id": "choose_required",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure_required",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 20
+              },
+              "then": [
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "laboratory"
+                }
+              ],
+              "else": [
+                {
+                  "id": "else_required",
+                  "action": "inspect",
+                  "target_id": "exhibition"
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_ids": [
+                "measure_required",
+                "choose_required",
+                "sample_required",
+                "else_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"measure_required\", \"choose_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"laboratory\"}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "else_required",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"exhibition\"}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "choose_required",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"measure_required\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 20}, \"then\": [\"sample_required\"], \"else\": [\"else_required\"]}"
+            },
+            {
+              "quote": "测量实验一号楼温度，若高于20摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "measure",
+              "action": "thermal_scan",
+              "target_id": "laboratory",
+              "when": null,
+              "duration_seconds": null
+            },
+            {
+              "id": "choose",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 20
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "laboratory",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "else",
+                  "action": "inspect",
+                  "target_id": "exhibition",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ]
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "laboratory",
+        "repair": null
+      },
+      "task_world": {
+        "laboratory": {
+          "temperature_c": 26
+        }
+      }
+    },
+    {
+      "standard": {
+        "id": "pilot_20_sensor_conditional",
+        "family": "sensor_conditional",
+        "scenario": "semantic_campus",
+        "instruction": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "测量图书馆温度"
+          },
+          {
+            "id": "I2",
+            "text": "读数>35时模拟采样，否则巡检展览中心"
+          },
+          {
+            "id": "I3",
+            "text": "只要求实际触发分支完成，然后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "if",
+                  "observation": {
+                    "type": "evidence",
+                    "action": "thermal_scan",
+                    "target": "library",
+                    "count": 1
+                  },
+                  "field": "temperature_c",
+                  "op": ">",
+                  "value": 35,
+                  "then": {
+                    "type": "evidence",
+                    "action": "capture",
+                    "target": "library",
+                    "count": 1
+                  },
+                  "else": {
+                    "type": "evidence",
+                    "action": "inspect",
+                    "target": "exhibition",
+                    "count": 1
+                  }
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "measure_required",
+              "action": "thermal_scan",
+              "target_id": "library"
+            },
+            {
+              "id": "choose_required",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure_required",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 35
+              },
+              "then": [
+                {
+                  "id": "sample_required",
+                  "action": "capture",
+                  "target_id": "library"
+                }
+              ],
+              "else": [
+                {
+                  "id": "else_required",
+                  "action": "inspect",
+                  "target_id": "exhibition"
+                }
+              ]
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_ids": [
+                "measure_required",
+                "choose_required",
+                "sample_required",
+                "else_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"measure_required\", \"choose_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "measure_required",
+              "expected_json": "{\"action\": \"thermal_scan\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "sample_required",
+              "expected_json": "{\"action\": \"capture\", \"target_id\": \"library\"}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "else_required",
+              "expected_json": "{\"action\": \"inspect\", \"target_id\": \"exhibition\"}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "choose_required",
+              "expected_json": "{\"action\": \"branch\", \"condition\": {\"step_id\": \"measure_required\", \"field\": \"temperature_c\", \"op\": \">\", \"value\": 35}, \"then\": [\"sample_required\"], \"else\": [\"else_required\"]}"
+            },
+            {
+              "quote": "测量图书馆温度，若高于35摄氏度则在该处模拟采样，否则巡检展览中心；然后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "measure",
+              "action": "thermal_scan",
+              "target_id": "library",
+              "when": null,
+              "duration_seconds": null
+            },
+            {
+              "id": "choose",
+              "action": "branch",
+              "condition": {
+                "step_id": "measure",
+                "field": "temperature_c",
+                "op": ">",
+                "value": 35
+              },
+              "then": [
+                {
+                  "id": "sample",
+                  "action": "capture",
+                  "target_id": "library",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ],
+              "else": [
+                {
+                  "id": "else",
+                  "action": "inspect",
+                  "target_id": "exhibition",
+                  "when": null,
+                  "duration_seconds": null
+                }
+              ]
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "library",
+        "repair": null
+      },
+      "task_world": {
+        "library": {
+          "temperature_c": 24
+        }
+      }
+    },
+    {
+      "standard": {
+        "id": "pilot_21_boundary_heading",
+        "family": "boundary_heading",
+        "scenario": "semantic_campus",
+        "instruction": "沿东侧花园边界顺时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "沿东侧花园边界顺时针飞行0.5圈"
+          },
+          {
+            "id": "I2",
+            "text": "飞行时朝向场地中心"
+          },
+          {
+            "id": "I3",
+            "text": "完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "circuit",
+                  "target": "east_garden",
+                  "direction": "clockwise",
+                  "laps": 0.5,
+                  "heading": "face_center"
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "boundary_required",
+              "action": "motion",
+              "target_id": "east_garden",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "clockwise",
+                  "laps": 0.5
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "east_garden"
+                }
+              }
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "沿东侧花园边界顺时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_ids": [
+                "boundary_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "沿东侧花园边界顺时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"boundary_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "沿东侧花园边界顺时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "boundary_required",
+              "expected_json": "{\"action\": \"motion\", \"target_id\": \"east_garden\", \"motion\": {\"path\": {\"kind\": \"boundary\", \"direction\": \"clockwise\", \"laps\": 0.5}, \"heading\": {\"mode\": \"face_target\", \"target_id\": \"east_garden\"}}}"
+            },
+            {
+              "quote": "沿东侧花园边界顺时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "boundary_flight",
+              "action": "motion",
+              "target_id": "east_garden",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "clockwise",
+                  "laps": 0.5
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "east_garden"
+                },
+                "speed_mps": 3.0
+              },
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "east_garden",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_22_boundary_heading",
+        "family": "boundary_heading",
+        "scenario": "semantic_campus",
+        "instruction": "沿西侧花园边界逆时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "沿西侧花园边界逆时针飞行0.5圈"
+          },
+          {
+            "id": "I2",
+            "text": "飞行时朝向场地中心"
+          },
+          {
+            "id": "I3",
+            "text": "完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "circuit",
+                  "target": "west_garden",
+                  "direction": "counterclockwise",
+                  "laps": 0.5,
+                  "heading": "face_center"
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "boundary_required",
+              "action": "motion",
+              "target_id": "west_garden",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "counterclockwise",
+                  "laps": 0.5
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "west_garden"
+                }
+              }
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "沿西侧花园边界逆时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_ids": [
+                "boundary_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "沿西侧花园边界逆时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"boundary_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "沿西侧花园边界逆时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "boundary_required",
+              "expected_json": "{\"action\": \"motion\", \"target_id\": \"west_garden\", \"motion\": {\"path\": {\"kind\": \"boundary\", \"direction\": \"counterclockwise\", \"laps\": 0.5}, \"heading\": {\"mode\": \"face_target\", \"target_id\": \"west_garden\"}}}"
+            },
+            {
+              "quote": "沿西侧花园边界逆时针飞行半圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "boundary_flight",
+              "action": "motion",
+              "target_id": "west_garden",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "counterclockwise",
+                  "laps": 0.5
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "west_garden"
+                },
+                "speed_mps": 3.0
+              },
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "west_garden",
+        "repair": "invalid_map_target"
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_23_boundary_heading",
+        "family": "boundary_heading",
+        "scenario": "semantic_campus",
+        "instruction": "沿南广场边界顺时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "沿南广场边界顺时针飞行1圈"
+          },
+          {
+            "id": "I2",
+            "text": "飞行时朝向场地中心"
+          },
+          {
+            "id": "I3",
+            "text": "完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "circuit",
+                  "target": "south_plaza",
+                  "direction": "clockwise",
+                  "laps": 1,
+                  "heading": "face_center"
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "boundary_required",
+              "action": "motion",
+              "target_id": "south_plaza",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "clockwise",
+                  "laps": 1
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "south_plaza"
+                }
+              }
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "沿南广场边界顺时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_ids": [
+                "boundary_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "沿南广场边界顺时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"boundary_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "沿南广场边界顺时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "boundary_required",
+              "expected_json": "{\"action\": \"motion\", \"target_id\": \"south_plaza\", \"motion\": {\"path\": {\"kind\": \"boundary\", \"direction\": \"clockwise\", \"laps\": 1}, \"heading\": {\"mode\": \"face_target\", \"target_id\": \"south_plaza\"}}}"
+            },
+            {
+              "quote": "沿南广场边界顺时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "boundary_flight",
+              "action": "motion",
+              "target_id": "south_plaza",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "clockwise",
+                  "laps": 1
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "south_plaza"
+                },
+                "speed_mps": 3.0
+              },
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "south_plaza",
+        "repair": null
+      },
+      "task_world": {}
+    },
+    {
+      "standard": {
+        "id": "pilot_24_boundary_heading",
+        "family": "boundary_heading",
+        "scenario": "semantic_campus",
+        "instruction": "沿东侧花园边界逆时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+        "intent": [
+          {
+            "id": "I1",
+            "text": "沿东侧花园边界逆时针飞行1圈"
+          },
+          {
+            "id": "I2",
+            "text": "飞行时朝向场地中心"
+          },
+          {
+            "id": "I3",
+            "text": "完成后返航降落"
+          }
+        ],
+        "oracle": {
+          "type": "all",
+          "items": [
+            {
+              "type": "sequence",
+              "items": [
+                {
+                  "type": "circuit",
+                  "target": "east_garden",
+                  "direction": "counterclockwise",
+                  "laps": 1,
+                  "heading": "face_center"
+                },
+                {
+                  "type": "evidence",
+                  "action": "return_home",
+                  "target": "home",
+                  "count": 1
+                }
+              ]
+            },
+            {
+              "type": "goal",
+              "target": "home",
+              "state": "landed"
+            }
+          ]
+        },
+        "annotation_source": "agent_assisted",
+        "human_reviewed": false,
+        "split": "pilot",
+        "evaluation_use": "Training demonstration only; never a held-out model benchmark."
+      },
+      "demonstration": {
+        "requirements": {
+          "status": "ready",
+          "summary": "保留原指令指定的义务。",
+          "steps": [
+            {
+              "id": "boundary_required",
+              "action": "motion",
+              "target_id": "east_garden",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "counterclockwise",
+                  "laps": 1
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "east_garden"
+                }
+              }
+            },
+            {
+              "id": "finish",
+              "action": "return_home",
+              "target_id": "home"
+            }
+          ],
+          "constraints": {},
+          "coverage": [
+            {
+              "quote": "沿东侧花园边界逆时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_ids": [
+                "boundary_required",
+                "finish"
+              ],
+              "constraint_keys": []
+            }
+          ]
+        },
+        "audit": {
+          "status": "approved",
+          "summary": "原文指定的目标、时序、数量或姿态要求及结束状态均有对应要求，未添加执行偏好。",
+          "issues": [],
+          "assertions": [
+            {
+              "quote": "沿东侧花园边界逆时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "$",
+              "expected_json": "{\"steps\": [\"boundary_required\", \"finish\"], \"constraints\": {}}"
+            },
+            {
+              "quote": "沿东侧花园边界逆时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "boundary_required",
+              "expected_json": "{\"action\": \"motion\", \"target_id\": \"east_garden\", \"motion\": {\"path\": {\"kind\": \"boundary\", \"direction\": \"counterclockwise\", \"laps\": 1}, \"heading\": {\"mode\": \"face_target\", \"target_id\": \"east_garden\"}}}"
+            },
+            {
+              "quote": "沿东侧花园边界逆时针飞行一圈，机头朝向场地中心，完成后返航降落。",
+              "requirement_id": "finish",
+              "expected_json": "{\"action\": \"return_home\", \"target_id\": \"home\"}"
+            }
+          ]
+        },
+        "plan": {
+          "status": "ready",
+          "summary": "执行任务标准规定的全部事项。",
+          "steps": [
+            {
+              "id": "boundary_flight",
+              "action": "motion",
+              "target_id": "east_garden",
+              "motion": {
+                "path": {
+                  "kind": "boundary",
+                  "direction": "counterclockwise",
+                  "laps": 1
+                },
+                "heading": {
+                  "mode": "face_target",
+                  "target_id": "east_garden"
+                },
+                "speed_mps": 3.0
+              },
+              "when": null
+            },
+            {
+              "id": "return_base",
+              "action": "return_home",
+              "target_id": "home",
+              "when": null,
+              "duration_seconds": 0
+            }
+          ],
+          "constraints": {
+            "max_altitude_m": null,
+            "avoid_regions": []
+          }
+        },
+        "query_target": "east_garden",
+        "repair": null
+      },
+      "task_world": {}
+    }
+  ]
+}

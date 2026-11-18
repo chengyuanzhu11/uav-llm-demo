@@ -36,8 +36,8 @@ def predicate(action="inspect", target="library", count=1, **extra):
     return dict(type="evidence", action=action, target=target, count=count, **extra)
 
 
-def sample(t=0, position=(0, 0, 0), speed=0, yaw=0, eid=None, phase=None):
-    return dict(t=t, position=list(position), speed_mps=speed, yaw=yaw, execution_id=eid, phase=phase)
+def sample(t=0, position=(0, 0, 0), speed=0, yaw=0, eid="execution", phase=None):
+    return dict(t=t, position=list(position), speed_mps=speed, yaw=yaw, execution_id=eid, phase=phase, action=None if phase == "tracking" else "control")
 
 
 class OracleTests(unittest.TestCase):
@@ -48,14 +48,46 @@ class OracleTests(unittest.TestCase):
         self.assertFalse(self.evaluate(predicate(), [evidence("return_home", "home")])["satisfied"])
         self.assertTrue(self.evaluate(predicate(), [evidence()])["satisfied"])
 
+    def test_targetless_review_requires_valid_execution_evidence_before_work(self):
+        review = predicate("review", None, result={"reviewed": True})
+        req = dict(type="sequence", items=[review, predicate()])
+        inspection = evidence(when=2, eid="inspection")
+        verified = evidence("review", None, when=1, eid="review",
+                            result={"reviewed": True}, source="validated_execution_review")
+        self.assertFalse(self.evaluate(req, [inspection])["satisfied"])
+        self.assertTrue(self.evaluate(req, [verified, inspection])["satisfied"])
+        for change in ({"source": "model_claim"}, {"result": {"reviewed": False}},
+                       {"simulation_time": 3}, {"target_id": "home"}):
+            with self.subTest(change=change):
+                self.assertFalse(self.evaluate(req, [{**verified, **change}, inspection])["satisfied"])
+        for invalid in (predicate("inspect", None), {k: v for k, v in review.items() if k != "target"}):
+            with self.assertRaises(ValueError):
+                self.evaluate(invalid)
+
     def test_native_landing_requires_disarmed_contact_for_the_whole_dwell(self):
         requirement = dict(type="goal", target="home", state="landed", dwell_seconds=1)
-        rows = [{**sample(t), "runtime": "gazebo", "landed": True, "armed": t < 1} for t in (0, .5, 1)]
+        rows = [{**sample(t), "runtime": "gazebo", "landed": True, "armed": t < 1} for t in (i / 10 for i in range(11))]
         self.assertFalse(self.evaluate(requirement, samples=rows)["satisfied"])
-        rows.append({**sample(2), "runtime": "gazebo", "landed": True, "armed": False})
+        rows.extend({**sample(t / 10), "runtime": "gazebo", "landed": True, "armed": False} for t in range(11, 21))
         self.assertTrue(self.evaluate(requirement, samples=rows)["satisfied"])
         rows[-1]["landed"] = False
         self.assertFalse(self.evaluate(requirement, samples=rows)["satisfied"])
+
+    def test_zero_dwell_goal_uses_final_native_pose_after_action_clears(self):
+        req = dict(type="goal", target="home", state="landed")
+        active = {**sample(1), "runtime": "gazebo", "landed": True, "armed": True}
+        terminal = {**sample(2, eid=None), "action": None, "runtime": "gazebo", "landed": True, "armed": False}
+        result = self.evaluate(req, samples=[active, terminal])
+        self.assertTrue(result["satisfied"])
+        self.assertEqual((result["first"], result["last"]), (2, 2))
+        for change in ({"armed": True}, {"landed": False}, {"speed_mps": .1}, {"position": [1, 0, 0]}):
+            with self.subTest(change=change):
+                self.assertFalse(self.evaluate(req, samples=[terminal, {**terminal, "t": 3, **change}])["satisfied"])
+        idle = [{**terminal, "t": i/10} for i in range(21)]
+        self.assertFalse(self.evaluate({**req, "dwell_seconds": 1}, samples=idle)["satisfied"])
+        self.assertFalse(self.evaluate({**req, "type": "pose"}, samples=idle)["satisfied"])
+        sequence = dict(type="sequence", items=[predicate(), req])
+        self.assertFalse(self.evaluate(sequence, [evidence(when=3)], samples=[terminal])["satisfied"])
 
     def test_wrong_target_source_vehicle_mission_or_unsuccessful_result_fails(self):
         changes = [dict(target_id="garden"), dict(source="model_claim"), dict(vehicle_id="uav-2"),
@@ -165,11 +197,48 @@ class OracleTests(unittest.TestCase):
         self.assertTrue(self.evaluate(req, samples=[sample(1, (5, 5, 2), yaw=math.pi / 2)])["satisfied"])
         self.assertFalse(self.evaluate(req, samples=[sample(1, (5, 5, 2), yaw=0)])["satisfied"])
 
-    def test_intermediate_pose_is_bound_to_its_completed_execution(self):
-        req = dict(type="pose", target="library", state="airborne", altitude_m=10, yaw_deg=90)
-        records = [evidence("control", eid="correct")]
-        self.assertTrue(self.evaluate(req, records, [sample(1, (5, 5, 2), yaw=math.pi / 2, eid="correct")])["satisfied"])
-        self.assertFalse(self.evaluate(req, records, [sample(1, (5, 5, 2), yaw=math.pi / 2, eid="different")])["satisfied"])
+    def test_pose_dwell_and_order_are_independent_of_control_segmentation(self):
+        pose = dict(type="pose", target="library", state="airborne", altitude_m=10,
+                    yaw_deg=90, dwell_seconds=1)
+        req = dict(type="sequence", items=[pose, dict(type="goal", target="home", state="landed", dwell_seconds=1)])
+        hover = [sample(i / 10, (5, 5, 2), yaw=math.pi / 2, eid=str(i // 3)) for i in range(11)]
+        ground = [sample(2 + i / 10) for i in range(11)]
+        self.assertTrue(self.evaluate(req, samples=hover + ground)["satisfied"])
+        for bad in ([{**r, "yaw": 0} for r in hover], hover[:3],
+                    [{**r, "position": [5, 5, 3]} for r in hover]):
+            self.assertFalse(self.evaluate(req, samples=bad + ground)["satisfied"])
+        self.assertFalse(self.evaluate(req, samples=ground + [{**r, "t": r["t"] + 4} for r in hover])["satisfied"])
+        repeated = dict(type="sequence", items=[dict(type="pose", target="home", state="landed", dwell_seconds=1), pose])
+        initial = [sample(i / 10) for i in range(11)]
+        self.assertTrue(self.evaluate(repeated, samples=initial + [{**r, "t": r["t"] + 2} for r in hover])["satisfied"])
+        same_pose = dict(type="pose", target="home", state="landed", dwell_seconds=1)
+        consecutive = dict(type="sequence", items=[same_pose, same_pose])
+        continuous = [sample(i / 10, eid=str(i // 4)) for i in range(31)]
+        measured = self.evaluate(consecutive, samples=continuous)
+        self.assertTrue(measured["satisfied"])
+        self.assertAlmostEqual(measured["children"][0]["last"], 1)
+        self.assertAlmostEqual(measured["children"][1]["last"], 2)
+        self.assertFalse(self.evaluate(consecutive, samples=continuous[:16])["satisfied"])
+        self.assertFalse(self.evaluate({**same_pose, "occurrence": 2}, samples=continuous)["satisfied"])
+        second_run = continuous[:11] + [sample(1.1, speed=1)] + continuous[20:]
+        self.assertTrue(self.evaluate({**same_pose, "occurrence": 2}, samples=second_run)["satisfied"])
+
+    def test_dwell_excludes_planning_wait_and_unobserved_time(self):
+        for kind in ("pose", "goal"):
+            req = dict(type=kind, target="home", state="landed", dwell_seconds=1)
+            idle = [{**sample(i / 10), "execution_id": None, "action": None} for i in range(21)]
+            active = [sample(2 + i / 10, eid=str(i // 3)) for i in range(11)]
+            with self.subTest(kind=kind):
+                self.assertFalse(self.evaluate(req, samples=idle)["satisfied"])
+                self.assertFalse(self.evaluate(req, samples=idle + active[:3])["satisfied"])
+                self.assertFalse(self.evaluate(req, samples=[sample(0), sample(50)])["satisfied"])
+                self.assertTrue(self.evaluate(req, samples=idle + active)["satisfied"])
+                interrupted = active[:5] + [{**active[5], "execution_id": None, "action": None}] + active[6:]
+                self.assertFalse(self.evaluate(req, samples=interrupted)["satisfied"])
+                terminal = {**sample(4), "execution_id": None, "action": None}
+                if kind == "goal":
+                    self.assertTrue(self.evaluate(req, samples=active + [terminal])["satisfied"])
+                    self.assertFalse(self.evaluate(req, samples=active[:3] + [terminal])["satisfied"])
 
     def square_samples(self, laps=1, sign=1, size=1):
         points = []
@@ -329,12 +398,22 @@ class RunnerTests(unittest.TestCase):
                 self.assertNotIn("oracle", seen[0][0])
                 self.assertNotIn("offline_responses", seen[0][0])
 
-    def test_remote_virtual_or_missing_key_fails_before_service(self):
+    def test_real_model_requires_realtime_and_configured_provider_before_service(self):
         case = load_dataset()["cases"][0]
         with self.assertRaises(ValueError):
             run_case(case, mode="virtual", backend="deepseek")
         with patch.dict("os.environ", {}, clear=True), self.assertRaises(ValueError):
             run_case(case, mode="realtime", backend="deepseek")
+        local = dict(LLM_MODEL="Qwen/Qwen3-VL-4B-Instruct", LLM_BASE_URL="http://127.0.0.1:8001/v1")
+        with patch.dict("os.environ", local, clear=True), \
+                patch("uav_llm_demo.gazebo_session.GazeboSession") as factory:
+            session = factory.return_value
+            session.log_dir, session.manifest = None, {}
+            session.start.side_effect = RuntimeError("fixture startup failure")
+            result = run_case(case, mode="realtime", backend="deepseek", runtime_backend="gazebo")
+            session.start.assert_called_once()
+            session.close.assert_called_once()
+            self.assertEqual(result["termination_reason"], "runtime_startup")
         with self.assertRaises(ValueError):
             run_case(case, control_delay_ms=120)
         with self.assertRaises(ValueError):

@@ -251,16 +251,16 @@ class SemanticServiceTests(unittest.TestCase):
                 self.assertEqual(state["diagnostics"]["usage"]["requests"], 1)
                 self.assertEqual(state["diagnostics"]["usage"]["unreported_requests"], 0)
 
-    def test_transient_failures_retry_more_than_three_times_without_mock(self):
+    def test_transient_failures_recover_within_budget_without_mock(self):
         service = self.service()
-        failures = [Mock(status_code=503)] * 4
+        failures = [Mock(status_code=503)] * 2
         stages = semantic_responses(response_plan())
         def respond(*args, **kwargs):
             return failures.pop() if failures else stages(*args, **kwargs)
         with patch("uav_llm_demo.agents._post_deepseek", side_effect=respond) as post:
             service.submit_task("巡检图书馆后返航。", background=False)
             state = advance_until(service, lambda s: s["flight"]["plan_id"] > 0, 60)
-        self.assertEqual(post.call_count, 7)
+        self.assertEqual(post.call_count, 5)
         self.assertIsNone(state["flight"]["error"])
         self.assertEqual(state["semantic_mission"]["status"], "running")
         self.assertTrue(state["flight"]["running"])

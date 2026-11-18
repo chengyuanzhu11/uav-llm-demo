@@ -43,7 +43,8 @@ class OfflineLanguage(DeepSeekAgent):
     def audit_task_requirements(self,catalog,instruction,requirements,*args,**kwargs):
         # Match the same successful audit return shape as the real provider.
         from uav_llm_demo.task_requirements import audit_requirements_from_json_text
-        return audit_requirements_from_json_text(json.dumps(dict(status='approved',summary='独立执行夹具',issues=[])),requirements,instruction)
+        from tests.semantic_fixtures import fixture_audit
+        return audit_requirements_from_json_text(json.dumps(fixture_audit(requirements, instruction)),requirements,instruction)
     def interpret_task(self,catalog,*args,**kwargs):
         plan=deepcopy(SPEC);plan.pop('coverage');plan['constraints']=dict(max_altitude_m=None,avoid_regions=[])
         for node in plan['steps']:
@@ -96,13 +97,18 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--live',action='store_true')
     parser.add_argument('--variant',type=int,choices=[0,1],default=0)
-    parser.add_argument('--scene',choices=['markers','tree','sculpture','bin_orbit'],default='markers',
+    parser.add_argument('--scene',choices=['markers','tree','sculpture','bin_orbit','landmark'],default='markers',
                         help='Use a private marker fixture or actual rendered campus scenery.')
     parser.add_argument('--instruction',help='Override the live instruction while retaining the selected independent target oracle.')
+    parser.add_argument('--target-landmark',help='Independent scoring only; never sent to the agent.')
+    parser.add_argument('--planner-timeout',type=float,default=90)
+    parser.add_argument('--wall-budget',type=float,default=780)
     parser.add_argument('--output',required=True)
     args=parser.parse_args()
     if (args.scene != 'markers' or args.instruction) and not args.live:
         parser.error('Actual-campus semantic recognition requires --live; the offline detector only checks marker pixels.')
+    if args.scene == 'landmark' and not (args.instruction and args.target_landmark):
+        parser.error('landmark requires an instruction and a separate scoring target')
     instruction = args.instruction or {'markers': INSTRUCTION,
                    'tree': '到南广场寻找一棵树，从机载画面确认后返航。',
                    'sculpture': '在南广场寻找红色圆环雕塑，接近到15米内确认后返航。',
@@ -110,7 +116,7 @@ def main():
     output=Path(args.output).resolve()
     if output.exists():raise SystemExit('Choose a new output path; existing evidence is not overwritten.')
     load_dotenv(ROOT/'.env')
-    language=DeepSeekAgent(timeout_seconds=45) if args.live else OfflineLanguage()
+    language=DeepSeekAgent(timeout_seconds=args.planner_timeout) if args.live else OfflineLanguage()
     detector=None if args.live else BrowserDetector()
     scenario=replace(load_scenario('semantic_campus'),dynamic_objects=())
     journal=JournalWriter(output.with_suffix('.events.jsonl'))
@@ -120,7 +126,7 @@ def main():
     app.logger.disabled=True
 
     @app.get('/__verify__/fixture')
-    def fixture():return jsonify(variant=args.variant,scene=args.scene,instruction=instruction,live=args.live)
+    def fixture():return jsonify(variant=args.variant,scene=args.scene,instruction=instruction,live=args.live,target_landmark=args.target_landmark,wall_budget=args.wall_budget)
 
     @app.get('/__verify__/app.js')
     def instrument():
@@ -154,7 +160,7 @@ def main():
     try:
         process=subprocess.Popen(['node',str(ROOT/'scripts/verify_visual_feedback.cjs')],env=env,cwd=ROOT,start_new_session=True)
         try:
-            return process.wait(timeout=850)
+            return process.wait(timeout=args.wall_budget+70)
         except subprocess.TimeoutExpired:
             if not output.exists():
                 state=service.state()

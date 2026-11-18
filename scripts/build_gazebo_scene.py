@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from uav_llm_demo.simulation_scene import campus_collision_geometry
-from uav_llm_demo.scenarios import load_scenario
+from uav_llm_demo.scenarios import load_scenario, load_asset_scenario
 from uav_llm_demo.scene_layout import scene_layout
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,13 +26,14 @@ def export_visual(scenario, objects, destination):
         digest.update((ROOT/source).read_bytes())
     fingerprint = digest.hexdigest()
     mesh, manifest = directory/'scenery.glb', directory/'export.json'
-    if mesh.exists() and manifest.exists():
+    if mesh.exists() and manifest.exists() and (directory/'target-surfaces.json').exists():
         try:
             previous = json.loads(manifest.read_text())
         except (OSError, ValueError):
             previous = None
         if (isinstance(previous, dict) and previous.get('source_sha256') == fingerprint
-                and previous.get('mesh_sha256') == hashlib.sha256(mesh.read_bytes()).hexdigest()):
+                and previous.get('mesh_sha256') == hashlib.sha256(mesh.read_bytes()).hexdigest()
+                and previous.get('surface_sha256') == hashlib.sha256((directory/'target-surfaces.json').read_bytes()).hexdigest()):
             return mesh
     source = directory/'scene.json'
     source.write_text(payload)
@@ -41,7 +42,8 @@ def export_visual(scenario, objects, destination):
     if result.returncode:
         raise RuntimeError('Scene export failed. Run npm ci and npx playwright install chromium --only-shell.\n'+result.stderr[-1500:])
     metadata = json.loads(result.stdout.strip().splitlines()[-1])
-    metadata.update(source_sha256=fingerprint, mesh_sha256=hashlib.sha256(mesh.read_bytes()).hexdigest())
+    metadata.update(source_sha256=fingerprint, mesh_sha256=hashlib.sha256(mesh.read_bytes()).hexdigest(),
+                    surface_sha256=hashlib.sha256((directory/'target-surfaces.json').read_bytes()).hexdigest())
     temporary = manifest.with_suffix('.tmp')
     temporary.write_text(json.dumps(metadata, indent=2)+'\n')
     temporary.replace(manifest)
@@ -58,8 +60,8 @@ def plugin(parent,filename,name):
     return add(parent,'plugin',filename=filename,name='gz::sim::systems::'+name)
 
 
-def build(scene_id, destination):
-    scenario=load_scenario(scene_id)
+def build(scene_id, destination, *, scene_file=None):
+    scenario=load_asset_scenario(scene_file) if scene_file else load_scenario(scene_id)
     if scenario.gazebo_world != scene_id:
         raise ValueError('This scenario has no Gazebo world')
     destination=Path(destination).resolve();destination.mkdir(parents=True,exist_ok=True)
@@ -131,4 +133,5 @@ def build(scene_id, destination):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--scene',default='visual_garden');parser.add_argument('--output',default='.sim/worlds')
-    args=parser.parse_args();print(build(args.scene,args.output))
+    parser.add_argument('--scene-file', help='Explicit frozen scene JSON; default registry remains unchanged')
+    args=parser.parse_args();print(build(args.scene,args.output,scene_file=args.scene_file))

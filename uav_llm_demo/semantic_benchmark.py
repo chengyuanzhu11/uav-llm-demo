@@ -23,6 +23,7 @@ from .agents import DeepSeekAgent, PlannerProviderError
 from .mission_service import MissionService, SEMANTIC_POLICIES
 from .html_runtime import HtmlRuntime
 from .motion import norm
+from .provider_config import load_planner_config
 from .run_log import source_fingerprint
 from .safety import SCALE, metric_distance
 from .scenarios import load_scenario
@@ -102,7 +103,9 @@ def validate_requirement(req, depth=0):
         for arm in ("then", "else"):
             validate_requirement(req.get(arm), depth + 1)
     else:
-        if not isinstance(req.get("target"), str) or not req["target"]:
+        targetless_review = (kind == "evidence" and req.get("action") == "review"
+                             and "target" in req and req["target"] is None)
+        if not targetless_review and (not isinstance(req.get("target"), str) or not req["target"]):
             raise ValueError("Oracle target is required")
         if kind == "evidence":
             if req.get("action") not in _SOURCES:
@@ -374,11 +377,16 @@ def evaluate_oracle(requirement, *, evidence, telemetry, world, mission_id,
     telemetry = [row for row in telemetry if row.get("mission_id", mission_id) == mission_id
                  and row.get("vehicle_id", "uav-1") == "uav-1"]
 
-    def check(req, path):
+    def check(req, path, after=-math.inf):
         kind = req["type"]
         measured, first, last = {}, None, None
         if kind in {"all", "sequence"}:
-            children = [check(child, f"{path}.{i}") for i, child in enumerate(req["items"])]
+            children = []
+            for i, child in enumerate(req["items"]):
+                result = check(child, f"{path}.{i}", after)
+                children.append(result)
+                if kind == "sequence" and result["last"] is not None:
+                    after = result["last"]
             passed = all(c["satisfied"] for c in children)
             timed = [c for c in children if c["first"] is not None]
             if kind == "sequence":
@@ -469,28 +477,67 @@ def evaluate_oracle(requirement, *, evidence, telemetry, world, mission_id,
                 point[2] = 0.0
             if "altitude_m" in req:
                 point[2] = req["altitude_m"] / SCALE[2]
-            candidates = telemetry
-            if kind == "pose":
-                matching = _evidence(evidence, dict(action="control", target=req["target"],
-                                     occurrence=req.get("occurrence", 1)), mission_id)
-                candidates = [s for s in telemetry if matching and s.get("execution_id") == matching[0]["execution_id"]]
-            held = []
-            for sample in reversed(candidates):
+            # Pose obligations describe measured behavior, not planner node boundaries.
+            # A sequence searches only after the preceding obligation finished.
+            runs, held = [], []
+            # Virtual sampling permits at most 0.1 s; realtime polls at 0.02 s.
+            # A missing interval cannot prove continuous physical dwell.
+            max_sample_gap = .1 + 1e-6
+            previous_active = False
+            terminal_matches = False
+            for sample in telemetry:
                 yaw_ok = ("yaw_deg" not in req or abs((sample["yaw"] - math.radians(req["yaw_deg"]) + math.pi)
                                                      % (2 * math.pi) - math.pi) <= .06)
                 contact = sample["position"][2] * SCALE[2] <= .05
                 if sample.get("runtime") == "gazebo" and req["state"] == "landed":
                     contact = contact and sample.get("landed") is True and sample.get("armed") is False
-                if (metric_distance(sample["position"], point) > .22 or sample["speed_mps"] > .03 or not yaw_ok
-                        or (req["state"] == "landed") != contact):
-                    break
-                held.append(sample)
-            dwell = held[0]["t"] - held[-1]["t"] if held else 0.0
+                matches = (sample["t"] >= after and metric_distance(sample["position"], point) <= .22
+                           and sample["speed_mps"] <= .03 and yaw_ok
+                           and (req["state"] == "landed") == contact)
+                terminal_matches = matches
+                active = bool(sample.get("execution_id") and sample.get("action"))
+                if matches and active:
+                    if held and (not previous_active or not 0 < sample["t"] - held[-1]["t"] <= max_sample_gap):
+                        runs.append(held)
+                        held = []
+                    held.append(sample)
+                elif matches and kind == "goal" and not active:
+                    # Terminal telemetry can confirm the final pose, but earns
+                    # no dwell after the last executing action.
+                    previous_active = False
+                    continue
+                elif held:
+                    runs.append(held)
+                    held = []
+                previous_active = matches and active
+            if kind == "pose":
+                if held:
+                    runs.append(held)
+                qualifying = [run for run in runs
+                              if run[-1]["t"] - run[0]["t"] + .11 >= req.get("dwell_seconds", 0)]
+                index = req.get("occurrence", 1) - 1
+                held = qualifying[index] if index < len(qualifying) else []
+                # Credit only the earliest sufficient prefix; later obligations
+                # may use the rest of the same uninterrupted physical hold.
+                if held:
+                    end = next((i for i, sample in enumerate(held)
+                                if sample["t"] - held[0]["t"] + 1e-6 >= req.get("dwell_seconds", 0)),
+                               len(held) - 1)
+                    held = held[:end + 1]
+            dwell = held[-1]["t"] - held[0]["t"] if held else 0.0
             passed = bool(held) and dwell + .11 >= req.get("dwell_seconds", 0)
+            if kind == "goal" and req.get("dwell_seconds", 0) == 0:
+                # A final-state obligation does not require an active program
+                # node: PX4 may disarm after the completed action was cleared.
+                # Only the final measured pose counts; an earlier matching pose
+                # cannot hide a later departure. Idle time still earns no dwell.
+                passed = bool(telemetry) and terminal_matches
+                if passed:
+                    first = last = telemetry[-1]["t"]
+            elif held:
+                first, last = held[0]["t"], held[-1]["t"]
             measured = dict(dwell_seconds=dwell, target_position=point,
                             final_position=telemetry[-1]["position"] if telemetry else None)
-            if held:
-                first, last = held[-1]["t"], held[0]["t"]
         return dict(path=path, type=kind, satisfied=passed, measured=measured, first=first, last=last)
 
     return check(requirement, "oracle")
@@ -698,7 +745,7 @@ def run_case(case, *, mode="virtual", backend="offline", seed=17, max_calls=6,
     if mode not in {"virtual", "realtime"} or backend not in {"offline", "deepseek"}:
         raise ValueError("Unsupported benchmark mode/backend")
     if backend == "deepseek" and mode != "realtime":
-        raise ValueError("Remote APIs require explicit mode=realtime and backend=deepseek")
+        raise ValueError("Model inference requires explicit mode=realtime and backend=deepseek")
     if runtime_backend not in {"html", "gazebo"}:
         raise ValueError("Unsupported execution runtime")
     if runtime_backend == "gazebo" and (mode != "realtime" or traffic != "none"):
@@ -728,13 +775,15 @@ def run_case(case, *, mode="virtual", backend="offline", seed=17, max_calls=6,
         raise ValueError("Explicit planner latency belongs to virtual experiments; realtime measures actual latency")
     _validate_prices(prices)
     started = time.monotonic()
-    config = dict(provider or {}) if backend == "deepseek" else dict(api_key="offline-benchmark-placeholder")
+    config = dict(api_key="offline-benchmark-placeholder")
+    if backend == "deepseek":
+        config = load_planner_config() if provider is None else dict(provider)
     config["timeout_seconds"] = min(planner_timeout, wall_budget)
     agent = _BudgetedAgent(replies=case["offline_responses"] if backend == "offline" else None,
                            requirements=case.get("offline_requirements"), audits=case.get("offline_audits"),
                            max_calls=max_calls, deadline=started + wall_budget, **config)
-    if backend == "deepseek" and not agent.api_key:
-        raise ValueError("Set DEEPSEEK_API_KEY in the environment for real API evaluation")
+    if backend == "deepseek" and not agent.configured:
+        raise ValueError("Configure the planner model and endpoint; non-local endpoints also require an API key")
     secret = agent.api_key
     scenario = load_scenario("semantic_campus")
     if traffic == "none":

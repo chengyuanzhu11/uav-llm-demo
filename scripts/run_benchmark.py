@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from uav_llm_demo.benchmark import run_benchmark, summarize, estimate_cost
 from uav_llm_demo.run_log import configure_run_logging
+from uav_llm_demo.provider_config import is_provider_configured, load_planner_config
 from uav_llm_demo.traffic_motion import TRAFFIC_POLICIES
 from uav_llm_demo.traffic_observation import TrafficObservationConfig
 
@@ -36,6 +37,11 @@ def main() -> int:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
+    if args.backend == "deepseek":
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+        if not is_provider_configured(load_planner_config()):
+            parser.error("Configure the planner model and endpoint; non-local endpoints also require an API key")
     observation_config = (TrafficObservationConfig(**json.loads(args.observation_config_json.read_text(encoding="utf-8")))
                           if args.observation_config_json else None)
     prices = json.loads(args.prices_json.read_text(encoding="utf-8")) if args.prices_json else None

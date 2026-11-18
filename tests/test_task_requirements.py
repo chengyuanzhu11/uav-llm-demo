@@ -3,11 +3,13 @@ from copy import deepcopy
 import json
 import unittest
 
+from tests.semantic_fixtures import fixture_audit
 from uav_llm_demo.scenarios import load_scenario
 from uav_llm_demo.semantic_tasks import task_catalog
+from uav_llm_demo.task_protocol import TaskProtocolError, validate_structure
 from uav_llm_demo.task_requirements import (
     TaskRequirementsError, audit_requirements_from_json_text,
-    requirement_schema, requirements_from_json_text,
+    requirement_schema, requirements_from_json_text, compare_requirement_assertions,
 )
 
 
@@ -82,6 +84,12 @@ class TaskRequirementsTests(unittest.TestCase):
         with self.assertRaises(TaskRequirementsError) as caught:
             requirements_from_json_text(json.dumps(document), self.catalog, instruction, for_extraction=True)
         self.assertEqual(caught.exception.diagnostic["path"], "$.steps[0].motion.path.flexible")
+        path["flexible"] = dict(scale_groups=[["x"], ["y"]], offset_axes=["z"])
+        path.update(t_start=-1, t_end=1000)
+        with self.assertRaises(TaskRequirementsError) as caught:
+            requirements_from_json_text(json.dumps(document), self.catalog, instruction, for_extraction=True)
+        self.assertEqual(caught.exception.diagnostic["path"], "$.steps[0].motion.path.t_end")
+        self.assertEqual(caught.exception.code, "parameter_range")
 
     def test_source_guards_reject_missing_text_fabricated_quotes_and_bad_links(self):
         instruction = "Inspect the library, then return home."
@@ -103,28 +111,64 @@ class TaskRequirementsTests(unittest.TestCase):
         punctuation = self.document("Inspect the library", document["steps"][0])
         self.parse(punctuation, "  Inspect the library! \n")
 
-    def test_semantic_audit_is_required_even_when_literal_coverage_passes(self):
+    def test_semantic_audit_locally_rejects_empty_approval_and_missing_obligation(self):
         instruction = "Inspect the library, then return home."
-        document = self.document(instruction, {"id": "inspect", "action": "inspect", "target_id": "library"})
-        requirements = self.parse(document, instruction)
-        issue = {"code": "missing_obligation", "message": "遗漏最后返航要求。", "quote": "then return home"}
-        audit = {"status": "revision_required", "summary": "补齐原指令要求。", "issues": [issue]}
+        incomplete = self.document(instruction, {"id": "inspect", "action": "inspect", "target_id": "library"})
+        requirements = self.parse(incomplete, instruction)
+        complete = deepcopy(incomplete)
+        complete["steps"].append({"id": "home", "action": "return_home", "target_id": "home"})
+        audit = fixture_audit(complete, instruction)
+        # A provider's approval cannot override missing structured requirements.
         result = audit_requirements_from_json_text(json.dumps(audit), requirements, instruction)
-        self.assertEqual(result.to_dict(), audit)
-        for bad in (
-            {**audit, "status": "approved"},
-            {**audit, "issues": []},
-            {**audit, "issues": [{**issue, "quote": "invented instruction"}]},
-            {**audit, "extra": True},
-        ):
-            with self.subTest(audit=bad):
-                with self.assertRaises(TaskRequirementsError):
-                    audit_requirements_from_json_text(json.dumps(bad), requirements, instruction)
-        approved = {"status": "approved", "summary": "覆盖完整。", "issues": []}
-        self.assertEqual(audit_requirements_from_json_text(json.dumps(approved), requirements, instruction).status, "approved")
+        self.assertEqual(result.status, "revision_required")
+        self.assertTrue(any("home.action" in item["message"] for item in result.issues))
+        self.assertTrue(any(item["requirement_id"] == "inspect" for item in result.confirmed_assertions))
+        for patch, code in [({"assertions": []}, "missing_assertions"),
+                            ({"assertions": [{**audit["assertions"][0], "quote": "invented instruction"}]}, "invalid_source"),
+                            ({"assertions": [{**audit["assertions"][0], "expected_json": "{bad}"}]}, "invalid_assertion")]:
+            with self.subTest(code=code), self.assertRaises(TaskRequirementsError) as caught:
+                audit_requirements_from_json_text(json.dumps({**audit, **patch}), requirements, instruction)
+            self.assertEqual(caught.exception.code, code)
         with self.assertRaises(TaskRequirementsError) as caught:
-            audit_requirements_from_json_text(json.dumps(approved), requirements, instruction + " changed")
+            audit_requirements_from_json_text(json.dumps(audit), requirements, instruction + " changed")
         self.assertEqual(caught.exception.code, "source_mismatch")
+
+    def test_source_assertions_check_quantities_branches_order_and_ending(self):
+        instruction = "Observe below 17 metres, fly a half clockwise circuit rising 3 metres, then sample if hotter than 31; otherwise inspect, then return."
+        original = self.document(instruction,
+            dict(id="see", action="visual", target_id="east_garden", visual=dict(description="object", max_distance_m=17)),
+            dict(id="move", action="motion", target_id="east_garden", motion=dict(path=dict(kind="boundary", laps=.5,
+                 direction="clockwise", altitude_delta_m=3, altitude_trend="nondecreasing"))),
+            dict(id="scan", action="thermal_scan", target_id="library"),
+            dict(id="choose", action="branch", condition=dict(step_id="scan", field="temperature_c", op=">", value=31),
+                 then=[dict(id="sample", action="capture", target_id="library")],
+                 **{"else": [dict(id="inspect", action="inspect", target_id="conference")]}),
+            dict(id="home", action="return_home", target_id="home"))
+        audit = fixture_audit(original, instruction)
+        expected = self.parse(original, instruction)
+        accepted = audit_requirements_from_json_text(json.dumps(audit), expected, instruction)
+        self.assertEqual(accepted.status, "approved")
+        mutations = [
+            lambda d: d["steps"][0]["visual"].update(max_distance_m=50),
+            lambda d: d["steps"][1]["motion"]["path"].update(laps=2),
+            lambda d: d["steps"][1]["motion"]["path"].update(altitude_delta_m=4),
+            lambda d: d["steps"][3]["condition"].update(value=25),
+            lambda d: d["steps"][3].update(then=d["steps"][3]["else"], **{"else": d["steps"][3]["then"]}),
+            lambda d: d["steps"].reverse(),
+            lambda d: d["steps"][-1].update(action="control", control=dict(state="airborne")),
+        ]
+        for mutate in mutations:
+            candidate = deepcopy(original)
+            mutate(candidate)
+            with self.subTest(candidate=candidate):
+                # Mechanical comparison also guards a repaired draft before its
+                # ordinary structure/reference validation runs.
+                differences, _, _ = compare_requirement_assertions(candidate, accepted.confirmed_assertions, instruction)
+                self.assertTrue(differences)
+        unaudited = deepcopy(audit)
+        unaudited["assertions"] = [a for a in unaudited["assertions"] if a["requirement_id"] != "home"]
+        rejected = audit_requirements_from_json_text(json.dumps(unaudited), expected, instruction)
+        self.assertTrue(any(item["code"] == "unaudited_requirement" for item in rejected.issues))
 
     def test_unsupported_parameters_and_invalid_json_fail_with_shared_diagnostics(self):
         instruction = "沿花园曲线飞行。"
@@ -160,6 +204,19 @@ class TaskRequirementsTests(unittest.TestCase):
                     self.parse(invalid, instruction)
                 self.assertEqual(caught.exception.code,
                     "object_fields" if geometry["kind"] == "boundary" else "incomplete_reference_geometry")
+        for geometry, missing in (({"kind": "curve", "x": "cos(t)"}, ["x", "y", "t_start", "t_end"]),
+                                  ({"kind": "polyline"}, ["points_m"])):
+            with self.subTest(reference=geometry):
+                invalid = deepcopy(document)
+                invalid["steps"][0]["motion"]["path"] = geometry
+                # Older persisted requirements may be sparse; extraction must
+                # publish the complete reference already required by validation.
+                validate_structure(invalid, requirement_schema(for_extraction=False))
+                geometry["flexible"] = {"scale_groups": [], "offset_axes": []}
+                with self.assertRaises(TaskProtocolError) as caught:
+                    validate_structure(invalid, requirement_schema(for_extraction=True))
+                self.assertEqual(caught.exception.code, "object_fields")
+                self.assertEqual(caught.exception.diagnostic["missing"], [key for key in missing if key not in geometry])
         with self.assertRaises(TaskRequirementsError) as caught:
             requirements_from_json_text('{"status":"ready","status":"ready"}', self.catalog, instruction)
         self.assertEqual(caught.exception.code, "duplicate_field")

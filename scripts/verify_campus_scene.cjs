@@ -18,8 +18,8 @@ const expected = { buildings: 50, roofs: 4, pois: 56 };
 function sourceFixtures() {
   const pythonCode = String.raw`
 import json, os
-# Empty api_key alone would fall back to the environment in DeepSeekAgent.
-for name in ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"):
+# Isolate offline fixtures from both planner configuration namespaces.
+for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"):
     os.environ.pop(name, None)
 from uav_llm_demo import create_app
 from uav_llm_demo.agents import DeepSeekAgent, MockLLMAgent

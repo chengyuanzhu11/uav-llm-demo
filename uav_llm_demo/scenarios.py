@@ -245,17 +245,35 @@ SCENARIOS = {
     ),
 }
 
-_garden = load_scene("visual_garden")
-SCENARIOS["visual_garden"] = ScenarioDefinition(
-    scenario_id="visual_garden", name=_garden["name"], grid_size=_garden["grid_size"],
-    min_altitude=1, max_altitude=4, base=tuple(_garden["base"]),
-    target=tuple(_garden["search_position"]), buildings=safety_cells(_garden), dynamic_objects=(),
-    mission_mode="semantic", asset_scene="visual_garden", points_of_interest=(
-        dict(id="home", label="起降点", kind="base", position=dict(zip("xyz", _garden["base"])), allowed_actions=["return_home", "navigate"]),
-        dict(id="garden", label="花园", kind="garden", position=dict(zip("xyz", _garden["search_position"])), allowed_actions=["navigate", "visual"])),
-    recommended_tasks=("到花园寻找绿色垃圾桶，从机载图像确认并定位后返航降落。",
-                       "到花园寻找一棵树，从机载图像确认后返航。"),
-)
+def scenario_from_asset(scene):
+    """Construct an explicitly selected small scene using the shared geometry."""
+    identifier = scene["id"]
+    if not isinstance(identifier, str) or not identifier.replace("_", "").isalnum():
+        raise ValueError("Invalid asset scenario identity")
+    return ScenarioDefinition(
+        scenario_id=identifier, name=scene["name"], grid_size=scene["grid_size"],
+        min_altitude=1, max_altitude=4, base=tuple(scene["base"]),
+        target=tuple(scene["search_position"]), buildings=safety_cells(scene), dynamic_objects=(),
+        mission_mode="semantic", asset_scene=identifier, points_of_interest=(
+            dict(id="home", label="起降点", kind="base", position=dict(zip("xyz", scene["base"])), allowed_actions=["return_home", "navigate"]),
+            dict(id="garden", label="花园", kind="garden", position=dict(zip("xyz", scene["search_position"])), allowed_actions=["navigate", "visual"])),
+        recommended_tasks=("到花园寻找绿色垃圾桶，从机载图像确认并定位后返航降落。",
+                           "到花园寻找一棵树，从机载图像确认后返航。"),
+    )
+
+
+def load_asset_scenario(path):
+    """Explicit file selection; renderer/planner must read identical assets."""
+    import json
+    from pathlib import Path
+    scene = json.loads(Path(path).read_text(encoding="utf-8"))
+    scenario = scenario_from_asset(scene)
+    if load_scene(scenario.asset_scene) != scene:
+        raise ValueError("Selected scene differs from its shared simulation asset")
+    return scenario
+
+
+SCENARIOS["visual_garden"] = scenario_from_asset(load_scene("visual_garden"))
 DEFAULT_SCENARIO = SCENARIOS["urban_crossing"]
 
 
